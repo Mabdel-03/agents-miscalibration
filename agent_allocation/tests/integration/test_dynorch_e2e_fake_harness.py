@@ -318,6 +318,18 @@ async def test_kill_and_resume(tmp_path: Path, base: BaseInputs):
     assert [a["rerun_reason"] for a in attempts].count("killed_by_drain") == 1 and len(attempts) == 4
     assert summary2.reruns == 1
     assert h2.stack.ledger.snapshot().in_flight == 0 and h2.stack.ledger.snapshot().unresolved == 0
+    # review major 12: the tables read the real RunStore layout, so the paid first attempt is a row of its own and
+    # its cost lands in retry_cost_usd instead of vanishing from the $-frontier
+    from agent_allocation.dynorch import tables as T
+
+    built = T.build_tables(h2.run_root, cfg, stage="main")
+    runs_table = built["dynorch_runs"]
+    assert len(runs_table) == 4 and sorted(runs_table["attempt"]) == [1, 1, 1, 2]
+    assert killed[0].spec.run_key in set(runs_table["run_key"])
+    costs = built["policy_costs_dynorch"]
+    row = costs[costs["item_id"] == slow_item].iloc[0]
+    assert Decimal(row["retry_cost_usd"]) == Decimal(killed[0].cost_usd) > 0
+    assert Decimal(row["total_charged_usd"]) == Decimal(row["success_cost_usd"]) + Decimal(row["retry_cost_usd"])
 
 
 @pytest.mark.timeout(600)

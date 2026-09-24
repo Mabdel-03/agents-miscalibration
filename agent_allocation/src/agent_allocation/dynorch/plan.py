@@ -303,11 +303,33 @@ def spec_from_json(data: Mapping[str, Any]) -> RunSpec:
 
 
 def write_plan(specs: Sequence[RunSpec], run_root: str | Path, stage: str) -> Path:
-    """Pre-register the stage's cells (one ``RunSpec`` per line) before it starts; idempotent."""
+    """Pre-register the stage's cells (one ``RunSpec`` per line) before it starts -- WRITE-ONCE per stage.
+
+    The manifest is the pre-registration: "a ``policy_outcomes`` row exists for every planned cell before the run
+    starts". A filtered relaunch (``--arms H0 --rungs 16``, a partial resume) passes a SUBSET of the stage's
+    specs; rewriting the file with that subset shrank the pre-registered cell set, so Gate 4's completeness and
+    "a row per planned cell" were then checked against the subset, and records of cells no longer in it made
+    ``build_tables`` raise (review major 13). An existing manifest is therefore left untouched when the new specs
+    are a subset of it (same cell key AND same run_key), and a disagreement raises instead of overwriting.
+    """
     path = plan_path(run_root, stage)
     lines = [json.dumps(spec_to_json(s), sort_keys=True, ensure_ascii=False) for s in specs]
+    if path.exists():
+        registered = {(_cell_key(s), s.run_key) for s in read_plan(path)}
+        incoming = {(_cell_key(s), s.run_key) for s in specs}
+        unknown = sorted(cell for cell, _ in incoming - registered)
+        if unknown:
+            raise ValueError(
+                f"{path} already pre-registers stage {stage} and {len(unknown)} of the {len(specs)} specs being "
+                f"run are not in it (e.g. {unknown[:3]}); the pre-registration is write-once -- move the old "
+                f"manifest aside deliberately if the stage's cell set really changed")
+        return path
     replace_atomic(path, ("\n".join(lines) + ("\n" if lines else "")).encode("utf-8"))
     return path
+
+
+def _cell_key(spec: RunSpec) -> tuple[str, str, str, int, int]:
+    return spec.partition, spec.arm, spec.item_id, spec.rung, spec.repeat
 
 
 def read_plan(path: str | Path) -> list[RunSpec]:

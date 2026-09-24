@@ -71,8 +71,17 @@ def small_run(tmp_path_factory):
         else:
             rec = T.synthetic_run_record(cell, **kwargs)
         records.append(rec)
+    # written exactly where RunStore puts them: the current attempt under runs/, earlier ones under
+    # runs_superseded/ (review major 12 -- the tables must read both, or every paid rerun is invisible)
+    latest: dict[tuple[str, str, int, int], int] = {}
     for rec in records:
-        T.write_run_record(root, rec)
+        spec = rec["spec"]
+        key = (spec["arm"], spec["item_id"], int(spec["rung"]), int(spec["repeat"]))
+        latest[key] = max(latest.get(key, 0), int(spec["attempt"]))
+    for rec in records:
+        spec = rec["spec"]
+        key = (spec["arm"], spec["item_id"], int(spec["rung"]), int(spec["repeat"]))
+        T.write_run_record(root, rec, superseded=int(spec["attempt"]) < latest[key])
     out = T.build_tables(root, CFG, stage="main")
     return root, plan, records, out
 

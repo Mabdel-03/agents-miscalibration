@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -35,6 +36,7 @@ STAGES: tuple[str, ...] = ("canary", "pilot", "main", "ext_e0", "ext_e1", "ext_e
 PAID_STAGES: frozenset[str] = frozenset(STAGES)          # every stage sends model calls
 CORE_ARMS: tuple[str, ...] = ("H1", "H3", "H0")
 REHEARSAL_ENV = "ALLOCATION_REHEARSAL"
+log = logging.getLogger("agent_allocation.dynorch.cli")
 
 
 class RunRefused(RuntimeError):
@@ -634,6 +636,7 @@ def regrade_mismatches(paths: RunPaths, runs: Any, base_run_root: Path) -> int:
     """Re-grade every VALID final answer through WP-B's ``grade.candidate_from_text`` + ``grade_text`` and count
     rows whose verdict differs from the table (Gate 4 ``grader_rerun_identical``)."""
     try:
+        from agent_allocation.dynorch.gates import PARSE_VALID
         from agent_allocation.dynorch.grade import candidate_from_text
         from agent_allocation.grading.text.grade import grade_text
         from agent_allocation.grading.worker import load_tasks
@@ -641,14 +644,21 @@ def regrade_mismatches(paths: RunPaths, runs: Any, base_run_root: Path) -> int:
         raise Blocked(f"grader re-run needs dynorch.grade ({exc})") from None
     public, private = load_tasks(RunPaths.for_run(base_run_root, local_state_dir=paths.local_state_dir))
     mismatches = 0
+    regraded = 0
     for rec in runs.to_dict("records"):
-        if rec.get("parse_status") != "VALID" or not isinstance(rec.get("final_message"), str):
+        # contract §10.9: the runner writes the codec VALUE ("valid"), so comparing against the enum NAME skipped
+        # every row and `grader_rerun_identical` could never fail (review major 3)
+        if rec.get("parse_status") != PARSE_VALID or not isinstance(rec.get("final_message"), str):
             continue
+        regraded += 1
         task = public[rec["item_id"]]
         candidate = candidate_from_text(rec["final_message"], task, node_id=rec["run_key"])
         verdict = grade_text(candidate, private[rec["item_id"]])
         if verdict.semantic_correct != rec.get("correct"):
             mismatches += 1
+    log.info("dynorch gate 4: re-graded %d valid row(s), %d mismatch(es)", regraded, mismatches)
+    if regraded == 0 and len(runs) > 0:
+        log.warning("dynorch gate 4: the grader re-run found no VALID row to re-grade in %d run row(s)", len(runs))
     return mismatches
 
 

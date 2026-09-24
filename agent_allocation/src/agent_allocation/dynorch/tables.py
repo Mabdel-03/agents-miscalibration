@@ -280,20 +280,34 @@ def validate_record(obj: Any, source: str = "<record>") -> dict[str, Any]:
 
 
 def read_run_records(run_root: str | Path) -> list[dict[str, Any]]:
-    """Every ``*.json`` under ``<run_root>/runs/`` (recursively, superseded attempts included) as validated
-    RunRecord objects, sorted by (arm, rung, repeat, item, attempt). A missing ``runs/`` directory is an empty run."""
-    root = Path(run_root) / "runs"
+    """Every ``*.json`` under ``<run_root>/runs/`` AND ``<run_root>/runs_superseded/`` as validated RunRecord
+    objects, sorted by (arm, rung, repeat, item, attempt). A missing directory is an empty run.
+
+    The superseded directory is where ``RunStore.archive_previous`` puts the earlier attempts of a cell (contract
+    §5); reading only ``runs/`` meant every paid rerun was invisible to the tables -- ``retry_cost_usd`` was always
+    0 and ``total_charged_usd == success_cost_usd``, so the $-frontier and the Gate 2/4 cost figures omitted the
+    reruns the frozen rule says are "all journaled and paid" (review major 12).
+    """
+    root = Path(run_root)
     out: list[dict[str, Any]] = []
-    if not root.is_dir():
-        return out
-    for path in sorted(root.rglob("*.json")):
-        try:
-            obj = json.loads(path.read_text())
-        except json.JSONDecodeError as exc:
-            raise TablesError(f"{path}: not JSON ({exc})") from None
-        rec = validate_record(obj, str(path))
-        rec["_source"] = str(path)
-        out.append(rec)
+    for directory in (root / "runs", root / "runs_superseded"):
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob("*.json")):
+            try:
+                obj = json.loads(path.read_text())
+            except json.JSONDecodeError as exc:
+                raise TablesError(f"{path}: not JSON ({exc})") from None
+            rec = validate_record(obj, str(path))
+            rec["_source"] = str(path)
+            out.append(rec)
+    keys = [(r["spec"]["run_key"], r["_source"]) for r in out]
+    if len({k for k, _ in keys}) != len(keys):
+        seen: dict[str, str] = {}
+        for key, source in keys:
+            if key in seen:
+                raise TablesError(f"run_key {key} appears twice: {seen[key]} and {source}")
+            seen[key] = source
     out.sort(key=lambda r: (r["spec"]["arm"], int(r["spec"]["rung"]), int(r["spec"]["repeat"]),
                             r["spec"]["item_id"], int(r["spec"]["attempt"])))
     return out
@@ -764,13 +778,18 @@ def item_slug(item_id: str) -> str:
     return item_id.replace("/", "__")
 
 
-def write_run_record(run_root: str | Path, record: Mapping[str, Any]) -> Path:
-    """Write a RunRecord under ``<run_root>/runs/<arm>/<rung>/<repeat>/<item_slug>[.a<attempt>].json``
-    (attempt 1 without the suffix, matching the RunStore path; later attempts keep every attempt on disk)."""
+def write_run_record(run_root: str | Path, record: Mapping[str, Any], *, superseded: bool = False) -> Path:
+    """Write a RunRecord exactly where ``RunStore`` puts it (contract §5 / §10.22): the current attempt at
+    ``runs/<partition>/<arm>/<rung>/<repeat>/<item_slug>.json`` and an earlier one at
+    ``runs_superseded/<partition>/<arm>/<rung>/<repeat>/<item_slug>.a<attempt>.json``."""
     spec = record["spec"]
-    suffix = "" if int(spec["attempt"]) == 1 else f".a{int(spec['attempt'])}"
-    path = (Path(run_root) / "runs" / spec["arm"] / str(spec["rung"]) / str(spec["repeat"])
-            / f"{item_slug(spec['item_id'])}{suffix}.json")
+    partition = str(spec.get("partition") or "main")
+    if superseded:
+        path = (Path(run_root) / "runs_superseded" / partition / spec["arm"] / str(spec["rung"])
+                / str(spec["repeat"]) / f"{item_slug(spec['item_id'])}.a{int(spec['attempt'])}.json")
+    else:
+        path = (Path(run_root) / "runs" / partition / spec["arm"] / str(spec["rung"]) / str(spec["repeat"])
+                / f"{item_slug(spec['item_id'])}.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record, indent=0))
     return path

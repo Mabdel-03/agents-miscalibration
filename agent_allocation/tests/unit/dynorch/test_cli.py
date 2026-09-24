@@ -356,3 +356,27 @@ def test_key_hits_in_run_tree_reads_gzip(tmp_path):
         h.write(("{\"h\": \"" + "sk-or-v1-" + "c" * 40 + "\"}").encode())
     (tmp_path / "ok.json").write_text("{}")
     assert dcli.key_hits_in_run_tree(tmp_path) == ["raw/call_0001.json.gz"]
+
+
+# ------------------------------------------------------------------------------------------------------------------
+# Gate 4's grader re-run (review major 3)
+# ------------------------------------------------------------------------------------------------------------------
+
+def test_regrade_mismatches_regrades_the_rows_the_runner_actually_writes(cfg, tmp_path):
+    """Contract §10.9: the runner writes ``parse_status = "valid"`` (the codec VALUE). Comparing against the enum
+    NAME ("VALID") skipped every row, so ``mismatches`` was always 0 and Gate 4's ``grader_rerun_identical``
+    could never fail."""
+    if not base_mounted(cfg):
+        pytest.skip("base run root not readable here")
+    from agent_allocation.grading.worker import load_tasks
+
+    base = Path(cfg["base_run_root"])
+    paths = RunPaths.for_run(tmp_path / "run", local_state_dir=tmp_path / "local")
+    public, _private = load_tasks(RunPaths.for_run(base, local_state_dir=paths.local_state_dir))
+    item = sorted(i for i, t in public.items() if t.benchmark == "aime")[0]
+    row = {"run_key": "rk0", "item_id": item, "parse_status": dcli.__dict__.get("PARSE_VALID", "valid"),
+           "final_message": "<rationale>r</rationale>\n<final>424242</final>", "correct": True}
+    assert dcli.regrade_mismatches(paths, pd.DataFrame([row]), base) == 1      # the table says correct; it is not
+    assert dcli.regrade_mismatches(paths, pd.DataFrame([{**row, "correct": False}]), base) == 0
+    # a row the runner never writes (enum NAME) is not silently counted as agreeing
+    assert dcli.regrade_mismatches(paths, pd.DataFrame([{**row, "parse_status": "VALID"}]), base) == 0

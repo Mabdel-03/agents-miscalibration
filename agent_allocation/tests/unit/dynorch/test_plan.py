@@ -193,6 +193,24 @@ def test_write_and_read_plan_round_trip(cfg, base, tmp_path):
     assert len(lines) == len(specs) and json.loads(lines[0])["run_key"] == specs[0].run_key
 
 
+def test_the_pre_registration_manifest_is_write_once_per_stage(cfg, base, tmp_path):
+    """Review major 13: ``run_specs`` calls ``write_plan`` on every launch, so a filtered relaunch
+    (``--arms H0 --rungs 16``, a partial resume) rewrote the manifest with its subset -- and "a row per planned
+    cell", Gate 4 completeness and ``build_tables`` were then measured against the shrunken plan."""
+    full = plan_stage(cfg, "main", base)
+    path = write_plan(full, tmp_path, "main")
+    before = path.read_bytes()
+    subset = [s for s in full if s.arm == "H0" and s.rung == 16]
+    assert 0 < len(subset) < len(full)
+    assert write_plan(subset, tmp_path, "main") == path
+    assert path.read_bytes() == before and len(read_plan(path)) == len(full)
+    # a spec the manifest does not pre-register is refused loudly instead of silently replacing it
+    foreign = plan_stage(cfg, "pilot", base)[:1]
+    with pytest.raises(ValueError, match="write-once"):
+        write_plan(list(subset) + list(foreign), tmp_path, "main")
+    assert path.read_bytes() == before
+
+
 def test_versions_are_stamped(cfg, base):
     specs = plan_runs(cfg, stage="main", arms=["H1", "H3"], rungs=[1], repeats=[1], items=base.main_items()[:1],
                       base=base, proxy_version="proxy-1", harness_versions={"openclaude": "0.13.0"})
