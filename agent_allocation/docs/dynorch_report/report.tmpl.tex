@@ -335,8 +335,65 @@ perfect selector over the samples of sample/16 would.
 \paragraph{Scope.} One model ({{design.model|s}}); {{n_items|d}} items on {{design.n_benchmarks|d}} hard math and
 science benchmarks; orchestration-only tools (no code execution, no search); one realisation per cell.
 Orchestration itself was not exercised, so this does not show that orchestration is useless. It shows that these
-two harnesses, as shipped, did not choose to orchestrate this model on these tasks. E0, in which the root's own
-calls are capped at {{design.e0_root_ceiling|tt}}, is running; its results will be added.
+two harnesses, as shipped, did not choose to orchestrate this model on these tasks. Section~\ref{sec:e0} tests
+whether forcing the root to stop early makes it delegate.
+
+\section{Extension E0: capping the orchestrator's own calls}\label{sec:e0}
+
+In the core, both harnesses almost always answered in one long call and never delegated. E0 takes away the
+single long call. Each root call is granted at most {{design.e0_root_ceiling|tt}} tokens: {{design.A|d}} at $4A$ and {{e0.ceil16|d}}
+at $16A$. A root call that reaches this ceiling is closed with an answer continuation charged inside $C$. The
+harness can then accept that answer, or keep going with the rest of the budget: think again, or spawn a
+sub-agent. The same {{n_items|d}} items were run for H1c and H3c at rungs 4 and 16, one realisation per cell
+({{e0.runs|d}} runs, {{e0.spend_usd|$}}). Every contrast below is a descriptive paired item bootstrap, and E0
+carries no p-values.
+
+\begin{table}[h]
+\centering\small
+\resizebox{\textwidth}{!}{\begin{tabular}{lrrrrrr}
+\toprule
+cell & accuracy & $-$ uncapped & $-$ deep/$k$ & $-$ deep at ceiling & spawn runs & ceiling close, then end \\
+\midrule
+H1c/4  & {{e0.acc.H1c/4.acc|3}}  & {{e0.vs.H1c/4.H1_4.pts|+1}}   & {{e0.vs.H1c/4.deep_4.pts|+1}}   & {{e0.vs.H1c/4.deep_1.pts|+1}} (deep/1)  & {{e0.by_arm.H1c/4.spawn_share|%}}  & {{e0.by_arm.H1c/4.ceiling_close_then_end_share|%}} \\
+H1c/16 & {{e0.acc.H1c/16.acc|3}} & {{e0.vs.H1c/16.H1_16.pts|+1}} & {{e0.vs.H1c/16.deep_16.pts|+1}} & {{e0.vs.H1c/16.deep_4.pts|+1}} (deep/4) & {{e0.by_arm.H1c/16.spawn_share|%}} & {{e0.by_arm.H1c/16.ceiling_close_then_end_share|%}} \\
+H3c/4  & {{e0.acc.H3c/4.acc|3}}  & {{e0.vs.H3c/4.H3_4.pts|+1}}   & {{e0.vs.H3c/4.deep_4.pts|+1}}   & {{e0.vs.H3c/4.deep_1.pts|+1}} (deep/1)  & {{e0.by_arm.H3c/4.spawn_share|%}}  & {{e0.by_arm.H3c/4.ceiling_close_then_end_share|%}} \\
+H3c/16 & {{e0.acc.H3c/16.acc|3}} & {{e0.vs.H3c/16.H3_16.pts|+1}} & {{e0.vs.H3c/16.deep_16.pts|+1}} & {{e0.vs.H3c/16.deep_4.pts|+1}} (deep/4) & {{e0.by_arm.H3c/16.spawn_share|%}} & {{e0.by_arm.H3c/16.ceiling_close_then_end_share|%}} \\
+\bottomrule
+\end{tabular}}
+\caption{E0 cells: macro accuracy and paired differences in points. ``Deep at ceiling'' is one forced deep call
+with the root ceiling as its budget. The last column is the share of ceiling-closed runs in which the harness
+made no further call.}
+\label{tab:e0}
+\end{table}
+
+\paragraph{The cap made the harnesses delegate, sometimes.} {{e0.spawn_runs|d}} of {{e0.runs|d}} E0 runs
+spawned a sub-agent, against none of the core harness runs. The share was highest for H1c/16
+({{e0.by_arm.H1c/16.spawn_share|%}}) and lowest for H3c/16 ({{e0.by_arm.H3c/16.spawn_share|%}}).
+
+\paragraph{Mostly they accepted the capped answer and stopped.} The root reached its ceiling in
+{{e0.by_arm.H3c/16.ceiling_close_share|%}} (H3c/16) to {{e0.by_arm.H1c/4.ceiling_close_share|%}} (H1c/4) of runs.
+In {{e0.by_arm.H3c/16.ceiling_close_then_end_share|%}} to {{e0.by_arm.H1c/4.ceiling_close_then_end_share|%}} of
+those, the harness made no further call and delivered the answer written under the ceiling. The unspent budget was
+simply left unused: realised share of the cap is {{e0.by_arm.H3c/16.realized_share|2}} to
+{{e0.by_arm.H3c/4.realized_share|2}}. So a capped cell at rung $k$ behaves much like one deep call at the ceiling. H1c/4 is
+{{e0.vs.H1c/4.deep_1.pts|+1}} points [{{e0.vs.H1c/4.deep_1.lo|+1}}, {{e0.vs.H1c/4.deep_1.hi|+1}}] from deep/1, and
+H3c/16 is {{e0.vs.H3c/16.deep_4.pts|+1}} [{{e0.vs.H3c/16.deep_4.lo|+1}}, {{e0.vs.H3c/16.deep_4.hi|+1}}] from deep/4.
+
+\paragraph{Capping cost accuracy.} Every capped cell is below its uncapped cell in point estimate, and three of the four intervals exclude zero. H1c/16 is lower by
+{{e0.vs.H1c/16.H1_16.pts|a1}} points [{{e0.vs.H1c/16.H1_16.lo|+1}}, {{e0.vs.H1c/16.H1_16.hi|+1}}] and H3c/16 by
+{{e0.vs.H3c/16.H3_16.pts|a1}} [{{e0.vs.H3c/16.H3_16.lo|+1}}, {{e0.vs.H3c/16.H3_16.hi|+1}}]. Against deep/16 the gap
+widens to {{e0.vs.H1c/16.deep_16.pts|+1}} and {{e0.vs.H3c/16.deep_16.pts|+1}} points. Runs whose root never hit
+the ceiling were right {{e0.by_arm.H1c/16.acc_not_closed|%}} (H1c/16) and {{e0.by_arm.H3c/16.acc_not_closed|%}}
+(H3c/16) of the time; ceiling-closed runs were right {{e0.by_arm.H1c/16.acc_ceiling_closed|%}} and
+{{e0.by_arm.H3c/16.acc_ceiling_closed|%}}. That split is selection by difficulty, not an effect of capping. Runs
+that spawned did no better (H1c/16: {{e0.by_arm.H1c/16.acc_spawned|%}} with a spawn,
+{{e0.by_arm.H1c/16.acc_not_spawned|%}} without). This is also selection, and the counts are small.
+
+\paragraph{Reading.} Forcing the orchestrator off its first call did not produce useful orchestration. When
+the harnesses were pushed to split the work, they mostly turned the budget they had into a shorter single answer,
+and the delegation they did perform did not recover the lost depth. E0 strengthens the core reading: for this
+model at these budgets, the rule ``one deep call, forced to the budget'' is not beaten by dynamic orchestration,
+capped or uncapped.
 
 \section{What to do with this}
 

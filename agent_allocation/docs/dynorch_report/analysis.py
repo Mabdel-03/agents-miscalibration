@@ -438,6 +438,8 @@ def run_analysis(run: str | Path, ladder: str | Path, config: str | Path, out: s
     rvd = realized_vs_deep(F.oc, N, base_names, replicates=replicates, items=items)
     N["realized_vs_deep"] = rvd
     N["run_facts"] = run_facts(run, runs_all, current, calls, partition)
+    N["e0"] = e0_numbers(ladder, run, items, runs_all, pd.read_parquet(run / "tables" / "dynorch_calls.parquet"),
+                         replicates=replicates, partition=partition)
 
     # ------------------------------------------------------------ headline shortcuts
     N["headline"] = {}
@@ -569,6 +571,71 @@ def behaviour_numbers(runs_all: pd.DataFrame, current: pd.DataFrame, calls_cur: 
                              "share": r3(len(multi) / max(1, (current["arm"] == "H3").sum()))}
     out["H3_second_call"]["all_planning"] = bool(multi.shape[0] and planning == len(multi))
     out["H3_second_call"]["first_tool"] = out["H3_second_call"]["tool_names"][0] if out["H3_second_call"]["tool_names"] else "none"
+    return out
+
+
+E0_STAGE = "ext_e0"
+
+
+def e0_numbers(ladder: Path, run: Path, items, runs_all: pd.DataFrame, calls_all: pd.DataFrame, *, replicates: int,
+               partition: str) -> dict:
+    """Extension E0 (capped root calls, plan §1): accuracy of H1c/H3c at rungs 4 and 16 and descriptive paired
+    contrasts against the uncapped cell, deep/k, sample/k and the deep call at the root ceiling max(A, C/4); what the
+    capped harnesses did. E0 rows join the main harness rows in one frame (their names are distinct), so every
+    contrast is one population on the same items. Empty when the stage has not been sealed."""
+    from agent_allocation.dynorch.gates import seal_path
+    if not seal_path(run / "tables", E0_STAGE).exists():
+        return {"present": False}
+    po = pd.read_parquet(run / "tables" / "policy_outcomes_dynorch.parquet")
+    po = po[po["partition_id"].isin([partition, E0_STAGE]) & (po["view"] == "current")].copy()
+    po["partition_id"] = partition
+    F0 = c.Frame(ladder, po, items=items, replicates=replicates, partition=partition)
+    out: dict[str, Any] = {"present": True, "acc": {}, "vs": {}, "by_arm": {}}
+    runs = runs_all[runs_all["partition"] == E0_STAGE]
+    cur = runs.sort_values("attempt").groupby(["arm", "item_id", "rung", "repeat"], as_index=False).tail(1)
+    cur = cur[cur["item_id"].isin(items)]
+    calls = calls_all[calls_all["run_key"].isin(cur["run_key"])]
+    for arm in ("H1c", "H3c"):
+        base = arm[:-1]
+        for k in (4, 16):
+            n = f"{arm}/{k}"
+            if not F0.has(n):
+                continue
+            a_, lo, hi = F0.acc(n)
+            out["acc"][n] = {"acc": r3(a_), "lo": r3(lo), "hi": r3(hi)}
+            ceil_rung = max(1, k // 4)
+            for other in (f"{base}/{k}", f"deep/{k}", f"sample/{k}", f"deep/{ceil_rung}"):
+                if F0.has(other):
+                    out["vs"].setdefault(n, {})[other.replace("/", "_")] = _contrast_row(
+                        F0.oc, f"{n}-{other}", [(n, 1.0), (other, -1.0)], replicates=replicates, items=items)
+            out["vs"][n]["ceiling_rung"] = ceil_rung
+            g = cur[cur["name"] == n]
+            gc = calls[calls["run_key"].isin(g["run_key"])]
+            closed = set(gc[gc["forced_close_kind"] == "ceiling_close"]["run_key"])
+            bound = g[g["run_key"].isin(closed)]
+            unbound = g[~g["run_key"].isin(closed)]
+            ended = bound[bound["calls"] == 1]
+            out["by_arm"][n] = {
+                "runs": int(len(g)), "spawn_runs": int((g["spawns"] > 0).sum()),
+                "spawn_share": r3((g["spawns"] > 0).mean()), "multi_call_share": r3((g["calls"] > 1).mean()),
+                "realized_share": r3(g["realized_share"].mean()),
+                "ceiling_close_runs": int(len(bound)), "ceiling_close_share": r3(len(bound) / max(1, len(g))),
+                "ceiling_close_then_end": int(len(ended)),
+                "ceiling_close_then_end_share": r3(len(ended) / max(1, len(bound))),
+                "acc_ceiling_closed": r3(bound["y"].mean()) if len(bound) else None,
+                "acc_not_closed": r3(unbound["y"].mean()) if len(unbound) else None,
+                "terminal_share": r3((g["forced_close_kind"] == "terminal").mean()),
+                "no_output_share": r3((g["delivered_state"] == "op_no_output").mean()),
+                "acc_spawned": r3(g[g["spawns"] > 0]["y"].mean()) if (g["spawns"] > 0).any() else None,
+                "acc_not_spawned": r3(g[g["spawns"] == 0]["y"].mean()) if (g["spawns"] == 0).any() else None}
+    money = pd.to_numeric(runs["cost_usd"], errors="coerce")
+    out["runs_all_attempts"] = int(len(runs))
+    out["runs"] = int(len(cur))
+    out["spend_usd"] = round(float(money.sum()), 2)
+    out["spawn_runs"] = int((cur["spawns"] > 0).sum())
+    out["spawn_share"] = r3((cur["spawns"] > 0).mean())
+    out["ceil16"] = int(runs[runs["rung"] == 16]["root_call_ceiling"].dropna().astype(int).max()) \
+        if (runs["rung"] == 16).any() else None
     return out
 
 
