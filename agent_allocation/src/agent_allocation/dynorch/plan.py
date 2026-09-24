@@ -302,7 +302,8 @@ def spec_from_json(data: Mapping[str, Any]) -> RunSpec:
     return RunSpec(**body)
 
 
-def write_plan(specs: Sequence[RunSpec], run_root: str | Path, stage: str) -> Path:
+def write_plan(specs: Sequence[RunSpec], run_root: str | Path, stage: str, *,
+               registered: Sequence[RunSpec] | None = None) -> Path:
     """Pre-register the stage's cells (one ``RunSpec`` per line) before it starts -- WRITE-ONCE per stage.
 
     The manifest is the pre-registration: "a ``policy_outcomes`` row exists for every planned cell before the run
@@ -311,9 +312,21 @@ def write_plan(specs: Sequence[RunSpec], run_root: str | Path, stage: str) -> Pa
     "a row per planned cell" were then checked against the subset, and records of cells no longer in it made
     ``build_tables`` raise (review major 13). An existing manifest is therefore left untouched when the new specs
     are a subset of it (same cell key AND same run_key), and a disagreement raises instead of overwriting.
+
+    ``registered`` (re-review minor 11, contract §10.34) is the stage's FULL planned cell set (``plan_stage``
+    unfiltered): when given, it -- not the possibly filtered ``specs`` being run -- is what a first launch
+    pre-registers, and ``specs`` must be a subset of it. Without it a filtered FIRST launch (``--arms H0``)
+    pre-registered only its subset and the later full launch raised.
     """
     path = plan_path(run_root, stage)
-    lines = [json.dumps(spec_to_json(s), sort_keys=True, ensure_ascii=False) for s in specs]
+    if registered is not None:
+        full = {(_cell_key(s), s.run_key) for s in registered}
+        outside = sorted(cell for cell, _ in {(_cell_key(s), s.run_key) for s in specs} - full)
+        if outside:
+            raise ValueError(f"{len(outside)} spec(s) being run are not in stage {stage}'s planned cells "
+                             f"(e.g. {outside[:3]})")
+    to_register = list(registered) if registered is not None else list(specs)
+    lines = [json.dumps(spec_to_json(s), sort_keys=True, ensure_ascii=False) for s in to_register]
     if path.exists():
         registered = {(_cell_key(s), s.run_key) for s in read_plan(path)}
         incoming = {(_cell_key(s), s.run_key) for s in specs}

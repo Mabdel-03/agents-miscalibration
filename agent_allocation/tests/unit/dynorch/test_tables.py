@@ -165,7 +165,18 @@ def test_cell_names_and_policy_ids():
     assert T.policy_id("main", "aime/2026/11", "H1/16") == "main/aime/2026/11/H1/16/current"
     with pytest.raises(T.TablesError):
         T.cell_name("H1", 16, 0)
-    assert len(T.run_key_of("openrouter_dynorch_v1", "H1", "aime/2026/11", 16, 1, 1)) == 24
+    assert len(T.run_key_of("openrouter_dynorch_v1", "H1", "aime/2026/11", 16, 1, 1, partition="main")) == 24
+
+
+def test_run_key_of_is_the_partitioned_contract_formula():
+    """Re-review minor 12: ``tables.run_key_of`` (used by ``synthetic_plan``) still hashed without the partition
+    (contract §10.22), so it disagreed with every real run_key and let canary/pilot cells collide."""
+    from agent_allocation.dynorch.plan import run_key_for
+    args = ("openrouter_dynorch_v1", "H1", "aime/2026/11", 16, 1, 1)
+    assert T.run_key_of(*args, partition="canary") == run_key_for(args[0], "canary", *args[1:])
+    assert T.run_key_of(*args, partition="canary") != T.run_key_of(*args, partition="pilot")
+    cell = T.synthetic_plan(CFG, _synthetic_items(1), arms=["H1"], rungs=[16], partition="pilot")[0]
+    assert cell.run_key == run_key_for(CFG["study_id"], "pilot", "H1", cell.item_id, 16, 1, 1)
 
 
 def test_costs_identities(small_run):

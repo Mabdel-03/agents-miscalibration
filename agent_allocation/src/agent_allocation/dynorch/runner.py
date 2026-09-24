@@ -255,13 +255,18 @@ class Runner:
                         rungs: Sequence[int] | None = None) -> StageSummary:
         """Plan the stage's frozen cell set, pre-register it, and execute it (module docstring)."""
         proxy_version = str(getattr(self.core, "proxy_version", "unrecorded"))
+        versions = self.harness_versions()
         specs = planmod.plan_stage(self.cfg, stage, self.inputs, arms=arms, rungs=rungs, proxy_version=proxy_version,
-                                   harness_versions=self.harness_versions())
-        return await self.run_specs(stage, specs, resume=resume)
+                                   harness_versions=versions)
+        full = planmod.plan_stage(self.cfg, stage, self.inputs, proxy_version=proxy_version, harness_versions=versions)
+        return await self.run_specs(stage, specs, resume=resume, registered=full)
 
-    async def run_specs(self, stage: str, specs: Sequence[RunSpec], *, resume: bool = False) -> StageSummary:
-        """Execute an explicit cell list under ``stage`` (what ``run_stage`` does after planning; the e2e's entry)."""
-        planmod.write_plan(specs, self.settings.run_root, stage)
+    async def run_specs(self, stage: str, specs: Sequence[RunSpec], *, resume: bool = False,
+                        registered: Sequence[RunSpec] | None = None) -> StageSummary:
+        """Execute an explicit cell list under ``stage`` (what ``run_stage`` does after planning; the e2e's entry).
+        ``registered``: the stage's full planned cell set, pre-registered on the first launch whatever subset runs
+        (re-review minor 11); ``None`` registers ``specs`` themselves (explicit test cell lists)."""
+        planmod.write_plan(specs, self.settings.run_root, stage, registered=registered)
         summary = StageSummary(stage=stage, planned=len(specs))
         # The store is ALWAYS consulted (review major 4/15): re-running a stage without --resume must never
         # overwrite a paid record in place, collide with the ledger attempt ids it already reserved or conflict in
@@ -948,6 +953,9 @@ async def launch_stage(cfg: Mapping[str, Any], paths: Any, *, stage: str, cells:
             log.warning("dynorch runner: drain handler not installed (%s)", exc)
         specs = specs_for_cells(cfg, stage, inputs, cells, proxy_version=stack.core.proxy_version,
                                 harness_versions=runner.harness_versions())
+        # the pre-registration is ALWAYS the stage's full plan, whatever --arms/--rungs filter this launch uses
+        full_plan = planmod.plan_stage(cfg, stage, inputs, proxy_version=stack.core.proxy_version,
+                                       harness_versions=runner.harness_versions())
 
         async def refresh_ceiling() -> None:
             while True:
@@ -980,7 +988,7 @@ async def launch_stage(cfg: Mapping[str, Any], paths: Any, *, stage: str, cells:
 
         background = [asyncio.create_task(refresh_ceiling()), asyncio.create_task(watch_sentinels())]
         try:
-            summary = await runner.run_specs(stage, specs, resume=resume)
+            summary = await runner.run_specs(stage, specs, resume=resume, registered=full_plan)
         finally:
             for task in background:
                 task.cancel()

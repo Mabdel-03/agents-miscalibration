@@ -543,3 +543,10 @@ refused `409 run_closed` without minting a grant; a call already in flight is fi
 this run_key, else this attempt's `runs_superseded/` copy, else nowhere (the call journal keeps it) -- never over the
 next attempt's record. `ReplyLog.last_event` ignores `run_closed` refusals (nobody was listening). `Runner._close_failed`
 awaits the settle like the normal path.
+
+**10.34 The stage manifest always pre-registers the FULL stage; one run_key formula (minors 11, 12).**
+`plan.write_plan(specs, run_root, stage, *, registered=None)`: with `registered` (the stage's unfiltered `plan_stage`
+list) a first launch writes the full cell set and the `specs` being run must be a subset of it; `Runner.run_specs(...,
+registered=)`, `Runner.run_stage` and `launch_stage` always pass it, so a filtered first launch (`--arms H0`) no longer
+shrinks the pre-registration (plan §1 "a policy_outcomes row exists for every planned cell before the run starts").
+`tables.run_key_of(..., *, partition)` delegates to `plan.run_key_for` (the §10.22 formula).

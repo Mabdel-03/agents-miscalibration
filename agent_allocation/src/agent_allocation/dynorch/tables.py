@@ -25,7 +25,6 @@ returned by ``build_tables`` as ``reasoning_unknown_rows``; the report never use
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from dataclasses import dataclass
@@ -172,9 +171,12 @@ def policy_id(partition: str, item_id: str, name: str) -> str:
     return f"{partition}/{item_id}/{name}/{VIEW}"
 
 
-def run_key_of(study_id: str, arm: str, item_id: str, rung: int, repeat: int, attempt: int) -> str:
-    """Contract section 6: ``sha256(f"{study_id}|{arm}|{item_id}|{rung}|{repeat}|{attempt}")[:24]``."""
-    return hashlib.sha256(f"{study_id}|{arm}|{item_id}|{rung}|{repeat}|{attempt}".encode()).hexdigest()[:24]
+def run_key_of(study_id: str, arm: str, item_id: str, rung: int, repeat: int, attempt: int, *, partition: str) -> str:
+    """Contract section 6 as amended by §10.22 (re-review minor 12): the partition is part of the identity --
+    ``plan.run_key_for`` is the one formula (this used to hash without the partition, so synthetic plans and any
+    reader using it disagreed with every real run_key)."""
+    from agent_allocation.dynorch.plan import run_key_for
+    return run_key_for(study_id, partition, arm, item_id, int(rung), int(repeat), int(attempt))
 
 
 # ---------------------------------------------------------------------------------------------- readers
@@ -681,7 +683,8 @@ def synthetic_plan(cfg: Mapping[str, Any], items: Mapping[str, Mapping[str, str]
         for item_id, meta in items.items():
             for rung in rungs:
                 cells.append(PlannedCell(
-                    run_key=run_key_of(str(cfg["study_id"]), arm, item_id, int(rung), repeat, 1), arm=arm,
+                    run_key=run_key_of(str(cfg["study_id"]), arm, item_id, int(rung), repeat, 1, partition=partition),
+                    arm=arm,
                     harness=str(known[arm]["harness"]), item_id=item_id, benchmark=str(meta["benchmark"]),
                     stratum=str(meta.get("stratum", meta["benchmark"])), shard_id=str(meta["shard_id"]),
                     endpoint_tag=str(meta["endpoint_tag"]), rung=int(rung), cap_tokens=int(rung) * a_tokens,

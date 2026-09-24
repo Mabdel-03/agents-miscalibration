@@ -134,12 +134,20 @@ def test_dynorch_run_canary_h0_in_rehearsal_runs_the_real_stack(cfg, base, tmp_p
     assert {r.spec.item_id for r in records.values()} == {base.panels["aime"].dev_item_ids[0],
                                                           base.panels["gpqa_diamond"].dev_item_ids[0]}
     assert len(list((paths.run_dir / "raw").rglob("call_*.json.gz"))) == 2
-    assert (paths.manifests_dir / "dynorch_plan_canary.jsonl").is_file()
+    # re-review minor 11: a FILTERED first launch (--arms H0) pre-registers the stage's FULL cell set, so the later
+    # H1/H3 launch is a subset of it instead of a foreign spec (it used to register the 2 H0 cells and raise then)
+    from agent_allocation.dynorch.plan import plan_stage, read_plan
+    manifest = read_plan(paths.manifests_dir / "dynorch_plan_canary.jsonl")
+    expected = plan_stage(cfg, "canary", base)
+    assert len(manifest) == len(expected) == 10
+    assert [s.run_key for s in manifest] == [s.run_key for s in expected]
     assert (paths.run_dir / "state" / "ledger_journal.jsonl").is_file()
     # tables over the stage, and the reconciliation of the stage from them
-    assert status["tables"] == {"n_planned": 2, "n_records": 2, "reasoning_unknown_rows": 0}
+    assert status["tables"] == {"n_planned": 10, "n_records": 2, "reasoning_unknown_rows": 0}
     outcomes = pd.read_parquet(paths.tables_dir / "policy_outcomes_dynorch.parquet")
-    assert len(outcomes) == 2 and set(outcomes["delivered_state"]) == {"delivered"} and set(outcomes["name"]) == {"H0/4"}
+    ran = outcomes[outcomes["name"] == "H0/4"]
+    assert len(outcomes) == 10 and len(ran) == 2 and set(ran["delivered_state"]) == {"delivered"}
+    assert set(outcomes[outcomes["name"] != "H0/4"]["delivered_state"]) == {"pending"}   # a row per planned cell
     runs = pd.read_parquet(paths.tables_dir / "dynorch_runs.parquet")
     assert set(runs["partition"]) == {"canary"} and list(runs["calls"]) == [1, 1]
     assert status["reconciliation"]["decision"] == "clean", status["reconciliation"]
