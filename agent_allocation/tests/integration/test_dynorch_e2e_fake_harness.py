@@ -89,7 +89,8 @@ class Harness:
 
     def __init__(self, tmp: Path, cfg: dict[str, Any], *, script: FakeScript | None = None, concurrency: int = 2,
                  max_reruns: int | None = None, drain_wait_seconds: float | None = None,
-                 ceiling_usd: str = "95", drain_total_seconds: float | None = None) -> None:
+                 ceiling_usd: str = "95", drain_total_seconds: float | None = None,
+                 max_infra_reruns: int | None = None) -> None:
         self.tmp = tmp
         self.ceiling_usd = ceiling_usd
         self.cfg = cfg
@@ -115,6 +116,8 @@ class Harness:
             self.settings = RunnerSettings(**{**self.settings.__dict__, "drain_wait_seconds": drain_wait_seconds})
         if drain_total_seconds is not None:
             self.settings = RunnerSettings(**{**self.settings.__dict__, "drain_total_seconds": drain_total_seconds})
+        if max_infra_reruns is not None:
+            self.settings = RunnerSettings(**{**self.settings.__dict__, "max_infra_reruns": max_infra_reruns})
         self.adapters = {"fake": FakeAdapter(model=cfg["primary_model"], python=sys.executable),
                          "null": NullAdapter(model=cfg["primary_model"])}
         self.stack: Any = None
@@ -151,6 +154,11 @@ class Harness:
 def _classes(record) -> dict[str, int]:
     """``calls_by_class`` without the zero entries (the core initialises every class)."""
     return {k: v for k, v in record.calls_by_class.items() if v}
+
+
+def _upstream_calls(script: FakeScript, run_key: str) -> list[Any]:
+    """The fake upstream's completion calls made for one run (attempt)."""
+    return [c for c in script.text_completion_calls() if c.coordinates.get("run_key") == run_key]
 
 
 def _assert_no_key_material(root: Path) -> None:
@@ -391,10 +399,11 @@ async def test_the_drain_deadline_bounds_the_settle_wait(tmp_path: Path, base: B
 
 
 @pytest.mark.timeout(600)
-async def test_a_failed_sub_agent_call_does_not_discard_the_delivered_answer(tmp_path: Path, base: BaseInputs):
-    """Review major 10: the frozen rule reruns only when the LAST proxy reply was a transport/ledger error. A
-    sub-agent call that failed mid-run (charged whole, the harness carried on, the root answered) made the whole
-    run transport_failed and threw the delivered answer away."""
+async def test_a_failed_sub_agent_call_latches_the_run_and_reruns_the_cell(tmp_path: Path, base: BaseInputs):
+    """Contract §10.38 (supersedes review major 10's "keep the delivered answer"): a sub-agent's ambiguous outcome
+    settles the full remaining grant, so the root's "answer" afterwards could only be the B4 TERMINAL call -- a
+    no-thinking reply after an infrastructure failure. The core latches the run at the failure, the root's next call
+    is refused, the attempt is ``transport_failed`` / ``upstream_latched`` and the cell reruns with a fresh budget."""
     cfg = _cfg_with_fake_arm()
     script = FakeScript()
     async with Harness(tmp_path, cfg, script=script) as h:
@@ -404,23 +413,26 @@ async def test_a_failed_sub_agent_call_does_not_discard_the_delivered_answer(tmp
         specs = h.specs(base, arms=("HF",), rungs=(16,), items=_items(base)[:1])
         script.by_node[specs[0].run_key] = [SPAWN_REPLY,                                   # root: delegate
                                             FakeReply(fault=Fault.READ_TIMEOUT),           # solver: ambiguous
-                                            FakeReply(content="<final>43</final>", think_tokens=150)]  # root answers
+                                            FakeReply(content="<final>43</final>", think_tokens=150)]  # never served
         summary = await h.runner.run_specs("main", specs)
     record = next(iter(h.store.scan().values()))
-    assert summary.statuses == {"done": 1} and record.spec.attempt == 1
-    assert record.status == "done" and record.rerun_reason is None
-    assert record.final_message == "<final>43</final>" and record.parse_status == "valid"
-    assert record.final_answer == "43" and record.correct in (True, False)
-    assert record.error and record.error.startswith("upstream_failed:")     # recorded, but not a rerun
-    assert [c.conversation_class for c in record.calls_detail] == ["root", "solver", "root"]
+    first = h.store.scan(include_superseded=True)[specs[0].run_key]
+    assert summary.statuses == {"done": 1} and summary.reruns == 1
+    assert first.status == "transport_failed" and first.rerun_reason == "upstream_latched"
+    assert [c.conversation_class for c in first.calls_detail] == ["root", "solver"] and first.refused_calls == 1
+    assert first.parse_status is None and first.correct is None           # never graded (B7 text kept for audit)
+    assert first.harness_reported["upstream_latch"]["conversation_class"] == "solver"
+    assert len(_upstream_calls(script, specs[0].run_key)) == 2          # the refused root call never went out
+    assert record.spec.attempt == 2 and record.status == "done" and record.parse_status == "valid"
+    assert record.calls_detail[0].granted_max_tokens == record.spec.cap_tokens     # a fresh budget
+    assert h.runner._reruns_used(record.spec) == 0                      # no model rerun consumed
 
 
 @pytest.mark.timeout(600)
-async def test_a_recovered_upstream_402_keeps_the_delivered_answer(tmp_path: Path, base: BaseInputs):
-    """Re-review finding 3: a sub-agent call refused by the account (upstream 402) set the run's error to
-    ``infrastructure_stop: ...`` and nothing cleared it, so a run whose root then DELIVERED an answer was rewritten
-    to transport_failed and re-executed -- the review's own rule (only the last event decides) was violated. The
-    stage still drains (the account refused once: Gate 3's stop rule), but a run that recovered keeps its answer."""
+async def test_a_sub_agent_402_latches_the_run_as_an_infrastructure_stop(tmp_path: Path, base: BaseInputs):
+    """Re-review finding 3 kept a run whose root answered after a sub-agent's account refusal. That answer was the
+    B4 TERMINAL call (the 402 settled the full grant), so under contract §10.38 the refusal latches the run: it
+    stays the last upstream outcome, the run is an infrastructure stop (no model rerun consumed), the stage drains."""
     cfg = _cfg_with_fake_arm()
     script = FakeScript()
     async with Harness(tmp_path, cfg, script=script) as h:
@@ -430,15 +442,16 @@ async def test_a_recovered_upstream_402_keeps_the_delivered_answer(tmp_path: Pat
         specs = h.specs(base, arms=("HF",), rungs=(16,), items=_items(base)[:1])
         script.by_node[specs[0].run_key] = [SPAWN_REPLY,                                   # root: delegate
                                             FakeReply(fault=Fault.PAYMENT_REQUIRED),       # solver: account 402
-                                            FakeReply(content="<final>43</final>", think_tokens=150)]  # root answers
+                                            FakeReply(content="<final>43</final>", think_tokens=150)]  # never served
         summary = await h.runner.run_specs("main", specs)
     record = next(iter(h.store.scan().values()))
-    assert [c.conversation_class for c in record.calls_detail] == ["root", "solver", "root"]
-    assert record.status == "done" and record.rerun_reason is None and record.spec.attempt == 1
-    assert record.final_message == "<final>43</final>" and record.parse_status == "valid"
-    assert str(record.error).startswith("infrastructure_stop:")        # recorded: the account did refuse
-    assert summary.drained is True                                      # ... so the stage stops admitting
+    assert [c.conversation_class for c in record.calls_detail] == ["root", "solver"] and record.refused_calls == 1
+    assert record.status == "transport_failed" and record.rerun_reason == "infrastructure_stop"
+    assert record.spec.attempt == 1 and record.parse_status is None and record.correct is None
+    assert str(record.error).startswith("infrastructure_stop:")
+    assert summary.drained is True
     assert summary_dict(summary, h.stack.ledger)["upstream_402"] is True
+    assert h.runner._rerun_pending(record)
 
 
 @pytest.mark.timeout(600)
@@ -529,7 +542,7 @@ async def test_rerun_rule_transport_error_then_success(tmp_path: Path, base: Bas
     assert record.parse_status == "valid" and summary.reruns == 1
     attempts = [json.loads(l) for l in (h.run_root / "state" / "dynorch_attempts.jsonl").read_text().splitlines()]
     assert [a["status"] for a in attempts] == ["transport_failed", "done"]
-    assert attempts[0]["rerun_reason"] == "last_reply_transport_or_ledger_error" and attempts[0]["spec"]["attempt"] == 1
+    assert attempts[0]["rerun_reason"] == "upstream_latched" and attempts[0]["spec"]["attempt"] == 1
     assert attempts[0]["parse_status"] is None and "upstream_failed" in attempts[0]["error"]
     assert attempts[0]["calls_detail"][0]["transport_status"] != "ok" and attempts[0]["calls"] == 1
     assert attempts[1]["spec"]["run_key"] != attempts[0]["spec"]["run_key"]
@@ -687,3 +700,216 @@ async def test_exhaustion_watchdog_terminates_a_lingering_harness(tmp_path: Path
     assert record.forced_close_kind == "mid_call" and 0 < record.grace_tokens <= cfg["dynorch"]["grace_tokens"]
     assert record.final_message == "<final>3</final>" and record.parse_status == "valid"
     assert record.cli_result_mismatch is True          # the CLI's own result is only a cross-check
+
+
+# ---- contract §10.38: the upstream-failure latch and the infrastructure rerun ------------------------------------
+
+RETRYING = ("--retry-5xx", "1")          # OpenClaude's withRetry with CLAUDE_CODE_MAX_RETRIES=1
+
+
+def _attempt_lines(run_root: Path) -> list[dict[str, Any]]:
+    return [json.loads(l) for l in (run_root / "state" / "dynorch_attempts.jsonl").read_text().splitlines()]
+
+
+def _ledger_ids(run_root: Path) -> list[str]:
+    from agent_allocation.runtime.ledger import journal_attempts
+    return sorted(journal_attempts(run_root / "state" / "ledger_journal.jsonl"))
+
+
+@pytest.mark.timeout(600)
+async def test_an_interrupted_call_retried_by_the_harness_is_refused_and_the_cell_reruns(tmp_path: Path,
+                                                                                      base: BaseInputs):
+    """The live defect end to end: call 1 of attempt 1 gets Parasail's "Stream interrupted" error envelope (full
+    grant settled, 502). The OpenClaude-like harness retries the 502 once; the retry is refused by the latch with no
+    second upstream call (it used to be the B4 TERMINAL call and the run ended ``done``). Attempt 1 is
+    ``transport_failed`` / ``upstream_latched``; attempt 2 runs with the full budget and is the scored record."""
+    cfg = _cfg_with_fake_arm()
+    script = FakeScript()
+    async with Harness(tmp_path, cfg, script=script) as h:
+        h.with_inputs(base)
+        h.runner.adapters["fake"] = FakeAdapter(model=cfg["primary_model"], python=sys.executable,
+                                                extra_args=RETRYING)
+        specs = h.specs(base, arms=("HF",), rungs=(16,), items=_items(base)[:1])
+        a1 = specs[0]
+        script.by_node[a1.run_key] = FakeReply(fault=Fault.STREAM_INTERRUPTED)
+        summary = await h.runner.run_specs("main", specs)
+        a1_stdout = json.loads((h.settings.work_dir(a1) / "stdout").read_text().strip().splitlines()[-1])
+    everything = h.store.scan(include_superseded=True)
+    first, current = everything[a1.run_key], next(iter(h.store.scan().values()))
+    # attempt 1: one upstream call, the harness's retry refused by the latch, never a TERMINAL
+    assert len(_upstream_calls(script, a1.run_key)) == 1 and a1_stdout["retries"] == 1
+    assert a1_stdout["is_error"] is True and "502" in a1_stdout["result"] and "latched" in a1_stdout["result"]
+    assert first.status == "transport_failed" and first.rerun_reason == "upstream_latched"
+    assert first.calls == 1 and first.refused_calls == 1 and first.completion_total == a1.cap_tokens
+    assert [c.forced_close_kind for c in first.calls_detail] == ["none"] and first.grace_tokens == 0
+    assert first.calls_detail[0].transport_status == "error_envelope" and first.calls_detail[0].returned_status == 502
+    assert first.final_message is None and first.parse_status is None and first.correct is None
+    assert first.harness_reported["upstream_latch"]["transport_status"] == "error_envelope"
+    assert Decimal(first.cost_usd) > 0                                   # the charged maximum stays charged
+    # attempt 2: a new run_key, a fresh budget, the scored record; no model rerun consumed
+    assert current.spec.attempt == 2 and current.spec.run_key == h.attempt_key(a1, 2) != a1.run_key
+    assert current.status == "done" and current.rerun_reason is None and current.parse_status == "valid"
+    assert current.calls_detail[0].granted_max_tokens == a1.cap_tokens and current.refused_calls == 0
+    assert summary.reruns == 1 and h.runner._reruns_used(current.spec) == 0
+    ids = _ledger_ids(h.run_root)
+    assert {i.split(":")[0] for i in ids} == {a1.run_key, current.spec.run_key}
+    assert len(ids) == len(set(ids))
+    assert [a["rerun_reason"] for a in _attempt_lines(h.run_root)] == ["upstream_latched", None]
+    from agent_allocation.dynorch import tables as T
+    built = T.build_tables(h.run_root, cfg, stage="main")
+    outcomes = built["policy_outcomes_dynorch"]
+    row = outcomes[outcomes["item_id"] == a1.item_id].iloc[0]
+    assert row["selected_candidate_id"] == current.spec.run_key and row["delivered_state"] == "delivered"
+    costs = built["policy_costs_dynorch"]
+    assert Decimal(costs.iloc[0]["retry_cost_usd"]) == Decimal(first.cost_usd)
+
+
+@pytest.mark.timeout(600)
+async def test_h0_interruption_is_an_infrastructure_rerun_too(tmp_path: Path, base: BaseInputs):
+    """H0 never retries: its interrupted call was already ``transport_failed``. Under §10.38 it is the same
+    ``upstream_latched`` infrastructure rerun as the harness arms (the arms are treated alike), so it consumes no
+    model rerun either."""
+    cfg = _cfg_with_fake_arm()
+    script = FakeScript()
+    async with Harness(tmp_path, cfg, script=script) as h:
+        h.with_inputs(base)
+        specs = h.specs(base, arms=("H0",), rungs=(8,), items=_items(base)[:1])
+        a1 = specs[0]
+        script.by_node[a1.run_key] = FakeReply(fault=Fault.STREAM_INTERRUPTED)
+        summary = await h.runner.run_specs("main", specs)
+    first = h.store.scan(include_superseded=True)[a1.run_key]
+    current = next(iter(h.store.scan().values()))
+    assert len(_upstream_calls(script, a1.run_key)) == 1
+    assert first.status == "transport_failed" and first.rerun_reason == "upstream_latched" and first.calls == 1
+    assert current.spec.attempt == 2 and current.status == "done" and current.parse_status == "valid"
+    assert current.calls_detail[0].granted_max_tokens == a1.cap_tokens
+    assert summary.reruns == 1 and h.runner._reruns_used(current.spec) == 0
+
+
+@pytest.mark.timeout(600)
+async def test_infrastructure_reruns_are_bounded_and_leave_nan(tmp_path: Path, base: BaseInputs):
+    """A provider that interrupts every call: the cell is re-executed ``max_infra_reruns`` times (never counted as
+    model reruns), then stays ``transport_failed`` with y = NaN."""
+    cfg = _cfg_with_fake_arm()
+    script = FakeScript()
+    script.default = FakeReply(fault=Fault.STREAM_INTERRUPTED)
+    async with Harness(tmp_path, cfg, script=script, max_infra_reruns=2) as h:
+        h.with_inputs(base)
+        h.runner.adapters["fake"] = FakeAdapter(model=cfg["primary_model"], python=sys.executable,
+                                                extra_args=RETRYING)
+        specs = h.specs(base, arms=("HF",), rungs=(4,), items=_items(base)[:1])
+        summary = await h.runner.run_specs("main", specs)
+    record = next(iter(h.store.scan().values()))
+    assert record.spec.attempt == 3 and record.status == "transport_failed" and record.rerun_reason == "upstream_latched"
+    assert not h.runner._rerun_pending(record) and h.runner._reruns_used(record.spec) == 0
+    assert len(script.text_completion_calls()) == 3                     # one per attempt, every retry refused
+    from agent_allocation.dynorch.grade import delivered_state, outcome_y
+    assert delivered_state(record) == "unknown" and math.isnan(outcome_y(record))
+    assert [a["rerun_reason"] for a in _attempt_lines(h.run_root)] == ["upstream_latched"] * 3
+    assert summary.reruns == 1                                           # the final record is a rerun
+
+
+@pytest.mark.timeout(600)
+async def test_kill_and_resume_after_an_interruption(tmp_path: Path, base: BaseInputs):
+    """The drain arrives while the interrupted call is being served: the latched attempt is not rerun in-job, the
+    stage drains, and the next ``--resume`` re-executes the cell as attempt 2 / generation 2 with a full budget,
+    fresh ledger ids and no model rerun consumed."""
+    cfg = _cfg_with_fake_arm()
+    script = FakeScript()
+    async with Harness(tmp_path, cfg, script=script, concurrency=1) as h:
+        h.with_inputs(base)
+        h.runner.adapters["fake"] = FakeAdapter(model=cfg["primary_model"], python=sys.executable,
+                                                extra_args=RETRYING)
+        specs = h.specs(base, arms=("HF",), rungs=(4,))
+        victim = specs[0]
+
+        def hook(call):
+            if call.coordinates.get("run_key") == victim.run_key:
+                h.runner.request_drain()                   # the Slurm drain signal, mid-call
+                return FakeReply(fault=Fault.STREAM_INTERRUPTED)
+            return None
+
+        script.hook = hook
+        summary = await h.runner.run_specs("main", specs)
+        assert summary.drained is True
+        records = h.store.scan()
+        assert len(records) == 1                                         # nothing else was admitted
+        stopped = records[victim.run_key]
+        assert stopped.status == "transport_failed" and stopped.rerun_reason == "upstream_latched"
+        assert stopped.spec.attempt == 1 and stopped.refused_calls == 1
+        assert h.runner._rerun_pending(stopped) and h.runner._attempts_left(stopped)
+    script.hook = None
+    async with Harness(tmp_path, cfg, script=script, concurrency=1) as h2:
+        h2.with_inputs(base)
+        assert h2.stack.ledger.snapshot().unresolved == 0
+        summary2 = await h2.runner.run_specs("main", specs, resume=True)
+    assert summary2.executed == 3 and not summary2.drained
+    records = h2.store.scan()
+    assert len(records) == 3 and all(r.status == "done" for r in records.values())
+    resumed = next(r for r in records.values() if r.spec.item_id == victim.item_id)
+    assert resumed.spec.attempt == 2 and resumed.spec.generation == 2
+    assert resumed.spec.run_key == h2.attempt_key(victim, 2)
+    assert resumed.calls_detail[0].granted_max_tokens == victim.cap_tokens
+    assert h2.runner._reruns_used(resumed.spec) == 0
+    ids = _ledger_ids(h2.run_root)
+    assert len(ids) == len(set(ids)) and any(i.startswith(f"{resumed.spec.run_key}:g2:") for i in ids)
+
+
+FIXTURE_ROOT = PROJECT / "tests" / "fixtures" / "dynorch" / "infra_invalidation" / "run_root"
+
+
+@pytest.mark.timeout(900)
+async def test_invalidated_cells_are_re_executed_by_resume(tmp_path: Path, base: BaseInputs):
+    """Task 3 end to end on the REAL journaled examples (copied read-only from the main run root): the three H1
+    cells that ended ``done`` on a TERMINAL answer after an upstream failure are invalidated, and ``--resume``
+    re-executes exactly them as attempt 2 (new run_key, generation + 1, full budget, no model rerun consumed); the
+    clean cells in the fixture (an H1 done, an H0 whose transport failure was already rerun) are skipped."""
+    import shutil
+    from agent_allocation.dynorch import tables as T
+    from agent_allocation.dynorch.invalidate import invalidate_stage
+    from agent_allocation.paths import RunPaths
+
+    cfg = _cfg_with_fake_arm()
+    run_root = tmp_path / "run_root"
+    shutil.copytree(FIXTURE_ROOT, run_root)
+    report = invalidate_stage(RunPaths.for_run(run_root), "main", reason="pre-latch upstream failure (test)")
+    invalid = sorted(c["cell"] for c in report["cells"])
+    assert invalid == ["H1/16/r1/omni_math_hard/1257@a1", "H1/16/r1/omni_math_hard/3907@a1",
+                       "H1/25/r1/aime/2026/23@a1"]
+    script = FakeScript()
+    async with Harness(tmp_path, cfg, script=script, concurrency=2) as h:
+        h.with_inputs(base)
+        h.runner.adapters["openclaude"] = FakeAdapter(model=cfg["primary_model"], python=sys.executable,
+                                                      extra_args=RETRYING)
+        specs = (h.specs(base, arms=("H1",), rungs=(16,),
+                         items=["omni_math_hard/3907", "omni_math_hard/1257", "aime/2025/28"])
+                 + h.specs(base, arms=("H1",), rungs=(25,), items=["aime/2026/23"])
+                 + h.specs(base, arms=("H0",), rungs=(4,), items=["omni_math_hard/1257"]))
+        originals = {(s.arm, s.rung, s.item_id): s.run_key for s in specs}
+        summary = await h.runner.run_specs("main", specs, resume=True)
+    assert summary.executed == 3 and summary.skipped == 2 and not summary.drained
+    records = {(r.spec.arm, r.spec.rung, r.spec.item_id): r for r in h.store.scan().values()}
+    everything = h.store.scan(include_superseded=True)
+    for key in [("H1", 16, "omni_math_hard/3907"), ("H1", 16, "omni_math_hard/1257"), ("H1", 25, "aime/2026/23")]:
+        record, old = records[key], everything[originals[key]]
+        assert old.status == "transport_failed" and old.rerun_reason == "infra_invalidated"
+        assert old.harness_reported["infra_invalidation"]["original"]["status"] == "done"
+        assert record.spec.attempt == 2 and record.spec.generation == old.spec.generation + 1
+        assert record.spec.run_key == run_key_for(str(cfg["study_id"]), "main", "H1", key[2], key[1], 1, 2)
+        assert record.status == "done" and record.parse_status == "valid" and record.rerun_reason is None
+        assert record.calls_detail[0].granted_max_tokens == record.spec.cap_tokens     # full budget
+        assert [c.forced_close_kind for c in record.calls_detail] == ["none"]
+        assert h.runner._reruns_used(record.spec) == 0                  # an infrastructure rerun
+    for key in [("H1", 16, "aime/2025/28"), ("H0", 4, "omni_math_hard/1257")]:
+        assert records[key].spec.run_key == json.loads(
+            (FIXTURE_ROOT / "runs" / "main" / key[0] / str(key[1]) / "1"
+             / (key[2].replace("/", "__") + ".json")).read_text())["spec"]["run_key"]
+    ids = _ledger_ids(h.run_root)
+    assert len(ids) == len(set(ids)) and all(i.split(":")[1] == "g2" for i in ids)
+    built = T.build_tables(h.run_root, cfg, stage="main")
+    outcomes = built["policy_outcomes_dynorch"]
+    for key in [("H1", 16, "omni_math_hard/3907"), ("H1", 25, "aime/2026/23")]:
+        row = outcomes[(outcomes["item_id"] == key[2]) & (outcomes["name"] == f"H1/{key[1]}")].iloc[0]
+        assert row["selected_candidate_id"] == records[key].spec.run_key
+    decisions = [json.loads(l) for l in (h.run_root / "state" / "run_decisions.jsonl").read_text().splitlines()]
+    assert [d["kind"] for d in decisions] == ["infra_invalidation"] and len(decisions[0]["cells"]) == 3

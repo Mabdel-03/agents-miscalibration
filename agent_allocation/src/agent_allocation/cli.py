@@ -31,6 +31,7 @@ VERBS: dict[str, str] = {
     "dynorch-gates": "agent_allocation.dynorch.cli:cmd_dynorch_gates",
     "dynorch-reconcile": "agent_allocation.dynorch.cli:cmd_dynorch_reconcile",
     "dynorch-doctor": "agent_allocation.dynorch.cli:cmd_dynorch_doctor",
+    "dynorch-invalidate": "agent_allocation.dynorch.cli:cmd_dynorch_invalidate",
 }
 EXIT_BLOCKED = 2
 

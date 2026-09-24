@@ -90,6 +90,25 @@ execution generation (same run keys and pre-registration, new ledger attempt ids
 reconciliation. A filtered launch (`RUN_FLAGS="--arms ..."`) re-executes a subset now; later launches of the stage run
 the rest under the same generation. `SUPERSEDE_REASON` must not contain a comma.
 
+### Re-executing cells scored after an upstream failure (`dynorch-invalidate`, contract §10.38)
+
+Records completed before the upstream-failure latch whose attempt had an upstream failure and still ended as a model
+outcome (the harness retried the 502 into the B4 TERMINAL call) are invalidated AFTER the stage's job has ended, then
+re-executed by the next resume:
+```bash
+$A dynorch-invalidate --config $CFG --run-dir $RUN --stage main --dry-run \
+    --reason "pre-latch upstream failure answered by a TERMINAL call (contract 10.38)"     # lists, moves nothing
+$A dynorch-invalidate --config $CFG --run-dir $RUN --stage main \
+    --reason "pre-latch upstream failure answered by a TERMINAL call (contract 10.38)"
+slurm/launch_dynorch_v1.sh run                                 # --resume re-executes exactly those cells
+```
+It refuses while a record of the stage is `running`, a ledger attempt of the stage is open or `state/status.json`
+says the stage is running (`--ignore-status-file` drops only that last check, for a job Slurm killed before it could
+rewrite `status.json`). Each record is copied verbatim to `superseded_executions/<S>/infra_invalidation_<utc>/`
+(`INVALIDATION.json` lists the cells and their evidence), moved to `runs_superseded/` as `transport_failed` /
+`infra_invalidated`, and a `kind=infra_invalidation` decision is recorded. The ledger journal, `locks/`, the plan
+manifest, `raw/` and other stages are never touched; the invalidated dollars stay in `retry_cost_usd`.
+
 ## 2. Gate 2 — pilot (≤ $7 allowance, plan expects ≈ $4)
 
 ```bash

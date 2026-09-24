@@ -353,3 +353,49 @@ async def test_a_stop_attempt_never_counts_against_the_rerun_cap(tmp_path: Path)
                            error="x"))
     runner2 = make_runner(FakeCore({}), make_settings(run_root=tmp_path / "plain", max_reruns=2), store=plain)
     assert not runner2._rerun_pending(plain.load(specs[2]))
+
+
+async def test_an_upstream_latch_is_an_infrastructure_rerun_bounded_on_its_own(tmp_path: Path):
+    """Contract §10.38: ``upstream_latched`` / ``infra_invalidated`` attempts consume none of the frozen ``<= 2``
+    model reruns; they are bounded by ``max_infra_reruns`` instead."""
+    from agent_allocation.dynorch.journal import RunStore
+
+    store = RunStore(tmp_path)
+    base_spec = make_spec(rung=4, partition="main")
+    specs = [dataclasses.replace(base_spec, attempt=n, generation=n, run_key=f"{base_spec.run_key}a{n}")
+             for n in (1, 2, 3, 4)]
+    reasons = ["upstream_latched", "last_reply_transport_or_ledger_error", "infra_invalidated", "upstream_latched"]
+    for spec, reason in zip(specs, reasons):
+        store.archive_previous(spec)
+        store.save(_record(spec, status="transport_failed", rerun_reason=reason, error="x"))
+    runner = make_runner(FakeCore({}), make_settings(run_root=tmp_path, max_reruns=2, max_infra_reruns=3),
+                         store=store)
+    current = store.load(specs[3])
+    assert runner._reruns_used(current.spec) == 1                      # only a2 was a model rerun
+    assert runner._earlier_attempts(current.spec, runnermod.INFRA_RERUN_REASONS) == 2
+    assert runner._rerun_pending(current) and runner._attempts_left(current)          # a third infra rerun left
+    tight = make_runner(FakeCore({}), make_settings(run_root=tmp_path, max_reruns=2, max_infra_reruns=2),
+                        store=store)
+    assert not tight._rerun_pending(current) and not tight._attempts_left(current)
+
+
+async def test_a_cell_whose_record_was_moved_aside_continues_from_its_highest_attempt(tmp_path: Path):
+    """Contract §10.38: ``dynorch-invalidate`` leaves a cell with no ``runs/`` record; the runner must continue its
+    attempt numbering from ``runs_superseded/`` (attempt 1 again would collide with the journal and ledger ids)."""
+    from agent_allocation.dynorch.journal import RunStore
+    from agent_allocation.storage._atomic import replace_atomic
+    from agent_allocation.dynorch.records import to_json
+    import json
+
+    store = RunStore(tmp_path)
+    base_spec = make_spec(rung=4, partition="main")
+    a1 = _record(base_spec, status="transport_failed", rerun_reason="infra_invalidated", error="x")
+    replace_atomic(store.superseded_path(base_spec), json.dumps(to_json(a1)).encode())
+    other = dataclasses.replace(base_spec, item_id="aime/2025/2", run_key="other")
+    store.save(_record(other, status="done", rerun_reason=None, error=None))
+    runner = make_runner(FakeCore({}), make_settings(run_root=tmp_path), store=store)
+    existing = runner._existing_by_cell()
+    assert existing[runnermod._cell_key(base_spec)].spec.run_key == base_spec.run_key
+    assert existing[runnermod._cell_key(other)].status == "done"
+    nxt = runner._next_attempt(existing[runnermod._cell_key(base_spec)], resume=True)
+    assert nxt.attempt == 2 and nxt.generation == base_spec.generation + 1 and nxt.run_key != base_spec.run_key

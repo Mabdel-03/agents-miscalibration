@@ -853,6 +853,39 @@ def cmd_dynorch_gates(argv: list[str]) -> int:
     return gates.exit_code(result)
 
 
+def cmd_dynorch_invalidate(argv: list[str]) -> int:
+    """``allocation dynorch-invalidate --config CFG --run-dir RUN --stage S --reason "<text>" [--dry-run]`` (contract
+    §10.38): move the stage's current records that ended as a model outcome after an upstream failure to
+    ``runs_superseded/`` as ``transport_failed`` / ``infra_invalidated``, so the next ``dynorch-run --resume``
+    re-executes them as infrastructure reruns. ``--dry-run`` lists the cells (and what would block a real run) and
+    moves nothing. Never touches the ledger journal, ``locks/``, the plan manifest, ``raw/`` or another stage."""
+    parser = argparse.ArgumentParser(prog="allocation dynorch-invalidate")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--run-dir", required=True)
+    parser.add_argument("--stage", required=True, choices=STAGES)
+    parser.add_argument("--reason", required=True)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--ignore-status-file", action="store_true",
+                        help="do not treat state/status.json 'running' as a live job (Slurm killed it outright); "
+                             "running records and open ledger attempts still refuse")
+    args = parser.parse_args(argv)
+    from agent_allocation.config import load_config
+    from agent_allocation.dynorch.invalidate import InvalidateRefused, invalidate_stage
+    cfg = load_config(args.config)
+    if str(Path(args.run_dir).resolve()) == str(Path(cfg["base_run_root"]).resolve()):
+        print("refused: the sealed base run root is read-only", file=sys.stderr)
+        return EXIT_STOP
+    paths = RunPaths.for_run(args.run_dir)
+    try:
+        report = invalidate_stage(paths, args.stage, reason=args.reason, dry_run=bool(args.dry_run),
+                                  ignore_status_file=bool(args.ignore_status_file))
+    except InvalidateRefused as exc:
+        print(f"refused: {redact(str(exc))}", file=sys.stderr)
+        return EXIT_STOP
+    _print(report)
+    return EXIT_OK
+
+
 def cmd_dynorch_reconcile(argv: list[str]) -> int:
     from agent_allocation.dynorch.reconcile import cmd_dynorch_reconcile as impl
     return impl(argv)

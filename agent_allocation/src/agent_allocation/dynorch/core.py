@@ -24,6 +24,15 @@ Accounting: ``completion_total`` counts THINK completion tokens of every served 
 (``grace_tokens``) is outside C; a forced-close pair is counted once (THINK + ANSWER) both on the reply's usage and
 on the run record. The delivered answer (B7) is the last root-conversation assistant message with non-empty content
 served by the proxy (``close_run`` fills ``final_message`` / ``final_source``).
+
+The upstream-failure latch (contract §10.38): the first ``UpstreamFailed`` of a run -- an ambiguous outcome, an error
+envelope (a provider's "Stream interrupted" mid-generation), a 5xx after the upstream retries, ``forced_think_short``,
+an account refusal, on a root or a sub-agent call -- LATCHES the run. B2 settles that call's full grant, so a harness
+that retried the 502 (OpenClaude's ``withRetry``, Codex's ``request_max_retries``) used to find ``remaining < 64`` and
+got the B4 TERMINAL call: a no-thinking answer scored as a model outcome of an infrastructure failure. Once latched,
+every later call of the run is refused ``upstream_failed`` (502) under the run's lock, before any grant, with no
+upstream call and no cost; the runner closes a latched run ``transport_failed`` / ``upstream_latched`` (an
+infrastructure rerun: fresh run_key, fresh budget, no model rerun consumed).
 """
 from __future__ import annotations
 
@@ -151,6 +160,9 @@ class _RunState:
     infrastructure_stop: bool = False
     #: the runner saw the harness process exit (contract §10.33): no new call of this run is admitted upstream
     harness_exited: bool = False
+    #: contract §10.38: set by the run's first ``UpstreamFailed`` (what failed, on which call); from then on every
+    #: call of the run is refused ``upstream_failed`` before any grant -- the run is an infrastructure failure
+    upstream_latch: dict[str, Any] | None = None
 
 
 class ProxyCore:
@@ -295,7 +307,14 @@ class ProxyCore:
         # + in_flight / idle_seconds (B4); infrastructure_stop (0/1): the run's LAST upstream outcome was an account
         # refusal (upstream 402/401) -- cleared by any later served reply (re-review finding 3, contract §10.31)
         return {**budget.view(), "exhausted": int(budget.grace_used),
-                "infrastructure_stop": int(state.infrastructure_stop)}
+                "infrastructure_stop": int(state.infrastructure_stop),
+                "upstream_latched": int(state.upstream_latch is not None)}
+
+    def upstream_latch(self, run_key: str) -> dict[str, Any] | None:
+        """Contract §10.38: what latched the run (``call_no``, ``conversation_class``, ``transport_status``,
+        ``detail``, ``infrastructure_stop``, ``refused_after``), or ``None`` when no upstream call of it failed."""
+        latch = self._state(run_key, allow_closed=True).upstream_latch
+        return None if latch is None else dict(latch)
 
     def _state(self, run_key: str, *, allow_closed: bool = False) -> _RunState:
         state = self._runs.get(run_key)
@@ -420,6 +439,11 @@ class ProxyCore:
                 # the run's lock -- nothing is minted, nothing goes upstream, nobody is listening
                 raise ProxyError.of("run_closed", f"run {run_key}: the harness has exited; no further call is served"
                                     if state.harness_exited else f"run {run_key} is closed")
+            if state.upstream_latch is not None:
+                # contract §10.38: an upstream failure already settled a full grant of this run; serving the
+                # harness's retry would hand it the B4 TERMINAL call and score an infrastructure failure as a model
+                # outcome. Refused here, under the lock and before anything is minted, reserved or sent.
+                self._refuse_latched(state)
             messages, reinjection, hits, misses = self._reinject(state, request.messages)
             effort = template_effort(request.requested_reasoning_effort, configured=self.settings.reasoning_effort)
             prompt = render_chat(messages, tools=request.tools, reasoning_effort=effort)
@@ -477,6 +501,17 @@ class ProxyCore:
             record.guard_triggered = True
         self._save(state)
         raise ProxyError.of(code, message)
+
+    def _refuse_latched(self, state: _RunState) -> None:
+        latch = state.upstream_latch or {}
+        latch["refused_after"] = int(latch.get("refused_after", 0)) + 1
+        state.record.refused_calls += 1
+        self._save(state)
+        raise ProxyError.of(
+            "upstream_failed",
+            f"run {state.spec.run_key} is latched: upstream call {latch.get('call_no')} "
+            f"({latch.get('conversation_class')}) failed ({latch.get('transport_status')}); no further call of this "
+            f"run is served -- it is an infrastructure failure and the cell is re-executed (contract §10.38)")
 
     def _serve_duplicate(self, state: _RunState, cached: ChatReply, conv_key: str, conv_class: str,
                          request: ChatRequest, waited: float) -> ChatReply:
@@ -918,5 +953,10 @@ class ProxyCore:
         if failed is not None and failed.infrastructure_stop:
             state.infrastructure_stop = True
             run.error = f"infrastructure_stop: {detail}"
+        if failed is not None and state.upstream_latch is None:
+            # contract §10.38: the run is latched from here on (see ``chat``); the first failure is what is kept
+            state.upstream_latch = {"call_no": int(grant.call_no), "conversation_class": conv_class,
+                                    "transport_status": transport, "detail": str(detail)[:500],
+                                    "infrastructure_stop": bool(failed.infrastructure_stop), "refused_after": 0}
         self._refresh(state)
         self._save(state)
