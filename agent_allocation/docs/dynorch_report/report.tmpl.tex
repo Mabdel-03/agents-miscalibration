@@ -228,6 +228,7 @@ run and ladder rows share a provider.}
 
 \subsection{Repeat agreement}
 
+%%IF repeat_agreement.available
 Extension E1 re-ran every H1 and H3 core cell once more ({{repeat_agreement.runs|d}} runs,
 {{repeat_agreement.spend_usd|$}}; \texttt{tables/repeat\_agreement.csv}). The second repeat behaved like the first:
 {{repeat_agreement.spawn_runs|d}} of {{repeat_agreement.runs|d}} runs spawned a sub-agent and
@@ -246,6 +247,9 @@ scored {{repeat_agreement.cells.H1/16.acc_r2|3}} (H1/16) and {{repeat_agreement.
 the harness's own pass@2 at $16A$, correct in either repeat, which spends twice the budget and needs an oracle to
 pick, is {{repeat_agreement.cells.H1/16.pass2|3}} (H1) and {{repeat_agreement.cells.H3/16.pass2|3}} (H3), below
 deep/16 at {{headline.deep16|3}}.
+%%ELSE
+No second repeat (E1) in this run.
+%%ENDIF
 
 \begin{figure}[htbp]
 \centering
@@ -352,9 +356,12 @@ perfect selector over the samples of sample/16 would.
 \paragraph{Scope.} One model ({{design.model|s}}); {{n_items|d}} items on {{design.n_benchmarks|d}} hard math and
 science benchmarks; orchestration-only tools (no code execution, no search); one realisation per cell.
 Orchestration itself was not exercised, so this does not show that orchestration is useless. It shows that these
-two harnesses, as shipped, did not choose to orchestrate this model on these tasks. Section~\ref{sec:e0} tests
-whether forcing the root to stop early makes it delegate.
+two harnesses, as shipped, did not choose to orchestrate this model on these tasks.
+%%IF e0.present
+Section~\ref{sec:e0} tests whether forcing the root to stop early makes it delegate.
+%%ENDIF
 
+%%IF e0.present
 \section{Extension E0: capping the orchestrator's own calls}\label{sec:e0}
 
 In the core, both harnesses almost always answered in one long call and never delegated. E0 takes away the
@@ -411,6 +418,7 @@ the harnesses were pushed to split the work, they mostly turned the budget they 
 and the delegation they did perform did not recover the lost depth. E0 strengthens the core reading: for this
 model at these budgets, the rule ``one deep call, forced to the budget'' is not beaten by dynamic orchestration,
 capped or uncapped.
+%%ENDIF
 
 \section{What to do with this}
 

@@ -689,3 +689,14 @@ were given. E1's full-block admission ($72.46 with the 1.25 multiplier) was then
 under the $95 ceiling, although every single rung fits. The admission now forecasts exactly the restricted cells,
 with the same 1.25 multiplier, the same $95 ceiling and the same ledger. An unmatched restriction is refused.
 Neither the ceiling nor the forecast model changed.
+
+**10.44 E2's Codex arm (H3n) allows `update_plan` (lead, 2026-09-24, before any E2 run).** The config gave H3n
+`allowed_tools: []`, but Codex offers `update_plan` whatever `[agents]` says. The proxy's fail-closed tool surface
+(plan §5) would therefore have refused every H3n request with 400 `tool_surface_violation`. The adapter unit test
+already assumed `("update_plan",)`; only a real-CLI run shows the conflict, and E2 had no real-CLI smoke until now.
+H3n is now `["update_plan"]`, which is H3's surface without the `multi_agent_v1` namespace; that is the plan's "H3
+with `agents.enabled = false`". H1n stays `[]` (`--tools ""`). The new `tests/integration/test_dynorch_e2_smoke.py`
+runs both real CLIs through the proxy over the fake upstream. It checks that no spawn tool is offered, that nothing
+is refused, and that a direct answer ends the run graded. No E2 cell had run.
+The report renderer also gained line blocks (`%%IF path` / `%%ELSE` / `%%ENDIF`), so extension sections render only
+when their stage is sealed.

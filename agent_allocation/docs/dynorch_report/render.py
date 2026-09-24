@@ -57,9 +57,42 @@ def fmt(v: Any, spec: str | None) -> str:
     return f"{float(v):.{int(spec)}f}"
 
 
+def conditional_blocks(template: str, N: Any) -> str:
+    """Keep or drop line blocks ``%%IF path`` ... [``%%ELSE``] ... ``%%ENDIF`` (not nested) by the truth of
+    ``resolve(N, path)``; a missing path is false. Extension sections render only when their stage was sealed."""
+    out: list[str] = []
+    state: bool | None = None
+    for line in template.splitlines(keepends=True):
+        head = line.strip()
+        if head.startswith("%%IF "):
+            if state is not None:
+                raise RenderError(f"nested %%IF: {head}")
+            try:
+                state = bool(resolve(N, head[5:].strip()))
+            except KeyError:
+                state = False
+            continue
+        if head == "%%ELSE":
+            if state is None:
+                raise RenderError("%%ELSE without %%IF")
+            state = not state
+            continue
+        if head == "%%ENDIF":
+            if state is None:
+                raise RenderError("%%ENDIF without %%IF")
+            state = None
+            continue
+        if state is None or state:
+            out.append(line)
+    if state is not None:
+        raise RenderError("unterminated %%IF")
+    return "".join(out)
+
+
 def render_text(template: str, N: Any) -> str:
     """Fill every placeholder of ``template`` from ``N``; raise ``RenderError`` listing every failure."""
     errors: list[str] = []
+    template = conditional_blocks(template, N)
 
     def sub(m):
         try:

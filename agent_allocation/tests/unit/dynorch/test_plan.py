@@ -137,7 +137,9 @@ def test_extension_stages(cfg, base):
     assert not ({s.run_key for s in e1} & {s.run_key for s in plan_stage(cfg, "main", base)})
     e2 = plan_stage(cfg, "ext_e2", base)
     assert Counter(s.arm for s in e2) == {"H1n": 192, "H3n": 192}
-    assert all(s.spawn_tools == () and s.allowed_tools == () for s in e2)
+    assert all(s.spawn_tools == () for s in e2)
+    # contract §10.44: Codex always offers update_plan, so H3n's fail-closed surface must admit it
+    assert {s.allowed_tools for s in e2 if s.arm == "H1n"} == {()} and {s.allowed_tools for s in e2 if s.arm == "H3n"} == {("update_plan",)}
     e3 = plan_stage(cfg, "ext_e3", base)
     assert Counter(s.arm for s in e3) == {"H2": 192} and e3[0].harness == "openclaw"
     assert e3[0].spawn_tools == ("sessions_spawn",) and e3[0].allowed_tools == ALLOWED_TOOLS_BY_HARNESS["openclaw"]

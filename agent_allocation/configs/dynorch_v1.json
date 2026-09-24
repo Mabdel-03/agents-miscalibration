@@ -333,7 +333,9 @@
     "harness": "codex",
     "spawn_tools": [],
     "spawning_disabled": true,
-    "allowed_tools": []
+    "allowed_tools": [
+     "update_plan"
+    ]
    },
    "H2": {
     "harness": "openclaw",

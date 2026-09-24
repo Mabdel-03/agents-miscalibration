@@ -310,7 +310,8 @@ class SmokeStack:
         return probe
 
     def specs(self, base: BaseInputs, *, arm: str, rung: int, items: Sequence[str], stage: str = "main") -> list[RunSpec]:
-        harness = str(CFG["dynorch"]["arms"][arm]["harness"])
+        from agent_allocation.dynorch.plan import arm_config
+        harness = str(arm_config(CFG, arm)["harness"])  # core or extension arm
         versions = {harness: self.adapters[harness].version()}
         return plan_runs(CFG, stage=stage, arms=[arm], rungs=[rung], repeats=[1], items=list(items), base=base,
                          proxy_version=self.core.proxy_version, harness_versions=versions)
