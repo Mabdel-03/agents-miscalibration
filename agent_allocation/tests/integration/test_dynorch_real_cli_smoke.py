@@ -11,8 +11,10 @@ Gate 0 list are covered by the fake-harness e2e; a scripted spawn through the re
 script to be reachable from the verb, which ``--rehearsal`` does not offer (open issue).
 
 Skipped when a binary is absent. Marked ``slow`` (each case takes ~10-20 s plus the version probes).
-Set ``DYNORCH_GATE0_SMOKE_OUT=<run_root>/gates/gate0_smoke.json`` to have the passing report written there
-(``{passed, failures, cases}``; ``dynorch-gates --gate 0`` reads it).
+Set ``DYNORCH_GATE0_SMOKE_OUT=<run_root>/gates/gate0_smoke.json`` to have the report written there
+(``{passed, failures, cases}``; ``dynorch-gates --gate 0`` reads it). The scripted-spawn, 402, cut-stream,
+timeout, rung-25 and long-delay items of the Gate 0 list are covered by ``test_dynorch_openclaude_smoke.py`` and
+``test_dynorch_codex_smoke.py`` (WP-E), which merge their cases into the same report.
 """
 from __future__ import annotations
 
@@ -104,17 +106,16 @@ def _journaled_requests(paths: RunPaths) -> list[dict[str, Any]]:
 
 
 def _record(arm: str, checks: dict[str, bool]) -> None:
+    """Merge this case into ``$DYNORCH_GATE0_SMOKE_OUT`` through the shared writer (the OpenClaude / Codex smoke
+    modules write the same file; ``passed`` / ``failures`` are re-derived over every case recorded so far)."""
+    from tests.integration.dynorch_smoke_support import record_case
+
     _REPORT["cases"][arm] = checks
     for name, ok in checks.items():
         if not ok:
             _REPORT["passed"] = False
             _REPORT["failures"].append(f"{arm}: {name}")
-    out = os.environ.get("DYNORCH_GATE0_SMOKE_OUT")
-    if out:
-        target = Path(out)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps({**_REPORT, "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
-                                     indent=1, sort_keys=True))
+    record_case(f"canary_rehearsal/{arm}", checks)
 
 
 @pytest.mark.slow
