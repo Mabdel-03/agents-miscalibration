@@ -96,16 +96,25 @@ class CodexAdapter:
     _version_cache: dict[str, str] = {}
 
     def __init__(self, *, model: str, prefix: str, wall_base: int = 600, wall_per_rung: int = 120,
-                 binary: str | None = None, sigkill_after: int = 30) -> None:
+                 binary: str | None = None, sigkill_after: int = 30, timeout_margin_seconds: int = 60) -> None:
         self.model = model
         self.prefix = Path(prefix)
         self.binary = binary or str(self.prefix / "bin" / "codex")
         self.wall_base = int(wall_base)
         self.wall_per_rung = int(wall_per_rung)
         self.sigkill_after = int(sigkill_after)
+        #: how far the outer ``timeout`` sits BEHIND the runner's own wall (review major 6): `timeout` starts
+        #: counting before the runner's timer does, so an equal deadline always fired first and the run was
+        #: recorded ``done`` (harness_exit_code 124) instead of ``timeout`` -- Gate 2's timeout_share and the
+        #: Gate 3 stop rule were blind for H3. The wrapper stays as the backstop that kills the whole tree.
+        self.timeout_margin_seconds = int(timeout_margin_seconds)
 
     def wall_seconds(self, spec: RunSpec) -> int:
         return self.wall_base + self.wall_per_rung * spec.rung
+
+    def outer_timeout_seconds(self, spec: RunSpec) -> int:
+        """The ``timeout`` wrapper's deadline: the runner's wall plus its SIGTERM->SIGKILL window and a margin."""
+        return self.wall_seconds(spec) + self.sigkill_after + self.timeout_margin_seconds
 
     @staticmethod
     def codex_home(work: Path) -> Path:
@@ -128,8 +137,8 @@ class CodexAdapter:
         home = self.codex_home(wd.root)
         if not home.is_dir():
             raise FileNotFoundError(f"CODEX_HOME {home} must be pre-created by prepare()")
-        wall = self.wall_seconds(spec)
-        argv = ("timeout", f"--kill-after={self.sigkill_after}s", f"{wall}s", self.binary, "exec", "--json",
+        argv = ("timeout", f"--kill-after={self.sigkill_after}s", f"{self.outer_timeout_seconds(spec)}s",
+                self.binary, "exec", "--json",
                 "--ephemeral", "--strict-config", "--skip-git-repo-check", "-C", str(wd.ws), "-s", "read-only",
                 "-o", str(wd.root / "final.txt"), "-")
         env = harness_env(default_base_env(), work=wd.root, proxy_base_url=proxy_base_url, run_key=spec.run_key,

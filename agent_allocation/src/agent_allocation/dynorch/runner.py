@@ -80,6 +80,8 @@ RERUN_REASONS: tuple[str, ...] = ("zero_proxy_calls_served", "last_reply_transpo
 #: bounds reruns of runs the model actually served); the cell is re-executed by the next ``--resume``.
 INFRASTRUCTURE_STOP = "infrastructure_stop"
 TRANSPORT_ERROR_CODES: frozenset[str] = frozenset({"upstream_failed", "ledger_refused", "internal_error"})
+#: GNU ``timeout``'s own exit codes: 124 = the deadline fired, 137 = the child was SIGKILLed by ``--kill-after``.
+TIMEOUT_EXIT_CODES: frozenset[int] = frozenset({124, 137})
 _PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 scrubbed_env = harness_env
 
@@ -580,6 +582,12 @@ class Runner:
             if proc.returncode is None:
                 await _terminate(proc, settings.sigkill_after)
         killed_by_drain = spec.run_key in self._drain_killed and not timed_out and not exhausted_kill
+        if proc.returncode in TIMEOUT_EXIT_CODES and not timed_out and not exhausted_kill and not killed_by_drain:
+            # a `timeout`-wrapped argv (Codex) reports 124 for its own deadline and 137 for its kill-after SIGKILL:
+            # the wall was reached, so the run is a timeout, not a `done` counted in valid_final_share (major 6)
+            log.warning("dynorch runner: %s exited %d: the harness's own timeout wrapper fired", spec.run_key,
+                        proc.returncode)
+            timed_out = True
         return proc.returncode, timed_out, killed_by_drain, exhausted_kill
 
     async def _exhaustion_watchdog(self, spec: RunSpec, proc: asyncio.subprocess.Process) -> bool:

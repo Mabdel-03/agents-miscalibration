@@ -318,8 +318,9 @@ async def test_codex_missing_response_completed_retries_then_turn_failed(tmp_pat
 async def test_codex_timeout_kills_the_whole_tree(tmp_path: Path, base):
     marker = S.home_marker()
     item = S.dev_item(base, "aime")
-    # the adapter's ``timeout --kill-after=5s 12s`` fires first; the runner's own wall (90 s) never does
-    async with SmokeStack(tmp_path, adapters=_adapters(wall_base=12, wall_per_rung=0, sigkill_after=5),
+    # the adapter's ``timeout --kill-after=5s 17s`` fires first; the runner's own wall (90 s) never does
+    async with SmokeStack(tmp_path, adapters=_adapters(wall_base=12, wall_per_rung=0, sigkill_after=5,
+                                                       timeout_margin_seconds=0),
                           wall_base=90, wall_per_rung=0) as stack:
         spec = stack.specs(base, arm=ARM, rung=4, items=[item])[0]
         stack.scripts[spec.run_key] = RunScript(root=[FakeReply(delay_seconds=40.0, think_tokens=100)])
@@ -344,10 +345,13 @@ async def test_codex_timeout_kills_the_whole_tree(tmp_path: Path, base):
     launch = json.loads((stack.work_dir(spec) / "launch.json").read_text())
     common = S.common_checks(stack, spec, record, marker)
     checks = {
-        "argv_is_timeout_wrapped": launch["argv"][:3] == ["timeout", "--kill-after=5s", "12s"],
+        "argv_is_timeout_wrapped": launch["argv"][:3] == ["timeout", "--kill-after=5s", "17s"],
         "timeout_ended_the_run": record.harness_exit_code in (124, 137, -9, -15) and 10 <= (ended - started) < 40,
-        "runner_wall_not_reached": record.harness_reported.get("timed_out") is False
-                                   and record.harness_reported.get("wall_timeout_seconds") == 90,
+        # review major 6: a wall-killed Codex run is a TIMEOUT (it used to be recorded `done`, so Gate 2's
+        # timeout_share <= 0.02 and the Gate 3 stop rule were blind for H3)
+        "wall_kill_recorded_as_timeout": record.harness_reported.get("timed_out") is True
+                                         and record.status == "timeout" and record.rerun_reason is None,
+        "runner_wall_was_the_longer_one": record.harness_reported.get("wall_timeout_seconds") == 90,
         "whole_process_group_gone": group_alive_after_exit is False,
         "upstream_call_finished_and_settled": record.calls == 1 and settled.in_flight == 0 and settled.unresolved == 0
                                               and stack.scripts[spec.run_key].think_calls() == 1,
@@ -422,8 +426,11 @@ async def test_codex_rung25_ends_with_success(tmp_path: Path, base):
         "run_done_graded": record.status == "done" and record.parse_status == "valid" and record.correct in (True, False)
                            and record.harness_exit_code == 0 and record.cli_result_mismatch is False,
         "one_call_no_grace": record.calls == 1 and record.grace_tokens == 0 and record.forced_close_kind == "none",
-        "wall_timeout_is_3600s": record.harness_reported.get("wall_timeout_seconds") == 3600
-                                 and json.loads((stack.work_dir(spec) / "launch.json").read_text())["argv"][2] == "3600s",
+        # review major 6: the runner's wall (3,600 s at k=25) is authoritative; the `timeout` wrapper sits behind
+        # it (wall + sigkill_after + margin) so a Codex run that hits the wall is recorded as a timeout, not done
+        "wall_timeout_is_3600s_and_the_wrapper_sits_behind_it":
+            record.harness_reported.get("wall_timeout_seconds") == 3600
+            and json.loads((stack.work_dir(spec) / "launch.json").read_text())["argv"][2] == "3690s",
         **common[0],
     }
     failed = S.record_case("codex/rung25", checks, detail={**common[1], "wall_seconds": record.wall_seconds})

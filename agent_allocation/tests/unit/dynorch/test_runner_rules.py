@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import os
 from pathlib import Path
 from typing import Any
 
@@ -176,3 +177,19 @@ async def test_an_infrastructure_stop_is_rerun_without_consuming_a_rerun(tmp_pat
     spent = _record(dataclasses.replace(spec, attempt=4), status="transport_failed",
                     rerun_reason="last_reply_transport_or_ledger_error", error="upstream_failed: ambiguous_timeout")
     assert runner._rerun_pending(spent) is False      # a paid transport failure still obeys the cap
+
+
+async def test_a_timeout_wrapped_argv_that_fires_is_recorded_as_a_timeout(tmp_path: Path):
+    """Review major 6: Codex runs under ``timeout --kill-after=Ns Ws``. When that wrapper fires (exit 124, or 137
+    after its own SIGKILL) the wall WAS reached, so the run is a timeout -- it used to be recorded ``done`` and
+    counted in valid_final_share, leaving Gate 2's timeout_share and the Gate 3 stop rule blind for H3."""
+    from agent_allocation.dynorch.harness.base import LaunchPlan, WorkDir
+
+    work = WorkDir(tmp_path / "w").create()
+    view = {"cap": 4096, "spent": 0, "remaining": 4096, "calls": 0, "grace_tokens": 0, "prompt_total": 0,
+            "exhausted": 0, "in_flight": 0, "idle_seconds": 0.0}
+    runner = make_runner(FakeCore(view), make_settings(run_root=tmp_path))
+    plan = LaunchPlan(argv=("timeout", "--kill-after=2s", "1s", "sleep", "60"), env={"PATH": os.environ["PATH"]},
+                      cwd=work.ws, stdin=None)
+    exit_code, timed_out, killed_by_drain, exhausted = await runner._run_subprocess(make_spec(rung=4), plan, work, 60)
+    assert exit_code == 124 and timed_out is True and not killed_by_drain and not exhausted

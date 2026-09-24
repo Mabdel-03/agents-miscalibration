@@ -167,7 +167,12 @@ def test_codex_config_command_and_env(work: Path):
     assert 'wire_api = "chat"' not in toml
     plan = adapter.build_command(work, spec, PROXY)
     argv = list(plan.argv)
-    assert argv[:3] == ["timeout", "--kill-after=30s", f"{600 + 120 * 16}s"]
+    # review major 6: the wrapper's deadline sits BEHIND the runner's wall (600 + 120k) by the SIGTERM->SIGKILL
+    # window plus a margin, so the runner's timer fires first and a wall-killed Codex run is recorded as a timeout
+    wall = 600 + 120 * 16
+    assert adapter.wall_seconds(spec) == wall
+    assert argv[:3] == ["timeout", "--kill-after=30s", f"{wall + 30 + 60}s"]
+    assert adapter.outer_timeout_seconds(spec) > wall
     assert argv[3] == str(Path(CFG["dynorch"]["codex_prefix"]) / "bin" / "codex")
     assert argv[4:] == ["exec", "--json", "--ephemeral", "--strict-config", "--skip-git-repo-check", "-C",
                         str(work / "ws"), "-s", "read-only", "-o", str(work / "final.txt"), "-"]
