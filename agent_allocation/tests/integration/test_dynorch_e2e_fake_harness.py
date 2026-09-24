@@ -1,52 +1,56 @@
-"""WP-B end-to-end: proxy httpd + core + runner + the fake harness subprocess, $0 (contract §6; plan Verification).
+"""End-to-end: httpd + the REAL ``ProxyCore`` (ledger, journal, store, Jinja2 render, budget) over ``api/fake.py``'s
+upstream + the runner + the fake harness subprocess, $0 (contract §3, §5, §6; plan Verification).
 
-The core is WP-A's real ``ProxyCore`` over ``api/fake.py``'s transport when ``agent_allocation.dynorch.core`` is
-importable (after the merge), else the scripted ``StubProxyCore`` (before it). Every assertion below holds for both;
-the ones about scripted spawns are conditioned on the stub. Cases:
+The stack is assembled exactly as ``dynorch-run`` assembles it (``runner.build_stack``); the only substitutions are
+the fake OpenRouter transport (scripted replies, delays and faults, per node or per item) and the fake harness
+CLI (an OpenClaude-shaped SSE client with one ``spawn_subagent`` tool). Cases:
 
 * three items (one per math benchmark + one GPQA) × rungs {1, 4} × arms {HF fake harness, H0 null}: every planned
   cell ends ``done`` with a graded record, the delivered answer comes from the proxy (``final_source ==
-  "proxy_root"``), the CLI result cross-checks, ``launch.json`` / work-dir layout / attempts journal exist and carry
-  no key material, and the pre-registration file has one line per cell;
+  "proxy_root"``), the CLI result cross-checks, ``launch.json`` / work-dir layout / attempts journal / raw call
+  journal exist and carry no key material, the pre-registration file has one line per cell, and one scripted
+  delegation runs through the real proxy (root -> solver -> root, reasoning re-injected by the cache);
 * kill / resume: a drain request mid-stage SIGTERMs the in-flight harness (``killed_by_drain``), the next
-  ``run_specs(resume=True)`` re-executes only that cell as attempt 2 / generation 2 and skips the finished ones;
-* the rerun rule: a transport error on the first attempt reruns once (attempt 2 succeeds); zero proxy calls rerun
-  up to ``max_reruns`` then leave an infra failure with y = NaN; a 402 after a served call never reruns;
-* 330 s and 660 s delayed replies (``@pytest.mark.slow``, ``@pytest.mark.timeout(1500)``; opt in with
-  ``DYNORCH_SLOW=1``): headers + keepalive comments keep the fake harness on one request and ``subtype: success``.
+  ``run_specs(resume=True)`` (a fresh stack over the same run root: inherited ledger attempts resolved first)
+  re-executes only that cell as attempt 2 / generation 2 and skips the finished ones;
+* the rerun rule: an ambiguous upstream outcome (read timeout) on the first attempt reruns once (attempt 2
+  succeeds); zero proxy calls rerun up to ``max_reruns`` then leave an infra failure with y = NaN; a 402 served
+  to a sub-agent after the root's call never reruns;
+* 330 s and 660 s delayed upstream replies (``@pytest.mark.slow``, ``@pytest.mark.timeout(1500)``): headers +
+  keepalive comments keep the fake harness on one request and ``subtype: success``;
+* the exhaustion watchdog terminates a harness that lingers after its budget is spent.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import math
-import os
 import socket
 import sys
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from tests.unit.dynorch import stubs
-from tests.unit.dynorch.stubs import Scripted, StubProxyCore, StubRunStore, real_core_available
+from agent_allocation.api import fake as fakeapi
+from agent_allocation.api.fake import FakeReply, FakeScript, Fault, fake_tool_call_text
+from agent_allocation.api.forced import ForcedClient, ForcedSettings
 from agent_allocation.dynorch.harness.fake import FakeAdapter
 from agent_allocation.dynorch.harness.null import NullAdapter
 from agent_allocation.dynorch.httpd import ProxyServer, ReplyLog
-from agent_allocation.dynorch.plan import BaseInputs, plan_runs, plan_path, read_plan
-from agent_allocation.dynorch.records import ProxyError
-from agent_allocation.dynorch.runner import Runner, RunnerSettings
+from agent_allocation.dynorch.plan import BaseInputs, plan_runs, plan_path, read_plan, run_key_for
+from agent_allocation.dynorch.runner import Runner, RunnerSettings, build_stack
 
 PROJECT = Path(__file__).resolve().parents[2]
 CFG = json.loads((PROJECT / "configs" / "dynorch_v1.json").read_text("utf-8"))
-SLOW = pytest.mark.skipif(not os.environ.get("DYNORCH_SLOW"), reason="set DYNORCH_SLOW=1 for the long-delay cases")
 _REAL_CONNECT = socket.socket.connect
 
 
 @pytest.fixture(autouse=True)
 def _loopback_only(monkeypatch):
     """The integration conftest forbids every AF_INET connect; this stack IS a loopback server, so allow 127.0.0.1
-    and keep refusing anything else (no network, no key -- the fake harness runs in a subprocess anyway)."""
+    and keep refusing anything else (no network, no key -- the upstream is the in-process fake transport)."""
     def guarded(self, address):
         if self.family in (socket.AF_INET, socket.AF_INET6) and address[0] not in ("127.0.0.1", "::1"):
             raise AssertionError(f"dynorch e2e must not leave loopback (tried {address!r})")
@@ -75,23 +79,30 @@ def _items(base: BaseInputs) -> list[str]:
             base.panels["gpqa_diamond"].main_item_ids[0]]
 
 
-class Harness:
-    """One wired stack: core (real or stub), httpd, store, runner settings, adapters, work under tmp."""
+SPAWN_REPLY = FakeReply(content=fake_tool_call_text("spawn_subagent", {"task": "solve the whole problem"},
+                                                    prefix="Let me delegate."), think_tokens=200)
 
-    def __init__(self, tmp: Path, cfg: dict[str, Any], *, script=None, concurrency: int = 2,
+
+class Harness:
+    """One wired stack: the real core over the fake upstream, httpd, store, runner settings, adapters, work under
+    tmp. ``script`` is the fake upstream's script (replies per item via ``set_reply`` or per run via ``by_node``)."""
+
+    def __init__(self, tmp: Path, cfg: dict[str, Any], *, script: FakeScript | None = None, concurrency: int = 2,
                  max_reruns: int | None = None) -> None:
         self.tmp = tmp
         self.cfg = cfg
         self.run_root = tmp / "run_root"
         self.scratch = tmp / "scratch"
         self.reply_log = ReplyLog()
-        self.env: Any = None
-        if real_core_available() and script is None:
-            self.core, self.store, self.journal = self._real_core()
-        else:
-            self.core = StubProxyCore(script)
-            self.store = StubRunStore(self.run_root)
-            self.journal = None
+        self.script = script if script is not None else FakeScript()
+        forced_cfg = dict(cfg)
+        forced_cfg["provider"] = {**cfg["provider"], "endpoint_tag": "parasail/fp8"}
+        self.client = ForcedClient(settings=ForcedSettings.from_config(forced_cfg), api_key=None,
+                                   transport=fakeapi.fake_openrouter_transport(self.script),
+                                   answer_backoff_base_seconds=0.0,
+                                   read_timeout=float(cfg["scheduler"]["read_timeout_seconds"]))
+        self.locks = {"parasail": fakeapi.fake_forced_endpoint_lock(tag="parasail/fp8"),
+                      "mancer": fakeapi.fake_forced_endpoint_lock(tag="mancer/fp8")}
         self.settings = RunnerSettings.from_config(cfg, run_root=self.run_root, project_root=PROJECT,
                                                    scratch_root=self.scratch, concurrency=concurrency)
         if max_reruns is not None:
@@ -100,38 +111,13 @@ class Harness:
                                           "sigterm_after_exhaustion": 1.0})
         self.adapters = {"fake": FakeAdapter(model=cfg["primary_model"], python=sys.executable),
                          "null": NullAdapter(model=cfg["primary_model"])}
-        self.server = ProxyServer(self.core, keepalive_seconds=1.0, reply_log=self.reply_log)
-
-    def _real_core(self):
-        from decimal import Decimal
-        from agent_allocation.api import fake as fakeapi
-        from agent_allocation.api.forced import ForcedClient, ForcedSettings
-        from agent_allocation.dynorch.config import DynorchSettings
-        from agent_allocation.dynorch.core import ProxyCore
-        from agent_allocation.dynorch.journal import CallJournal, RunStore
-        from agent_allocation.dynorch.upstream import Upstream
-        from agent_allocation.runtime.ledger import CollectionLedger
-        from agent_allocation.storage.journal import LedgerJournal
-
-        settings = DynorchSettings.from_config(self.cfg)
-        script = fakeapi.FakeScript()
-        forced_cfg = dict(self.cfg)
-        forced_cfg["provider"] = {**self.cfg["provider"], "endpoint_tag": "parasail/fp8"}
-        client = ForcedClient(settings=ForcedSettings.from_config(forced_cfg), api_key=None,
-                              transport=fakeapi.fake_openrouter_transport(script), answer_backoff_base_seconds=0.0)
-        ledger_journal = LedgerJournal(self.run_root / "state" / "ledger_journal.jsonl", group_commit_ms=0)
-        ledger = CollectionLedger(ledger_journal, ceiling_usd=Decimal("95"),
-                                  max_unresolved_usd=settings.max_unresolved_spend_usd)
-        locks = {"parasail": fakeapi.fake_forced_endpoint_lock(tag="parasail/fp8"),
-                 "mancer": fakeapi.fake_forced_endpoint_lock(tag="mancer/fp8")}
-        upstream = Upstream(client, locks, self.cfg["sampling"], settings.provider_in_flight, settings.provider_rps,
-                            ledger, reservation_multiplier=settings.reservation_multiplier)
-        journal = CallJournal(self.run_root)
-        store = RunStore(self.run_root)
-        self.env = {"client": client, "ledger_journal": ledger_journal, "script": script}
-        return ProxyCore(settings, upstream, journal, store), store, journal
+        self.stack: Any = None
 
     async def __aenter__(self) -> "Harness":
+        self.stack = await build_stack(self.cfg, self.run_root, client=self.client, locks=self.locks,
+                                       ceiling_usd="95")
+        self.core, self.store, self.journal = self.stack.core, self.stack.store, self.stack.journal
+        self.server = ProxyServer(self.core, keepalive_seconds=1.0, reply_log=self.reply_log)
         await self.server.start()
         self.runner = Runner(self.core, self.adapters, self.settings, proxy_url=self.server.base_url, store=self.store,
                              inputs=None, reply_log=self.reply_log, cfg=self.cfg, journal=self.journal)
@@ -143,14 +129,20 @@ class Harness:
 
     async def __aexit__(self, *_exc: Any) -> None:
         await self.server.close()
-        if self.env is not None:
-            await self.env["client"].aclose()
-            await self.env["ledger_journal"].flush()
-            self.env["ledger_journal"].release_writer()
+        await self.client.aclose()
+        await self.stack.aclose()
 
     def specs(self, base: BaseInputs, *, arms=("HF", "H0"), rungs=(1, 4), items=None):
         return plan_runs(self.cfg, stage="main", arms=list(arms), rungs=list(rungs), repeats=[1],
-                         items=items or _items(base), base=base, proxy_version="e2e")
+                         items=items or _items(base), base=base, proxy_version=self.core.proxy_version)
+
+    def attempt_key(self, spec, attempt: int) -> str:
+        return run_key_for(str(self.cfg["study_id"]), spec.arm, spec.item_id, spec.rung, spec.repeat, attempt)
+
+
+def _classes(record) -> dict[str, int]:
+    """``calls_by_class`` without the zero entries (the core initialises every class)."""
+    return {k: v for k, v in record.calls_by_class.items() if v}
 
 
 def _assert_no_key_material(root: Path) -> None:
@@ -162,10 +154,14 @@ def _assert_no_key_material(root: Path) -> None:
 @pytest.mark.timeout(600)
 async def test_three_items_two_rungs_fake_and_null_arms(tmp_path: Path, base: BaseInputs):
     cfg = _cfg_with_fake_arm()
-    async with Harness(tmp_path, cfg, concurrency=3) as h:
+    script = FakeScript()
+    async with Harness(tmp_path, cfg, script=script, concurrency=3) as h:
         h.with_inputs(base)
         specs = h.specs(base)
         assert len(specs) == 3 * 2 * 2
+        # one delegation through the real proxy: the HF hmmt run at rung 4 spawns once (root -> solver -> root)
+        delegating = next(s for s in specs if s.arm == "HF" and s.rung == 4 and s.item_id == _items(base)[1])
+        script.by_node[delegating.run_key] = [SPAWN_REPLY, FakeReply(think_tokens=150), FakeReply(think_tokens=150)]
         summary = await h.runner.run_specs("main", specs)
     assert summary.planned == 12 and summary.executed == 12 and summary.skipped == 0 and not summary.drained
     assert summary.statuses == {"done": 12}
@@ -181,6 +177,14 @@ async def test_three_items_two_rungs_fake_and_null_arms(tmp_path: Path, base: Ba
         assert record.parse_status == "valid" and record.grade_status == "graded" and record.correct in (True, False)
         assert record.cli_result_mismatch is False, (spec.arm, record.cli_result, record.final_message)
         assert record.harness_exit_code == 0 and record.wall_seconds > 0
+        assert record.spec.proxy_version == h.core.proxy_version and record.calls_detail
+        assert all(c.finish_reason_returned in ("stop", "tool_calls") for c in record.calls_detail)
+        # B2: every grant is exactly C minus what was counted before it
+        spent = 0
+        for call in record.calls_detail:
+            if not call.duplicate_served and call.forced_close_kind != "terminal":
+                assert call.granted_max_tokens == spec.cap_tokens - spent
+                spent += call.completion_tokens
         work = h.settings.work_dir(spec)
         for sub in ("home", "state", "ws", "tmp"):
             assert (work / sub).is_dir()
@@ -189,21 +193,30 @@ async def test_three_items_two_rungs_fake_and_null_arms(tmp_path: Path, base: Ba
         assert spec.run_key in launch["env"]["OPENAI_BASE_URL"] and launch["wall_timeout_seconds"] == 600 + 120 * spec.rung
         assert (work / "stdout").is_file() and (work / "TASK.md").read_text().rstrip().endswith("Input tokens are not counted.")
         assert f"total budget of {spec.cap_tokens} completion tokens" in (work / "TASK.md").read_text()
+        journaled = h.journal.scan(spec)
+        assert len(journaled) == len([c for c in record.calls_detail if not c.duplicate_served])
+        assert all(j["layout"] == "dynorch/v1" and j["run_key"] == spec.run_key for j in journaled)
         if spec.arm == "HF":
             assert launch["argv"][1].endswith("fake_harness_cli.py") and launch["stdin_bytes"] > 0
             stdout_line = json.loads((work / "stdout").read_text().strip().splitlines()[-1])
             assert stdout_line["type"] == "result" and stdout_line["subtype"] == "success"
-            if isinstance(h.core, StubProxyCore):
-                if spec.rung >= 4:
-                    assert record.spawns == 1 and record.calls == 3 and record.calls_by_class == {"root": 2, "solver": 1}
-                    assert record.conversations == 2 and stdout_line["spawns"] == 1
-                else:
-                    assert record.spawns == 0 and record.calls == 1 and record.calls_by_class == {"root": 1}
+            if spec.run_key == delegating.run_key:
+                assert record.spawns == 1 and record.calls == 3 and _classes(record) == {"root": 2, "solver": 1}
+                assert record.conversations == 2 and stdout_line["spawns"] == 1
+                assert [c.conversation_class for c in record.calls_detail] == ["root", "solver", "root"]
+                assert record.calls_detail[2].reinjection == "hit" and record.reinjection_hits == 1
+                assert record.calls_detail[0].tool_calls == 1 and record.calls_detail[0].tool_parse == "ok"
+            else:
+                assert record.spawns == 0 and record.calls == 1 and _classes(record) == {"root": 1}
         else:
             assert launch["argv"] == [] and record.calls == 1 and record.spawns == 0
             assert (work / "SYSTEM.md").read_text() == h.settings.h0_system_text
+            assert record.calls_detail[0].stream is False and record.calls_detail[0].requested_max_tokens == spec.cap_tokens
     attempts = [json.loads(l) for l in (h.run_root / "state" / "dynorch_attempts.jsonl").read_text().splitlines()]
     assert len(attempts) == 12 and all(a["status"] == "done" for a in attempts)
+    snap = h.stack.ledger.snapshot()
+    assert snap.in_flight == 0 and snap.unresolved == 0 and snap.settled > 0
+    assert (h.run_root / "state" / "ledger_journal.jsonl").is_file()
     _assert_no_key_material(h.run_root)
     _assert_no_key_material(h.scratch)
     assert not any(p.is_relative_to(Path.home()) for p in [h.run_root, h.scratch])
@@ -214,13 +227,12 @@ async def test_kill_and_resume(tmp_path: Path, base: BaseInputs):
     cfg = _cfg_with_fake_arm()
     slow_item = base.panels["hmmt"].main_item_ids[0]
 
-    def script(run, request, call_no):
-        reply = stubs.default_script(run, request, call_no)
-        if run.spec.item_id == slow_item:
-            reply.delay_seconds = 1.5
-        return reply
+    def script() -> FakeScript:
+        s = FakeScript()
+        s.set_reply(slow_item, reply=FakeReply(delay_seconds=1.5))
+        return s
 
-    async with Harness(tmp_path, cfg, script=script, concurrency=1) as h:
+    async with Harness(tmp_path, cfg, script=script(), concurrency=1) as h:
         h.with_inputs(base)
         specs = h.specs(base, arms=("HF",), rungs=(4,))
         # order the slow item second so the first cell completes before the drain and the third never starts
@@ -231,7 +243,7 @@ async def test_kill_and_resume(tmp_path: Path, base: BaseInputs):
         while slow_key not in h.runner._in_flight:        # wait until the slow harness is in flight
             await asyncio.sleep(0.05)
         await asyncio.sleep(0.5)
-        assert len(h.store.scan()) == 1
+        assert sum(1 for r in h.store.scan().values() if r.status == "done") == 1
         h.runner.request_drain()
         summary = await task
         assert summary.drained is True
@@ -243,9 +255,11 @@ async def test_kill_and_resume(tmp_path: Path, base: BaseInputs):
         assert killed[0].harness_reported["killed_by_drain"] is True
         assert killed[0].correct is None and killed[0].parse_status is None
         first_done = done[0]
-    # resume: a fresh runner, same run_root/store; only the killed cell and the never-started one execute
-    async with Harness(tmp_path, cfg, script=script, concurrency=1) as h2:
+    # resume: a fresh stack over the same run root (inherited ledger attempts resolved by build_stack);
+    # only the killed cell and the never-started one execute
+    async with Harness(tmp_path, cfg, script=script(), concurrency=1) as h2:
         h2.with_inputs(base)
+        assert h2.stack.ledger.snapshot().unresolved == 0
         summary2 = await h2.runner.run_specs("main", specs, resume=True)
     assert summary2.skipped == 1 and summary2.executed == 2 and not summary2.drained
     records = h2.store.scan()
@@ -253,28 +267,25 @@ async def test_kill_and_resume(tmp_path: Path, base: BaseInputs):
     resumed = next(r for r in records.values() if r.spec.item_id == slow_item)
     assert resumed.spec.attempt == 2 and resumed.spec.generation == 2 and resumed.spec.run_key != killed[0].spec.run_key
     assert resumed.parse_status == "valid"
+    superseded = h2.store.scan(include_superseded=True)
+    assert killed[0].spec.run_key in superseded and killed[0].spec.run_key not in records
     untouched = next(r for r in records.values() if r.spec.item_id == first_done.spec.item_id)
     assert untouched.started_at == first_done.started_at and untouched.spec.run_key == first_done.spec.run_key
     attempts = [json.loads(l) for l in (h2.run_root / "state" / "dynorch_attempts.jsonl").read_text().splitlines()]
     assert [a["rerun_reason"] for a in attempts].count("killed_by_drain") == 1 and len(attempts) == 4
     assert summary2.reruns == 1
+    assert h2.stack.ledger.snapshot().in_flight == 0 and h2.stack.ledger.snapshot().unresolved == 0
 
 
 @pytest.mark.timeout(600)
 async def test_rerun_rule_transport_error_then_success(tmp_path: Path, base: BaseInputs):
     cfg = _cfg_with_fake_arm()
-    failed_once: set[str] = set()
-
-    def script(run, request, call_no):
-        cell = (run.spec.item_id, run.spec.rung)
-        if run.spec.attempt == 1 and cell not in failed_once:
-            failed_once.add(cell)
-            return Scripted(error=ProxyError(502, "upstream_failed", "ambiguous upstream outcome", False))
-        return stubs.default_script(run, request, call_no)
-
+    script = FakeScript()
     async with Harness(tmp_path, cfg, script=script) as h:
         h.with_inputs(base)
         specs = h.specs(base, arms=("HF",), rungs=(1,), items=_items(base)[:1])
+        # attempt 1's only call: an ambiguous upstream outcome (read timeout after the request was sent)
+        script.by_node[specs[0].run_key] = FakeReply(fault=Fault.READ_TIMEOUT)
         summary = await h.runner.run_specs("main", specs)
     record = next(iter(h.store.scan().values()))
     assert record.status == "done" and record.spec.attempt == 2 and record.rerun_reason is None
@@ -282,8 +293,13 @@ async def test_rerun_rule_transport_error_then_success(tmp_path: Path, base: Bas
     attempts = [json.loads(l) for l in (h.run_root / "state" / "dynorch_attempts.jsonl").read_text().splitlines()]
     assert [a["status"] for a in attempts] == ["transport_failed", "done"]
     assert attempts[0]["rerun_reason"] == "last_reply_transport_or_ledger_error" and attempts[0]["spec"]["attempt"] == 1
-    assert attempts[0]["parse_status"] is None
+    assert attempts[0]["parse_status"] is None and "upstream_failed" in attempts[0]["error"]
+    assert attempts[0]["calls_detail"][0]["transport_status"] != "ok" and attempts[0]["calls"] == 1
     assert attempts[1]["spec"]["run_key"] != attempts[0]["spec"]["run_key"]
+    # the ambiguous call was charged at its maximum and the first attempt was paid, never released (B2)
+    snap = h.stack.ledger.snapshot()
+    assert snap.unresolved == 0 and snap.in_flight == 0
+    assert Decimal(attempts[0]["cost_usd"]) > 0
 
 
 @pytest.mark.timeout(600)
@@ -305,47 +321,44 @@ async def test_rerun_rule_zero_calls_exhausts_reruns_and_leaves_nan(tmp_path: Pa
     assert delivered_state(record) == "unknown" and math.isnan(outcome_y(record))
     attempts = (h.run_root / "state" / "dynorch_attempts.jsonl").read_text().splitlines()
     assert len(attempts) == 3 and summary.statuses == {"failed": 1}
+    assert h.stack.ledger.snapshot().settled == 0
 
 
 @pytest.mark.timeout(600)
 async def test_402_after_a_served_call_never_reruns(tmp_path: Path, base: BaseInputs):
+    """Rung 2 (cap 2048): the root spawns two solvers in one turn; the first solver is truncated at the remaining
+    budget (``truncated_subagent``), the second finds ``remaining < 64`` on a non-root conversation -> HTTP 402
+    (B4). The harness exits 1 without retrying; the run is ``done`` on what was served and is never rerun."""
     cfg = _cfg_with_fake_arm()
-
-    def script(run, request, call_no):
-        # rung 1 (cap 1024): the root spends 1000 on a spawn; the solver then finds remaining < 64 -> 402
-        klass = run.conversations.get(stubs.conversation_key(request), "root")
-        if klass == "root":
-            return Scripted(reasoning="delegate", content="",
-                            tool_calls=[("spawn_subagent", {"task": "solve"})], completion_tokens=1000)
-        return Scripted(content="<final>1</final>", completion_tokens=100)
-
+    script = FakeScript()
+    two_spawns = (fake_tool_call_text("spawn_subagent", {"task": "part one"}) + "\n"
+                  + fake_tool_call_text("spawn_subagent", {"task": "part two"}))
     async with Harness(tmp_path, cfg, script=script) as h:
         h.with_inputs(base)
-        specs = h.specs(base, arms=("HF",), rungs=(1,), items=_items(base)[:1])
+        specs = h.specs(base, arms=("HF",), rungs=(2,), items=_items(base)[:1])
+        script.by_node[specs[0].run_key] = [FakeReply(content=two_spawns, think_tokens=900),
+                                            FakeReply(think_tokens=5000)]
         summary = await h.runner.run_specs("main", specs)
     record = next(iter(h.store.scan().values()))
     assert record.status == "done" and record.rerun_reason is None and record.spec.attempt == 1
-    assert record.calls == 1 and record.refused_calls == 1 and record.exhausted is True
+    assert record.calls == 2 and record.refused_calls == 1 and record.exhausted is True
+    assert [c.conversation_class for c in record.calls_detail] == ["root", "solver"]
+    assert record.calls_detail[0].tool_calls == 2 and record.spawns == 2
+    assert record.calls_detail[1].forced_close_kind == "truncated_subagent" and record.grace_tokens == 0
+    assert record.completion_total == record.spec.cap_tokens
     assert record.harness_exit_code == 1 and record.final_message is None and record.final_source == "none"
     assert record.parse_status == "empty_content" and record.correct is False
     assert record.cli_result is None and record.cli_result_mismatch is None
     assert summary.reruns == 0
+    stdout_line = json.loads((h.settings.work_dir(record.spec) / "stdout").read_text().strip().splitlines()[-1])
+    assert stdout_line["is_error"] is True and "402" in stdout_line["result"]
 
 
 def _delay_case(delay: float):
     async def run(tmp_path: Path, base: BaseInputs):
         cfg = _cfg_with_fake_arm()
-        seen = {"delayed": False}
-
-        def script(run, request, call_no):
-            reply = stubs.default_script(run, request, call_no)
-            reply.tool_calls = []
-            reply.content = "<rationale>slow</rationale>\n<final>7</final>"
-            if not seen["delayed"]:
-                seen["delayed"] = True
-                reply.delay_seconds = delay
-            return reply
-
+        script = FakeScript()
+        script.set_reply(_items(base)[0], reply=[FakeReply(delay_seconds=delay), FakeReply()])
         async with Harness(tmp_path, cfg, script=script) as h:
             h.with_inputs(base)
             specs = h.specs(base, arms=("HF",), rungs=(4,), items=_items(base)[:1])
@@ -354,20 +367,19 @@ def _delay_case(delay: float):
         assert summary.statuses == {"done": 1}
         assert record.calls == 1 and record.status == "done" and record.parse_status == "valid"
         assert record.wall_seconds >= delay
+        assert record.calls_detail[0].latency_seconds >= delay
         stdout_line = json.loads((h.settings.work_dir(record.spec) / "stdout").read_text().strip().splitlines()[-1])
         assert stdout_line["subtype"] == "success" and stdout_line["requests"] == 1
         assert stdout_line["keepalives"] >= delay - 2
     return run
 
 
-@SLOW
 @pytest.mark.slow
 @pytest.mark.timeout(1500)
 async def test_delayed_reply_330s(tmp_path: Path, base: BaseInputs):
     await _delay_case(330.0)(tmp_path, base)
 
 
-@SLOW
 @pytest.mark.slow
 @pytest.mark.timeout(1500)
 async def test_delayed_reply_660s(tmp_path: Path, base: BaseInputs):
@@ -391,14 +403,13 @@ async def test_exhaustion_watchdog_terminates_a_lingering_harness(tmp_path: Path
         "r = c.getresponse(); r.read()\n"
         "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'lingering'}), flush=True)\n"
         "time.sleep(120)\n")
-
-    def script(run, request, call_no):
-        return Scripted(content="<final>3</final>", completion_tokens=run.spec.cap_tokens)   # spends the whole cap
-
+    script = FakeScript()
     async with Harness(tmp_path, cfg, script=script) as h:
         h.with_inputs(base)
         h.runner.adapters["fake"] = FakeAdapter(model=cfg["primary_model"], python=sys.executable, cli_path=lingering)
         specs = h.specs(base, arms=("HF",), rungs=(1,), items=_items(base)[:1])
+        # thinking runs to the cap: the proxy closes the call with the grace (mid_call) and the run is exhausted
+        script.by_node[specs[0].run_key] = FakeReply(content="<final>3</final>", think_tokens=specs[0].cap_tokens)
         summary = await h.runner.run_specs("main", specs)
     record = next(iter(h.store.scan().values()))
     assert summary.statuses == {"done": 1}
@@ -406,5 +417,6 @@ async def test_exhaustion_watchdog_terminates_a_lingering_harness(tmp_path: Path
     assert record.harness_reported["timed_out"] is False and record.rerun_reason is None
     assert record.harness_exit_code not in (0, None) and record.wall_seconds < 30
     assert record.calls == 1 and record.completion_total == record.spec.cap_tokens
+    assert record.forced_close_kind == "mid_call" and 0 < record.grace_tokens <= cfg["dynorch"]["grace_tokens"]
     assert record.final_message == "<final>3</final>" and record.parse_status == "valid"
     assert record.cli_result_mismatch is True          # the CLI's own result is only a cross-check

@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.dynorch import stubs  # noqa: F401
 from agent_allocation.dynorch.harness.base import (
     ALLOWED_OPENAI_KEYS, INHERITED_KEYS, check_env, harness_env, redacted_env,
 )

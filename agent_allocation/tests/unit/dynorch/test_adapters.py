@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.dynorch import stubs  # noqa: F401
 from agent_allocation.dynorch.harness import adapters_from_config
 from agent_allocation.dynorch.harness.base import (
     FORBIDDEN_PREFIXES, HarnessAdapter, InProcessAdapter, WorkDir, check_env, harness_env, openclaude_result,

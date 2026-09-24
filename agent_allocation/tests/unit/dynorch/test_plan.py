@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.dynorch import stubs  # noqa: F401
 from agent_allocation.dynorch import plan as planmod
 from agent_allocation.dynorch.plan import (
     ALLOWED_TOOLS_BY_HARNESS, BaseInputs, cell_rung_order, plan_runs, plan_stage, read_plan, run_key_for, write_plan,

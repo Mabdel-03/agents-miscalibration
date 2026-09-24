@@ -7,8 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.dynorch import stubs
-from tests.unit.dynorch.stubs import new_run_record
 from agent_allocation.contracts import (
     CompletionStatus, GenerationKind, GenerationResult, GenerationSpec, OutputKind, ParseStatus, PublicTask,
     TransportStatus, Usage,
@@ -16,7 +14,7 @@ from agent_allocation.contracts import (
 from agent_allocation.dynorch import grade as grademod
 from agent_allocation.dynorch.grade import candidate_from_text, delivered_state, finalize_run, outcome_y
 from agent_allocation.dynorch.plan import BaseInputs
-from agent_allocation.dynorch.records import RunSpec
+from agent_allocation.dynorch.records import RunSpec, new_run_record
 from agent_allocation.extraction.final import extract_candidate
 
 PROJECT = Path(__file__).resolve().parents[3]
@@ -99,7 +97,7 @@ def _record(spec_item: str, benchmark: str, final_message: str | None, status: s
                    repeat=1, attempt=1, generation=1, partition="main", allowed_tools=("Agent",), spawn_tools=("Agent",),
                    root_call_ceiling=None, sampling_hash="s", template_sha256="t", prompt_version="dynorch-v1",
                    proxy_version="p", harness_version="h")
-    record = new_run_record(spec)
+    record = new_run_record(spec, status="running", started_at="2026-09-23T00:00:00+00:00")
     record.status = status
     record.final_message = final_message
     record.final_source = "proxy_root" if final_message is not None else "none"

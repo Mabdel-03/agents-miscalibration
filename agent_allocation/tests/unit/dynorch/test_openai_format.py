@@ -5,7 +5,6 @@ import json
 
 import pytest
 
-from tests.unit.dynorch import stubs  # noqa: F401  installs the records shim before any dynorch import
 from agent_allocation.dynorch import openai_format as of
 from agent_allocation.dynorch.records import (
     CallRecord, ChatReply, ProxyError, ReplyUsage, ToolCall,

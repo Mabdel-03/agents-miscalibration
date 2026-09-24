@@ -6,12 +6,12 @@ import json
 
 import pytest
 
-from tests.unit.dynorch import stubs
-from tests.unit.dynorch.stubs import Scripted, StubProxyCore
+from agent_allocation.api.fake import FakeReply, FakeScript, fake_tool_call_text
 from agent_allocation.dynorch import openai_format as of
 from agent_allocation.dynorch import responses_format as rf
 from agent_allocation.dynorch.records import ChatReply, ProxyError, ReplyUsage, RunSpec, ToolCall, ToolSpec
 from tests.unit.dynorch.test_openai_format import _call
+from tests.unit.dynorch.conftest import make_spec
 
 SYSTEM = "You are the orchestrator."
 USER = "TASK: prove it"
@@ -202,24 +202,25 @@ def test_responses_json_object():
 
 
 # -- parity: one scripted conversation through both wires yields identical CallRecords ---------------------
+# Gate 0 (plan §9): "Responses <-> chat parity of CallRecords" -- against the REAL ProxyCore over api/fake.py.
 
-def _spec(run_key: str) -> RunSpec:
-    return RunSpec(run_key=run_key, arm="H3", harness="codex", item_id="aime/2025/1", benchmark="aime", stratum="aime",
-                   shard_id="parasail", endpoint_tag="parasail/fp8", rung=4, cap_tokens=4096, repeat=1, attempt=1,
-                   generation=1, partition="main", allowed_tools=("spawn_agent", "wait_agent", "update_plan"),
-                   spawn_tools=("spawn_agent",), root_call_ceiling=None, sampling_hash="s", template_sha256="t",
-                   prompt_version="dynorch-v1", proxy_version="p", harness_version="h")
-
-
-def _script(run, request, call_no):
-    n_tool = sum(1 for m in request.messages if m.role == "tool")
-    if n_tool == 0 and run.conversations.get(stubs.conversation_key(request), "root") == "root":
-        return Scripted(reasoning="delegate", content="", tool_calls=[("spawn_agent", {"message": "solve"})],
-                        completion_tokens=300, prompt_tokens=900)
-    return Scripted(reasoning="done", content="<final>17</final>", completion_tokens=150, prompt_tokens=1200)
+def _spec(run_key: str, *, repeat: int = 1) -> RunSpec:
+    """Two runs of the same cell (repeats 1 and 2, so their journals do not collide) driven over the two wires."""
+    return make_spec(run_key=run_key, arm="H3", harness="codex", rung=4, item_id="aime/2025/1", repeat=repeat,
+                     allowed_tools=("spawn_agent", "wait_agent", "update_plan"), spawn_tools=("spawn_agent",))
 
 
-async def _drive_chat(core: StubProxyCore, run_key: str) -> list:
+def _parity_script() -> FakeScript:
+    """Call 1 (root): reasoning + one spawn_agent tool call; call 2 (root, after the tool result): the answer."""
+    script = FakeScript()
+    script.set_reply("aime/2025/1", reply=[
+        FakeReply(content=fake_tool_call_text("spawn_agent", {"message": "solve"}), think_tokens=300),
+        FakeReply(content="<final>17</final>", think_tokens=150),
+    ])
+    return script
+
+
+async def _drive_chat(core, run_key: str) -> tuple[list, list]:
     tools = [{"type": "function", "function": {"name": "spawn_agent", "description": "Spawn a sub-agent",
                                                "parameters": {"type": "object", "properties": {"message": {"type": "string"}}}}},
              {"type": "function", "function": {"name": "wait_agent", "description": "Wait",
@@ -227,39 +228,42 @@ async def _drive_chat(core: StubProxyCore, run_key: str) -> list:
              {"type": "function", "function": {"name": "update_plan", "description": "plan",
                                                "parameters": {"type": "object", "properties": {"plan": {"type": "array"}}}}}]
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": USER}]
-    r1 = await core.chat(run_key, of.parse_chat_body({"model": "m", "messages": messages, "tools": tools, "stream": True,
-                                                      "max_tokens": 32000, "reasoning_effort": "high"}))
+    req1 = of.parse_chat_body({"model": "m", "messages": messages, "tools": tools, "stream": True,
+                               "max_tokens": 32000, "reasoning_effort": "high"})
+    r1 = await core.chat(run_key, req1)
     messages.append({"role": "assistant", "content": r1.content, "reasoning_content": r1.reasoning_content,
                      "tool_calls": [{"id": c.id, "type": "function",
                                      "function": {"name": c.name, "arguments": of.tool_arguments_json(c.arguments)}}
                                     for c in r1.tool_calls]})
     messages.append({"role": "tool", "tool_call_id": r1.tool_calls[0].id, "content": "<final>17</final>"})
-    r2 = await core.chat(run_key, of.parse_chat_body({"model": "m", "messages": messages, "tools": tools, "stream": True,
-                                                      "max_tokens": 32000, "reasoning_effort": "high"}))
-    return [r1.call, r2.call]
+    req2 = of.parse_chat_body({"model": "m", "messages": messages, "tools": tools, "stream": True,
+                               "max_tokens": 32000, "reasoning_effort": "high"})
+    r2 = await core.chat(run_key, req2)
+    return [r1.call, r2.call], [req1, req2]
 
 
-async def _drive_responses(core: StubProxyCore, run_key: str) -> list:
+async def _drive_responses(core, run_key: str) -> tuple[list, list]:
     body = _body(reasoning={"effort": "high"}, max_output_tokens=32000)
-    r1 = await core.chat(run_key, rf.parse_responses_body(body))
+    req1 = rf.parse_responses_body(body)
+    r1 = await core.chat(run_key, req1)
     items = rf.output_items(r1, response_id="resp_a", namespaces={"spawn_agent": "multi_agent_v1"})
     history = list(body["input"]) + items + [
         {"type": "function_call_output", "call_id": r1.tool_calls[0].id, "output": "<final>17</final>"}]
-    r2 = await core.chat(run_key, rf.parse_responses_body(_body(input=history, reasoning={"effort": "high"},
-                                                                max_output_tokens=32000)))
-    return [r1.call, r2.call]
+    req2 = rf.parse_responses_body(_body(input=history, reasoning={"effort": "high"}, max_output_tokens=32000))
+    r2 = await core.chat(run_key, req2)
+    return [r1.call, r2.call], [req1, req2]
 
 
-async def test_chat_and_responses_parity_produces_identical_call_records():
-    core = StubProxyCore(_script)
-    core.open_run(_spec("k" * 24), root_system_text=SYSTEM, subagent_system_text="solver")
-    core.open_run(_spec("r" * 24), root_system_text=SYSTEM, subagent_system_text="solver")
-    chat_calls = await _drive_chat(core, "k" * 24)
-    resp_calls = await _drive_responses(core, "r" * 24)
+async def test_chat_and_responses_parity_produces_identical_call_records(make_env):
+    env = make_env(_parity_script())
+    env.open(_spec("k" * 24), root_system=SYSTEM, subagent_system="solver")
+    env.open(_spec("r" * 24, repeat=2), root_system=SYSTEM, subagent_system="solver")
+    chat_calls, chat_reqs = await _drive_chat(env.core, "k" * 24)
+    resp_calls, resp_reqs = await _drive_responses(env.core, "r" * 24)
     assert len(chat_calls) == len(resp_calls) == 2
-    # Only the wire tag, the per-wire ignored keys, and two test-side artifacts of the stub (its generation ids
-    # embed the run key; queue wait is wall-clock noise) may differ.
-    masked = ("wire", "ignored_body_keys", "generation_ids", "queue_wait_seconds")
+    # Only the wire tag, the per-wire ignored keys, wall-clock noise (queue wait, latency) and the fake's
+    # generation ids may differ; tokens, grants, forced close, grace, cost, parse and re-injection are identical.
+    masked = ("wire", "ignored_body_keys", "generation_ids", "queue_wait_seconds", "latency_seconds")
     for a, b in zip(chat_calls, resp_calls):
         da, db = dataclasses.asdict(a), dataclasses.asdict(b)
         for key in masked:
@@ -267,10 +271,19 @@ async def test_chat_and_responses_parity_produces_identical_call_records():
         assert da == db
     assert chat_calls[0].wire == "chat" and resp_calls[0].wire == "responses"
     assert chat_calls[0].tool_calls == 1 and chat_calls[0].spawn_calls == 1 and chat_calls[0].finish_reason_returned == "tool_calls"
-    # The messages the core saw were the same on both wires (conversation key + reasoning re-sent).
-    chat_req = [r for k, r in core.calls if k == "k" * 24][1]
-    resp_req = [r for k, r in core.calls if k == "r" * 24][1]
+    assert chat_calls[1].reinjection == resp_calls[1].reinjection == "explicit"
+    assert chat_calls[1].completion_tokens == resp_calls[1].completion_tokens > 0
+    # The messages the core saw were the same on both wires (conversation key + reasoning re-sent) and so were
+    # the rendered prompts (identical prompt tokens on both calls).
+    chat_req, resp_req = chat_reqs[1], resp_reqs[1]
     assert [m.role for m in chat_req.messages] == [m.role for m in resp_req.messages]
     assert chat_req.messages[2].tool_calls == resp_req.messages[2].tool_calls
-    assert chat_req.messages[2].reasoning_content == resp_req.messages[2].reasoning_content == "delegate"
+    # the fake seeds its thinking text per node, so the two runs' reasoning differ in wording but not in length
+    # (reasoning_chars / reasoning_tokens are part of the identical CallRecords above); both wires re-sent it
+    assert chat_req.messages[2].reasoning_content and resp_req.messages[2].reasoning_content
     assert [t.name for t in chat_req.tools] == [t.name for t in resp_req.tools]
+    assert [c.prompt_tokens for c in chat_calls] == [c.prompt_tokens for c in resp_calls]
+    think = env.think_calls(phase="think")
+    assert len(think) == 4
+    assert chat_req.messages[2].reasoning_content in think[1].body["prompt"]
+    assert resp_req.messages[2].reasoning_content in think[3].body["prompt"]
