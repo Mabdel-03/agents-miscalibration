@@ -25,6 +25,22 @@ sampling and single-call depth, rerun with every generation forced to spend exac
 - Slopes per doubling: deep 11.0, pass@k 5.7, revision 4.8, vote 2.0. Deep portfolios add ~1 pt coverage.
 - Section 5 costs a width-at-depth follow-up (~$37).
 
+## Flat CSVs for analysis (`export_flat.py`)
+
+`./../../.venv/bin/python export_flat.py` writes, from the merged sealed tables:
+
+| file | grain | rows x cols |
+|---|---|---|
+| `data/forced_budget_v2_item_config.csv` | item x configuration x view | 20,218 x 52 |
+| `data/forced_budget_v2_generations.csv` | one API generation node | 14,031 x 35 |
+| `data/DATA_DICTIONARY.csv` | column meanings | |
+
+The item x configuration file is the central one: design coordinates (family, B, R, A, C), delivered outcome,
+pool coverage and selection gap, tokens and cost, effective depth, and each item's own reference numbers from
+the 25-sample bank (difficulty, pass@k / prefix coverage / vote readout at that configuration's own k = C/A).
+Filter `partition_id == "main"` and `view == "current"` (9,696 rows) for the study panel as reported; `view ==
+"archive"` gives the same configurations scored over every candidate they generated.
+
 ## Build
 
 ```bash
