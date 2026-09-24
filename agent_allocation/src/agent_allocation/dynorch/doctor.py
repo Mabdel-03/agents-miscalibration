@@ -209,20 +209,30 @@ def codex_binary(ctx: DoctorContext) -> Path:
     return Path(prefix) / "bin" / "codex"
 
 
+#: Every state path a CLI version probe could write to; the doctor runs on the LOGIN node, where ``/home`` is at
+#: 995k of 1,000k inodes, so HOME and CLAUDE_CONFIG_DIR must be redirected too (review minor 18: only CODEX_HOME,
+#: TMPDIR and the XDG dirs were, so ``openclaude --version`` still created ~/.claude).
+PROBE_ENV_KEYS: tuple[str, ...] = ("HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "TMPDIR", "XDG_CONFIG_HOME",
+                                   "XDG_CACHE_HOME", "XDG_STATE_HOME", "OPENCLAW_STATE_DIR")
+
+
 def probe_env(ctx: DoctorContext) -> dict[str, str]:
-    """The environment for CLI version probes: ``CODEX_HOME`` (and HOME-derived state) under the scratch root, so
-    a bare ``codex --version`` never writes ``~/.codex`` (it does when CODEX_HOME is unset: an observed /home write)."""
+    """The environment for CLI version probes: HOME and every harness state dir under the scratch root, so a bare
+    ``codex --version`` / ``openclaude --version`` never writes ``~/.codex`` or ``~/.claude`` (both do on start-up;
+    an observed /home write). Mirrors ``harness.base.probe_version``."""
     scratch = ctx.cfg.get("dynorch", {}).get("scratch_root")
     if not scratch:
         raise KeyError("config.dynorch.scratch_root is missing")
     probe_home = Path(scratch) / "doctor-probe-home"
-    return {**dict(ctx.env), "CODEX_HOME": str(probe_home / "codex"), "TMPDIR": str(probe_home / "tmp"),
-            "XDG_CACHE_HOME": str(probe_home / "cache"), "XDG_STATE_HOME": str(probe_home / "state")}
+    return {**dict(ctx.env), "HOME": str(probe_home / "home"), "CODEX_HOME": str(probe_home / "codex"),
+            "CLAUDE_CONFIG_DIR": str(probe_home / "home" / "cfg"), "TMPDIR": str(probe_home / "tmp"),
+            "XDG_CONFIG_HOME": str(probe_home / "home" / ".config"), "XDG_CACHE_HOME": str(probe_home / "cache"),
+            "XDG_STATE_HOME": str(probe_home / "state"), "OPENCLAW_STATE_DIR": str(probe_home / "openclaw")}
 
 
 def version_of(ctx: DoctorContext, argv: Sequence[str]) -> str | None:
     env = probe_env(ctx)
-    for key in ("CODEX_HOME", "TMPDIR", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+    for key in PROBE_ENV_KEYS:
         Path(env[key]).mkdir(parents=True, exist_ok=True)
     rc, out = ctx.run_command(argv, env)
     if rc != 0:

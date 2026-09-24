@@ -223,9 +223,37 @@ def owner_go_recorded(paths: RunPaths) -> bool:
     return False
 
 
+#: Plan §8: the extensions run in this order, each only after the previous one is sealed (its own Gate 4).
+EXTENSION_ORDER: tuple[str, ...] = ("ext_e0", "ext_e1", "ext_e2", "ext_e3")
+#: The forecast block of each extension (``forecast.blocks``) and the plan's admission headroom.
+EXTENSION_BLOCK: Mapping[str, str] = {"ext_e0": "e0_capped", "ext_e1": "e1_repeat", "ext_e2": "e2_spawn_disabled",
+                                      "ext_e3": "e3_openclaw"}
+EXTENSION_HEADROOM = Decimal("1.25")
+
+
+def extension_headroom(cfg: Mapping[str, Any], paths: RunPaths, stage: str) -> tuple[bool, dict[str, Any]]:
+    """Plan §1/§8: an extension is admitted only while ``remaining >= 1.25 x forecast`` of its own block
+    (review minor 23). ``(ok, detail)``; an unreadable forecast or ledger is reported, never silently ignored."""
+    from agent_allocation.dynorch import forecast as _forecast
+    from agent_allocation.dynorch import reconcile
+
+    block_name = EXTENSION_BLOCK[stage]
+    try:
+        block = next(b for b in _forecast.blocks(cfg) if b.name == block_name)
+        needed = EXTENSION_HEADROOM * Decimal(str(_forecast.block_forecast(block, cfg)["ceiling_usd"]))
+        settled = Decimal(str(reconcile.ledger_totals(paths)["settled_usd"]))
+    except Exception as exc:  # noqa: BLE001 - refuse loudly rather than admit an extension we cannot cost
+        return False, {"error": f"{type(exc).__name__}: {exc}", "block": block_name}
+    ceiling = Decimal(str(cfg["budget"]["credit_ceiling_usd"]))
+    remaining = ceiling - settled
+    return remaining >= needed, {"block": block_name, "forecast_usd": str(needed), "settled_usd": str(settled),
+                                 "credit_ceiling_usd": str(ceiling), "remaining_usd": str(remaining)}
+
+
 def stage_prerequisites(cfg: Mapping[str, Any], paths: RunPaths, stage: str) -> list[str]:
     """Why a stage may not start yet (empty = go): required gates advanced, the owner go recorded before main,
-    the endpoint lock frozen after the canary."""
+    the endpoint lock frozen after the canary, and -- for an extension -- the previous extension sealed and
+    ``remaining >= 1.25 x forecast`` (plan §1/§8; review minor 23)."""
     spec = stage_spec(cfg, stage)
     problems = [f"gate {g} has not recorded advance" for g in spec.requires if not gate_advanced(paths, g)]
     if stage != "canary" and not paths.endpoint_lock.exists():
@@ -233,6 +261,14 @@ def stage_prerequisites(cfg: Mapping[str, Any], paths: RunPaths, stage: str) -> 
     if stage == "main" and cfg.get("execution", {}).get("main_requires_passed_pilot_and_frozen_locks", True):
         if not owner_go_recorded(paths):
             problems.append("owner go/no-go not recorded (dynorch-gates --gate 2 --owner-go \"<text>\")")
+    if stage in EXTENSION_ORDER:
+        for earlier in EXTENSION_ORDER[:EXTENSION_ORDER.index(stage)]:
+            if not gate_advanced(paths, f"gate4_{earlier}"):
+                problems.append(f"extension order (plan §8): {earlier} must be sealed (gate4_{earlier} advance) "
+                                f"before {stage}")
+        ok, detail = extension_headroom(cfg, paths, stage)
+        if not ok:
+            problems.append(f"extension admission: remaining must cover 1.25 x the block forecast ({detail})")
     return problems
 
 
@@ -273,12 +309,49 @@ def write_status(paths: RunPaths, doc: Mapping[str, Any]) -> Path:
     return paths.status_json
 
 
-def stage_marker(paths: RunPaths, stage: str) -> Path:
-    """``state/stage_<stage>_started``: its mtime anchors the Gate 1 "nothing written under $HOME" scan."""
+def stage_marker(paths: RunPaths, stage: str, *, cfg: Mapping[str, Any] | None = None) -> Path:
+    """``state/stage_<stage>_started``: a JSON marker whose mtime anchors the Gate 1 "nothing written under $HOME"
+    check and which records the quota-reported inode count at the start, so the check can be a cheap DELTA instead
+    of an lstat walk of ~995k files on NFS (review minor 21)."""
     paths.state_dir.mkdir(parents=True, exist_ok=True)
     target = paths.state_dir / f"stage_{stage}_started"
-    target.write_text(utcnow())
+    doc: dict[str, Any] = {"at": utcnow(), "stage": stage}
+    if cfg is not None:
+        count, source = home_file_count(cfg, paths)
+        if count is not None:
+            doc.update({"home_files": count, "home_files_source": source})
+    target.write_text(json.dumps(doc, sort_keys=True))
     return target
+
+
+def home_file_count(cfg: Mapping[str, Any], paths: RunPaths) -> tuple[int | None, str]:
+    """``quota -s`` inode count for ``$HOME`` (``(None, reason)`` when it cannot be read)."""
+    from agent_allocation.dynorch import doctor
+    try:
+        ctx = doctor.DoctorContext(cfg=cfg, run_root=paths.run_dir)
+        count, source = doctor.home_file_count(ctx)
+        return int(count), str(source)
+    except Exception as exc:  # noqa: BLE001 - a diagnostic, never a blocker
+        log.warning("dynorch: home inode count unavailable (%s)", exc)
+        return None, f"unavailable: {type(exc).__name__}"
+
+
+def home_delta_since_marker(cfg: Mapping[str, Any], paths: RunPaths, marker: Path) -> tuple[int | None, dict[str, Any]]:
+    """``(delta, detail)`` of the quota inode count since ``marker`` was written (``(None, detail)`` when either
+    side is unavailable, which Gate 1 reports as "not scanned" rather than as a failure)."""
+    detail: dict[str, Any] = {"source": "quota"}
+    try:
+        before = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        return None, {"source": "marker_unreadable"}
+    if not isinstance(before, Mapping) or before.get("home_files") is None:
+        return None, {"source": "marker_without_count"}
+    after, source = home_file_count(cfg, paths)
+    detail.update({"before": int(before["home_files"]), "after": after, "after_source": source})
+    if after is None or source != "quota" or before.get("home_files_source") != "quota":
+        return None, detail
+    detail["delta"] = int(after) - int(before["home_files"])
+    return detail["delta"], detail
 
 
 # ------------------------------------------------------------------------------------------------------------------
@@ -441,7 +514,7 @@ async def _run(args: argparse.Namespace) -> int:
                     "account_balance_usd": str((before.total_credits_usd or Decimal(0)) - (before.total_usage_usd or Decimal(0)))}
         ceiling = active_ceiling(max_usd, settled, snapshot, account_auto_reload=bool(args.account_auto_reload))
         status["active_ceiling_usd"] = str(ceiling)
-        stage_marker(paths, args.stage)
+        stage_marker(paths, args.stage, cfg=cfg)
         write_status(paths, {**status, "state": "running"})
         summary = await launch_stage(cfg, paths, stage=args.stage, cells=cells, max_usd=max_usd, active_ceiling_usd=ceiling,
                                      resume=bool(args.resume), concurrency=args.concurrency, client=client,
@@ -604,10 +677,18 @@ def run_gate1(cfg: Mapping[str, Any], paths: RunPaths, *, home_scan: bool) -> An
     decision = endpoint_rule.read_decision(paths.run_dir) if paths.endpoint_lock.exists() else None
     marker = paths.state_dir / "stage_canary_started"
     home_new: list[str] | None = None
+    home_detail: dict[str, Any] = {"source": "not_scanned"}
     if home_scan and marker.exists():
-        home_new = new_files_under_home(Path.home(), marker.stat().st_mtime)
+        # the quota inode delta first (cheap); only fall back to the walk when quota cannot answer (minor 21)
+        delta, home_detail = home_delta_since_marker(cfg, paths, marker)
+        if delta is not None:
+            home_new = [] if delta <= 0 else [f"$HOME gained {delta} inode(s) during the stage"]
+        else:
+            home_new = new_files_under_home(Path.home(), marker.stat().st_mtime)
+            home_detail = {**home_detail, "fallback": "walk", "scanned": home_new is not None}
     result, overheads = gates.evaluate_gate1(cfg, runs, calls, recon, lock_decision=decision,
-                                             key_hits=key_hits_in_run_tree(paths.run_dir), home_new_files=home_new)
+                                             key_hits=key_hits_in_run_tree(paths.run_dir), home_new_files=home_new,
+                                             home_detail=home_detail)
     if overheads:
         paths.locks_dir.mkdir(parents=True, exist_ok=True)
         replace_atomic(paths.locks_dir / "harness_prompts.json",

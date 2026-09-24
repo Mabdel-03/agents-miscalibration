@@ -300,7 +300,7 @@ def test_gate1_verb_writes_result_and_harness_prompts(cfg, tmp_path, capsys):
     assert rc == dcli.EXIT_STOP_NOTIFY                       # only the skipped home scan fails
     result = json.loads((paths.run_dir / "gates" / "gate1_canary.json").read_text())
     failing = [c["name"] for c in result["criteria"] if not c["passed"]]
-    assert failing == ["nothing_written_under_home"], failing
+    assert failing == ["home_scan_completed"], failing       # "not scanned", not "files were written" (minor 21)
     prompts = json.loads((paths.locks_dir / "harness_prompts.json").read_text())
     assert prompts["S_H1"]["mean"] == 2000.0 and prompts["S_H3"]["n"] == 4
     assert '"gate": "gate1"' in out
@@ -380,3 +380,42 @@ def test_regrade_mismatches_regrades_the_rows_the_runner_actually_writes(cfg, tm
     assert dcli.regrade_mismatches(paths, pd.DataFrame([{**row, "correct": False}]), base) == 0
     # a row the runner never writes (enum NAME) is not silently counted as agreeing
     assert dcli.regrade_mismatches(paths, pd.DataFrame([{**row, "parse_status": "VALID"}]), base) == 0
+
+
+# ------------------------------------------------------------------------------------------------------------------
+# Extension admission (review minor 23)
+# ------------------------------------------------------------------------------------------------------------------
+
+def _advance(paths: RunPaths, name: str) -> None:
+    (paths.run_dir / "gates").mkdir(parents=True, exist_ok=True)
+    (paths.run_dir / "gates" / f"{name}.json").write_text(json.dumps({"decision": "advance"}))
+
+
+def test_extensions_need_the_previous_one_sealed_and_the_125x_headroom(cfg, tmp_path):
+    """Plan §1/§8: each extension runs only after the core AND the previous extension are sealed, and only while
+    ``remaining >= 1.25 x forecast``. Only ``gate4_main`` was checked, so E2 could start before E1 and an
+    extension that cannot finish within the ceiling could be launched and die at the ledger mid-way."""
+    paths = RunPaths.for_run(tmp_path / "run", local_state_dir=tmp_path / "local")
+    paths.ensure()
+    paths.endpoint_lock.parent.mkdir(parents=True, exist_ok=True)
+    paths.endpoint_lock.write_text("{}")
+    _advance(paths, "gate4_main")
+    problems = dcli.stage_prerequisites(cfg, paths, "ext_e2")
+    assert any("ext_e0 must be sealed" in p for p in problems) and any("ext_e1 must be sealed" in p for p in problems)
+    _advance(paths, "gate4_ext_e0")
+    _advance(paths, "gate4_ext_e1")
+    assert not [p for p in dcli.stage_prerequisites(cfg, paths, "ext_e2") if "must be sealed" in p]
+    # the headroom rule: with the ceiling already spent, the extension is refused
+    ok, detail = dcli.extension_headroom(cfg, paths, "ext_e1")
+    assert ok and Decimal(detail["forecast_usd"]) > 0
+    (paths.state_dir / "ledger_journal.jsonl").parent.mkdir(parents=True, exist_ok=True)
+    import agent_allocation.dynorch.reconcile as _rec
+
+    real_totals = _rec.ledger_totals
+    try:
+        _rec.ledger_totals = lambda p: {"settled_usd": str(cfg["budget"]["credit_ceiling_usd"])}
+        ok, detail = dcli.extension_headroom(cfg, paths, "ext_e1")
+        assert not ok and Decimal(detail["remaining_usd"]) == 0
+        assert any("extension admission" in p for p in dcli.stage_prerequisites(cfg, paths, "ext_e1"))
+    finally:
+        _rec.ledger_totals = real_totals

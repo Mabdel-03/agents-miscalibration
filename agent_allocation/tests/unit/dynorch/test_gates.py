@@ -242,8 +242,18 @@ def test_gate1_key_string_and_home_scans(cfg):
     result, _ = gate1(cfg, clean_canary(cfg), home=["/home/u/.npm/x"])
     assert "nothing_written_under_home" in failing(result)
     runs, calls = clean_canary(cfg).frames()
-    result, _ = gates.evaluate_gate1(cfg, runs, calls, recon(rows=[sample_row()]), lock_decision=LOCK, key_hits=[], home_new_files=None)
-    assert "nothing_written_under_home" in failing(result)
+    # review minor 21: a scan that could not run is "not scanned" -- a NOTIFY of its own, not a claim that files
+    # WERE written (an lstat walk of ~995k NFS inodes routinely exceeds its budget)
+    result, _ = gates.evaluate_gate1(cfg, runs, calls, recon(rows=[sample_row()]), lock_decision=LOCK, key_hits=[],
+                                     home_new_files=None, home_detail={"source": "not_scanned"})
+    assert failing(result) == {"home_scan_completed"} and result.decision == gates.STOP_NOTIFY
+    observed = next(c for c in result.criteria if c.name == "nothing_written_under_home")
+    assert json.loads(observed.observed)["detail"] == {"source": "not_scanned"}
+    # the quota inode delta is the cheap path: a positive delta fails the criterion with the count in evidence
+    result, _ = gates.evaluate_gate1(cfg, runs, calls, recon(rows=[sample_row()]), lock_decision=LOCK, key_hits=[],
+                                     home_new_files=["$HOME gained 12 inode(s) during the stage"],
+                                     home_detail={"source": "quota", "before": 900, "after": 912, "delta": 12})
+    assert "nothing_written_under_home" in failing(result) and "home_scan_completed" not in failing(result)
 
 
 def test_gate1_missing_column_raises(cfg):

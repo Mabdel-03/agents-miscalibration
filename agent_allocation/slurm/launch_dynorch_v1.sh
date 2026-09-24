@@ -21,7 +21,14 @@ case "$VERB" in gate0|canary|pilot|run|finalize) ;; *) echo "unknown VERB=$VERB"
 CFG=${CFG:-configs/dynorch_v1.json}
 RUN=${RUN:-/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/dynorch_v1/artifacts}
 mkdir -p "$(dirname "$RUN")/logs"
-EXPORTS="VERB=$VERB,STAGE=$STAGE,CFG=$CFG,RUN=$RUN,CODE=$CODE${MAX_USD:+,MAX_USD=$MAX_USD}${RUN_FLAGS:+,RUN_FLAGS=$RUN_FLAGS}"
+# `--export` splits on commas, so `RUN_FLAGS="--arms H1,H3"` would arrive as `--arms H1` plus a bogus variable
+# `H3` and the stage would silently run fewer arms (a restriction never adds cells, so nothing complains).
+# Review minor 19: refuse commas, and keep the caller's environment (ALL) so PATH/conda reach the job.
+case "${RUN_FLAGS:-}" in
+  *,*) echo "RUN_FLAGS must not contain a comma (sbatch --export splits on it): ${RUN_FLAGS}" >&2
+       echo "       use spaces: RUN_FLAGS=\"--arms H1 --arms H3\"" >&2; exit 2 ;;
+esac
+EXPORTS="ALL,VERB=$VERB,STAGE=$STAGE,CFG=$CFG,RUN=$RUN,CODE=$CODE${MAX_USD:+,MAX_USD=$MAX_USD}${RUN_FLAGS:+,RUN_FLAGS=$RUN_FLAGS}"
 CMD=(sbatch --parsable --job-name="dyn-$VERB-$STAGE" --export="$EXPORTS" slurm/dynorch_v1.sbatch)
 if [ "$DRY" = 1 ]; then echo "${CMD[*]}"; exit 0; fi
 if [ "$TEST" = 1 ]; then sbatch --test-only --job-name="dyn-$VERB-$STAGE" --export="$EXPORTS" slurm/dynorch_v1.sbatch; exit $?; fi

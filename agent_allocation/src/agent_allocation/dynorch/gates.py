@@ -247,6 +247,7 @@ def reconciliation_crits(reconciliation: Mapping[str, Any] | None, *, tolerance_
 
 def evaluate_gate1(cfg: Mapping[str, Any], runs: Any, calls: Any, reconciliation: Mapping[str, Any] | None, *,
                    lock_decision: Mapping[str, Any] | None, key_hits: Sequence[str], home_new_files: Sequence[str] | None,
+                   home_detail: Mapping[str, Any] | None = None,
                    evidence: str = "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + state/reconciliation_canary.json"
                    ) -> tuple[GateResult, dict[str, dict[str, Any]]]:
     """Plan §9 Gate 1 over the canary rows. Returns the result and the ``S_h`` document for
@@ -309,9 +310,18 @@ def evaluate_gate1(cfg: Mapping[str, Any], runs: Any, calls: Any, reconciliation
                       all(arm in overheads for arm in G2_HARNESS_ARMS), "locks/harness_prompts.json"))
     crits.append(crit("no_key_string_in_run_tree", list(key_hits), "no key-shaped string under the run root", not key_hits,
                       "run root scan", severity=STOP))
-    crits.append(crit("nothing_written_under_home", None if home_new_files is None else list(home_new_files)[:20],
-                      "no file created under $HOME during the stage", home_new_files is not None and not home_new_files,
-                      "home scan"))
+    # review minor 21: "not scanned" is a NOTIFY with an explicit observed value, not a failed criterion -- an
+    # lstat walk of ~995k NFS inodes routinely exceeded its budget and would have ended every canary in
+    # stop_notify for a non-finding. The cheap path is the quota inode delta the stage marker records.
+    scanned = home_new_files is not None
+    crits.append(crit("nothing_written_under_home",
+                      {"detail": dict(home_detail or {}),
+                       "new": None if not scanned else list(home_new_files)[:20]},
+                      "no file created under $HOME during the stage (quota inode delta, else a $HOME walk)",
+                      not scanned or not home_new_files, "home scan"))
+    if not scanned:
+        crits.append(crit("home_scan_completed", dict(home_detail or {}),
+                          "the $HOME check actually ran (quota delta or a completed walk)", False, "home scan"))
     return finish("gate1", "canary", crits), overheads
 
 

@@ -110,7 +110,9 @@ import json; s=json.load(open("$RUN/state/status.json")); print(s["state"], s.ge
 EOF
 $A dynorch-reconcile --config $CFG --run-dir $RUN --stage main --phase after   # spend vs /key any time (free endpoints)
 ```
-**Stop rules** (plan §9 Gate 3; `touch $RUN/control/STOP` drains cleanly, `scancel` is the hard stop): parse-failure
+**Stop rules** (plan §9 Gate 3; `touch $RUN/control/STOP` drains cleanly, `scancel` is the hard stop). **Remove
+the sentinel before the next job** (`rm $RUN/control/STOP $RUN/control/DRAIN`): a stage now REFUSES to start while
+one exists (it would otherwise drain itself at the first 5 s poll and execute nothing). Rules: parse-failure
 share over the trailing 50 runs > 0.15; timeout share > 0.05; harness crash share > 0.10; provider mismatch on any
 call; the endpoint failing §4 for > 30 min (`GET /models/.../endpoints` by hand — the lock is never re-evaluated);
 a ledger invariant violation; unresolved exposure > $2; any upstream 402 (`status.json → reconciliation.decision ==
@@ -137,7 +139,16 @@ STAGE=ext_e2 slurm/launch_dynorch_v1.sh run --stage ext_e2   # E2 spawn-disabled
 STAGE=ext_e3 slurm/launch_dynorch_v1.sh run --stage ext_e3   # E3 OpenClaw @ {4,16} (unless already substituted)
 slurm/launch_dynorch_v1.sh finalize --stage ext_e0            # each extension reconciled and sealed on its own
 ```
-Restrict a stage with `RUN_FLAGS="--arms H1 --rungs 16"` (a restriction never adds cells).
+Restrict a stage with `RUN_FLAGS="--arms H1 --rungs 16"` (a restriction never adds cells; the pre-registered
+manifest is write-once, so a filtered relaunch never shrinks the planned cell set). **`RUN_FLAGS` must not contain
+a comma** — `sbatch --export` splits on it, so `--arms H1,H3` would silently run one arm; the launcher refuses it.
+Each extension also needs the previous one sealed (`gate4_ext_e0` before `ext_e1`, ...) and
+`remaining ≥ 1.25 × forecast`; `dynorch-run` refuses otherwise and names the shortfall.
+
+Every VERB passes `--resume`. Re-running a stage without it is refused as soon as any cell has an unfinished or
+rerun-eligible record (it would overwrite paid records in place and conflict in the write-once call journal).
+Submitting the sbatch directly (without the launcher) needs the log dir first:
+`mkdir -p $(dirname $RUN)/logs && sbatch --export=ALL,VERB=run,... slurm/dynorch_v1.sbatch`.
 
 ## Where things are
 

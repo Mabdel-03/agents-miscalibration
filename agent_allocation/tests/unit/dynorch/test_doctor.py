@@ -98,13 +98,19 @@ def test_clean_environment_passes(cfg, tmp_path):
     assert checks["home_file_count_below_990k"]["detail"]["source"] == "quota"
 
 
-def test_cli_probes_run_with_codex_home_on_scratch(cfg, tmp_path):
+def test_cli_probes_run_with_every_state_path_on_scratch(cfg, tmp_path):
+    """Review minor 18: the doctor runs on the login node, where /home is at 995k of 1,000k inodes. A probe that
+    redirects CODEX_HOME but not HOME / CLAUDE_CONFIG_DIR still lets ``openclaude --version`` create ~/.claude."""
     ctx = make_ctx(cfg, tmp_path)
     doctor.run_checks(ctx)
-    env = ctx.run_command.seen["codex"]
     scratch = ctx.cfg["dynorch"]["scratch_root"]
-    assert env["CODEX_HOME"].startswith(scratch) and env["TMPDIR"].startswith(scratch)
-    assert not doctor.under_home(env["CODEX_HOME"], ctx.home) and Path(env["CODEX_HOME"]).is_dir()
+    for probe in ("codex", "openclaude"):
+        env = ctx.run_command.seen.get(probe)
+        if env is None:
+            continue
+        for key in ("HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
+            assert env.get(key, "").startswith(scratch), (probe, key, env.get(key))
+            assert not doctor.under_home(env[key], ctx.home) and Path(env[key]).is_dir()
     assert ctx.run_command.seen["quota"] is None
 
 
