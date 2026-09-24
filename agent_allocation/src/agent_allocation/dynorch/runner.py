@@ -59,6 +59,7 @@ from agent_allocation.dynorch.harness.base import (
 from agent_allocation.dynorch.httpd import ReplyLog
 from agent_allocation.dynorch.plan import BaseInputs, item_slug
 from agent_allocation.dynorch.records import RunRecord, RunSpec
+from agent_allocation.live import RunRefused
 from agent_allocation.paths import PROJECT_ROOT
 from agent_allocation.prompts.render import output_requirement
 from agent_allocation.storage._atomic import replace_atomic
@@ -73,7 +74,11 @@ log = logging.getLogger("agent_allocation.dynorch.runner")
 
 TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "failed", "timeout", "transport_failed", "refused_before_start"})
 RERUN_REASONS: tuple[str, ...] = ("zero_proxy_calls_served", "last_reply_transport_or_ledger_error", "killed_by_drain",
-                                  "interrupted")
+                                  "interrupted", "infrastructure_stop")
+#: An upstream 402/401 (key limit, account) is an infrastructure stop (plan B6 / Gate 3): the account refused, no
+#: model ran, nothing was paid. It drains the stage and NEVER counts against the frozen ``<= 2 reruns`` (which
+#: bounds reruns of runs the model actually served); the cell is re-executed by the next ``--resume``.
+INFRASTRUCTURE_STOP = "infrastructure_stop"
 TRANSPORT_ERROR_CODES: frozenset[str] = frozenset({"upstream_failed", "ledger_refused", "internal_error"})
 _PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 scrubbed_env = harness_env
@@ -157,6 +162,7 @@ class StageSummary:
     executed: int = 0
     skipped: int = 0
     reruns: int = 0
+    errors: int = 0            # cells whose attempt raised outside the record (the stage still finishes)
     drained: bool = False
     statuses: dict[str, int] = field(default_factory=dict)
     records: dict[str, RunRecord] = field(default_factory=dict)
@@ -167,7 +173,8 @@ class Runner:
 
     def __init__(self, core: Any, adapters: Mapping[str, HarnessAdapter], settings: RunnerSettings, *,
                  proxy_url: str, store: Any, inputs: BaseInputs, reply_log: ReplyLog, cfg: Mapping[str, Any],
-                 base_env: Mapping[str, str] | None = None, journal: Any = None) -> None:
+                 base_env: Mapping[str, str] | None = None, journal: Any = None,
+                 wait_for_run: Any = None) -> None:
         self.core = core
         self.journal = journal
         self.adapters = dict(adapters)
@@ -178,6 +185,9 @@ class Runner:
         self.reply_log = reply_log
         self.cfg = cfg
         self.base_env = dict(base_env) if base_env is not None else dict(os.environ)
+        #: ``ProxyServer.wait_for_run``: the calls the proxy is still finishing for a harness that went away are
+        #: awaited before ``close_run`` so the record is finalised once, with every token counted (major 14).
+        self.wait_for_run = wait_for_run
         self._draining = asyncio.Event()
         self._in_flight: dict[str, asyncio.subprocess.Process] = {}
         self._drain_killed: set[str] = set()
@@ -185,13 +195,25 @@ class Runner:
 
     # -- drain ---------------------------------------------------------------------------------------------
     def request_drain(self) -> None:
-        """Stop admitting runs and terminate in-flight harnesses (their attempts become ``killed_by_drain``)."""
+        """Plan §6: stop admitting runs and LET THE IN-FLIGHT HARNESSES FINISH (``drain_wait_seconds``, 800 s).
+
+        Killing them at once threw away up to ``concurrency`` paid runs at every 12 h job boundary and burned one
+        of their two reruns each; only the survivors of the wait are terminated (``killed_by_drain``).
+        """
         if not self._draining.is_set():
-            log.warning("dynorch runner: drain requested; %d in flight", len(self._in_flight))
+            log.warning("dynorch runner: drain requested; %d in flight, waiting up to %.0f s for them to settle",
+                        len(self._in_flight), self.settings.drain_wait_seconds)
             self._draining.set()
-            for run_key, proc in list(self._in_flight.items()):
-                self._drain_killed.add(run_key)
-                _signal_group(proc, signal.SIGTERM)
+
+    async def _terminate_in_flight(self) -> None:
+        """The drain wait expired: SIGTERM (then SIGKILL) every harness still running; those attempts rerun."""
+        procs = list(self._in_flight.items())
+        for run_key, _ in procs:
+            self._drain_killed.add(run_key)
+        if procs:
+            log.warning("dynorch runner: drain wait over; terminating %d harness group(s)", len(procs))
+            await asyncio.gather(*[_terminate(proc, self.settings.sigkill_after) for _, proc in procs],
+                                 return_exceptions=True)
 
     @property
     def draining(self) -> bool:
@@ -213,8 +235,14 @@ class Runner:
         """Execute an explicit cell list under ``stage`` (what ``run_stage`` does after planning; the e2e's entry)."""
         planmod.write_plan(specs, self.settings.run_root, stage)
         summary = StageSummary(stage=stage, planned=len(specs))
-        existing = self._existing_by_cell() if resume else {}
+        # The store is ALWAYS consulted (review major 4/15): re-running a stage without --resume must never
+        # overwrite a paid record in place, collide with the ledger attempt ids it already reserved or conflict in
+        # the write-once call journal after the upstream call was paid. A finished cell is skipped; an unfinished
+        # or rerun-eligible one needs --resume (which resolves the inherited ledger attempts and bumps the
+        # execution generation first).
+        existing = self._existing_by_cell()
         todo: list[RunSpec] = []
+        blocked: list[str] = []
         for spec in specs:
             previous = existing.get(_cell_key(spec))
             if previous is None:
@@ -224,14 +252,31 @@ class Runner:
                 summary.skipped += 1
                 summary.records[previous.spec.run_key] = previous
                 continue
+            if not resume:
+                blocked.append(f"{previous.spec.arm}/{previous.spec.rung}/{previous.spec.item_id} "
+                               f"({previous.status}, attempt {previous.spec.attempt})")
+                continue
+            if not self._attempts_left(previous):
+                summary.skipped += 1
+                summary.records[previous.spec.run_key] = self._exhaust_attempts(previous)
+                continue
             todo.append(self._next_attempt(previous, resume=True))
+        if blocked:
+            raise RunRefused(f"{len(blocked)} cell(s) of stage {stage} already have an unfinished or rerun-eligible "
+                             f"record; pass --resume to continue them (e.g. {blocked[:3]})")
         semaphore = asyncio.Semaphore(self.settings.concurrency)
 
         async def one(spec: RunSpec) -> None:
             async with semaphore:
                 if self._draining.is_set():
                     return
-                record = await self.run_spec(spec)
+                try:
+                    record = await self.run_spec(spec)
+                except Exception as exc:  # noqa: BLE001 - one bad cell must never take the stage down (major 8)
+                    log.exception("dynorch runner: cell %s/%s/%s failed outside the attempt: %s", spec.arm,
+                                  spec.rung, spec.item_id, exc)
+                    summary.errors += 1
+                    return
                 summary.executed += 1
                 summary.records[record.spec.run_key] = record
                 summary.statuses[record.status] = summary.statuses.get(record.status, 0) + 1
@@ -247,21 +292,51 @@ class Runner:
             else:
                 summary.drained = True
                 try:
-                    await asyncio.wait_for(waiter, timeout=self.settings.drain_wait_seconds)
+                    # shielded: a timeout here must not cancel the in-flight runs, it must terminate them cleanly
+                    await asyncio.wait_for(asyncio.shield(waiter), timeout=self.settings.drain_wait_seconds)
                 except asyncio.TimeoutError:
-                    log.error("dynorch runner: drain wait of %.0f s exceeded; abandoning in-flight runs",
+                    log.error("dynorch runner: drain wait of %.0f s exceeded; terminating the survivors",
                               self.settings.drain_wait_seconds)
-                    for task in tasks:
-                        task.cancel()
+                    await self._terminate_in_flight()
+                    try:
+                        await asyncio.wait_for(asyncio.shield(waiter), timeout=self.settings.sigkill_after + 60.0)
+                    except asyncio.TimeoutError:
+                        log.error("dynorch runner: runs still unfinished after the kill; cancelling them")
+                        for task in tasks:
+                            task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
         summary.reruns = sum(1 for r in summary.records.values() if r.spec.attempt > 1)
+        summary.drained = summary.drained or self._draining.is_set()
         return summary
 
     def _existing_by_cell(self) -> dict[tuple[str, str, str, int, int], RunRecord]:
         return {_cell_key(record.spec): record for record in self.store.scan().values()}
 
     def _rerun_pending(self, record: RunRecord) -> bool:
-        return (record.rerun_reason in RERUN_REASONS and record.spec.attempt <= self.settings.max_reruns
-                and record.status != "done")
+        if record.status == "done":
+            return False
+        if str(record.error or "").startswith(f"{INFRASTRUCTURE_STOP}:") or record.rerun_reason == INFRASTRUCTURE_STOP:
+            return True                         # the account refused: no model ran, no rerun consumed
+        return record.rerun_reason in RERUN_REASONS and record.spec.attempt <= self.settings.max_reruns
+
+    def _attempts_left(self, record: RunRecord) -> bool:
+        """The frozen table's ``<= 2 reruns`` also bounds INTERRUPTED records (review minor 17): a cell killed by
+        crash / scancel / drain-timeout over and over must not accumulate paid attempts a4, a5, ..."""
+        if str(record.error or "").startswith(f"{INFRASTRUCTURE_STOP}:") or record.rerun_reason == INFRASTRUCTURE_STOP:
+            return True
+        return record.spec.attempt <= self.settings.max_reruns
+
+    def _exhaust_attempts(self, record: RunRecord) -> RunRecord:
+        """Close a record that has used its reruns: terminal ``failed``, no further attempt, y stays NaN."""
+        record.status = "failed"
+        record.rerun_reason = None
+        record.error = record.error or f"interrupted; attempt cap ({self.settings.max_reruns} reruns) reached"
+        record.finished_at = record.finished_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self.store.save(record)
+        self._journal_attempt(record)
+        log.warning("dynorch runner: %s/%s/%s has used its reruns (attempt %d); left failed", record.spec.arm,
+                    record.spec.rung, record.spec.item_id, record.spec.attempt)
+        return record
 
     def _next_attempt(self, previous: RunRecord, *, resume: bool) -> RunSpec:
         spec = previous.spec
@@ -290,12 +365,15 @@ class Runner:
                           / raw.relative_to(self.settings.run_root))
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(raw), str(target))
-        archive = getattr(self.store, "archive_previous", None)
-        if archive is not None:
-            archive(spec)
         previous.status = "failed"
         previous.rerun_reason = "interrupted"
         previous.error = previous.error or "interrupted before close (resume)"
+        # save BEFORE archiving (review minor 20): archive_previous moves the file on disk, so an unsaved mutation
+        # left runs_superseded/ claiming the attempt was still `running` while the attempts journal said `failed`
+        self.store.save(previous)
+        archive = getattr(self.store, "archive_previous", None)
+        if archive is not None:
+            archive(spec)
         self._journal_attempt(previous)
 
     # -- one cell ------------------------------------------------------------------------------------------
@@ -334,24 +412,38 @@ class Runner:
             plan = adapter.build_command(work.root, spec, proxy_base)
             check_env(plan.env, work=work.root, run_key=spec.run_key)
             self._write_launch_json(work, spec, plan, wall)
-        except Exception:
-            self.core.close_run(spec.run_key, status="refused_before_start")   # never leave a run open
-            raise
+        except Exception as exc:
+            log.error("dynorch runner: %s refused before start: %s", spec.run_key, exc)
+            return self._close_failed(spec, "refused_before_start", exc, started)
         killed_by_drain = False
         exhausted_kill = False
-        if getattr(adapter, "in_process", False):
-            result = await self._run_in_process(adapter, work, spec, proxy_base, wall)
-            timed_out = result.timed_out
-            exit_code = result.exit_code
-        else:
-            exit_code, timed_out, killed_by_drain, exhausted_kill = await self._run_subprocess(spec, plan, work, wall)
-            result = adapter.parse_result(work.stdout.read_bytes() if work.stdout.exists() else b"",
-                                          work.stderr.read_bytes() if work.stderr.exists() else b"", work.root)
+        try:
+            if getattr(adapter, "in_process", False):
+                result = await self._run_in_process(adapter, work, spec, proxy_base, wall)
+                timed_out = result.timed_out
+                exit_code = result.exit_code
+            else:
+                exit_code, timed_out, killed_by_drain, exhausted_kill = await self._run_subprocess(spec, plan, work,
+                                                                                                   wall)
+                result = adapter.parse_result(work.stdout.read_bytes() if work.stdout.exists() else b"",
+                                              work.stderr.read_bytes() if work.stderr.exists() else b"", work.root)
+        except Exception as exc:  # noqa: BLE001 - ENOENT on the binary, an adapter bug, a full disk: one cell,
+            log.exception("dynorch runner: %s failed to run: %s", spec.run_key, exc)   # not the whole 12 h job (8)
+            return self._close_failed(spec, "failed", exc, started)
         wall_seconds = time.monotonic() - started
+        # a call the harness abandoned is still finishing upstream: await it so the record is finalised ONCE, with
+        # its tokens counted and its delivery verdict known (major 14)
+        if self.wait_for_run is not None:
+            try:
+                await self.wait_for_run(spec.run_key, settings.sigkill_after + 60.0)
+            except Exception as exc:  # noqa: BLE001 - never lose a run over the wait
+                log.warning("dynorch runner: waiting for %s's parked calls failed: %s", spec.run_key, exc)
         status, rerun_reason, error = self._status_of(spec, timed_out=timed_out, killed_by_drain=killed_by_drain)
         record: RunRecord = self.core.close_run(spec.run_key, status=status)
         if not isinstance(record, RunRecord):
             raise TypeError(f"core.close_run returned {type(record).__name__}, expected RunRecord")
+        core_error = str(record.error or "")
+        infrastructure_stop = core_error.startswith(f"{INFRASTRUCTURE_STOP}:")
         record.status = status
         record.rerun_reason = rerun_reason
         if error:
@@ -363,6 +455,15 @@ class Runner:
                          "sigterm_after_exhaustion": exhausted_kill, "wall_timeout_seconds": wall,
                          "work_dir": str(work.root)})
         record.harness_reported = reported
+        if infrastructure_stop:
+            # plan B6 / Gate 3: an upstream 402/401 is an infrastructure stop, not a harness outcome. Draining here
+            # keeps the stage from burning every remaining cell's attempts against a refusing account (major 11).
+            record.error = core_error
+            record.rerun_reason = INFRASTRUCTURE_STOP
+            record.status = "transport_failed"
+            log.error("dynorch runner: %s hit an infrastructure stop (%s); draining the stage", spec.run_key,
+                      core_error)
+            self.request_drain()
         served_message, served_source = self.reply_log.delivered(spec.run_key)
         if record.final_message is None:            # the core may fill it at close_run (WP-A R-A6); the log is the check
             record.final_message, record.final_source = served_message, served_source
@@ -380,6 +481,21 @@ class Runner:
         self.store.save(record)
         return record
 
+    def _close_failed(self, spec: RunSpec, status: str, exc: BaseException, started: float) -> RunRecord:
+        """Close an attempt that never reached its harness (or died outside the proxy) as a stored record instead
+        of letting the exception escape into the stage's gather (review major 8)."""
+        try:
+            record: RunRecord = self.core.close_run(spec.run_key, status=status)
+        except Exception:  # noqa: BLE001 - the core may already have closed it
+            record = self.core.record_of(spec.run_key)
+            record.status = status
+        record.error = f"{type(exc).__name__}: {exc}"
+        record.wall_seconds = round(time.monotonic() - started, 3)
+        calls = int(self.core.budget_view(spec.run_key).get("calls", 0))
+        record.rerun_reason = "zero_proxy_calls_served" if calls == 0 and status != "refused_before_start" else None
+        self.store.save(record)
+        return record
+
     def _status_of(self, spec: RunSpec, *, timed_out: bool, killed_by_drain: bool) -> tuple[str, str | None, str | None]:
         """The frozen rerun rule, decided from what the proxy served (outcome-blind)."""
         view = self.core.budget_view(spec.run_key)
@@ -389,11 +505,9 @@ class Runner:
             return "failed", "killed_by_drain", "killed by the drain signal"
         if last is not None and last.kind == "error" and (last.code in TRANSPORT_ERROR_CODES or last.status >= 500):
             return "transport_failed", "last_reply_transport_or_ledger_error", f"last proxy reply: {last.status} {last.code}"
-        core_error = getattr(self.core, "record_of", None)
-        if core_error is not None:
-            error = str(core_error(spec.run_key).error or "")
-            if error.startswith("upstream_failed:"):
-                return "transport_failed", "last_reply_transport_or_ledger_error", error
+        # NOTHING else makes a run transport_failed (review major 10): the frozen rule is "the LAST proxy reply was
+        # a transport/ledger error". An earlier sub-agent failure the harness recovered from -- it delegated again,
+        # the root answered -- must not discard a delivered answer, and a 402 after it never reruns.
         if calls == 0:
             status = "timeout" if timed_out else "failed"
             return status, "zero_proxy_calls_served", "harness served no proxy call"
@@ -644,7 +758,7 @@ def summary_dict(summary: StageSummary, ledger: Any, *, inherited: Mapping[str, 
     snap = ledger.snapshot()
     counts = {status: sum(1 for r in records if r.status == status) for status in sorted(TERMINAL_STATUSES)}
     return {"stage": summary.stage, "runs": summary.planned, "executed": summary.executed, "skipped": summary.skipped,
-            "reruns": summary.reruns, "drained": summary.drained, **counts,
+            "reruns": summary.reruns, "errors": summary.errors, "drained": summary.drained, **counts,
             "upstream_402": bool(upstream_402 or infra_402), "settled_usd": str(snap.settled),
             "in_flight_usd": str(snap.in_flight), "unresolved_usd": str(snap.unresolved),
             "inherited": dict(inherited or {})}
@@ -670,6 +784,11 @@ async def launch_stage(cfg: Mapping[str, Any], paths: Any, *, stage: str, cells:
     from agent_allocation.live import active_ceiling
 
     run_root = Path(paths.run_dir)
+    for sentinel in (Path(paths.stop_sentinel), Path(paths.drain_sentinel)):
+        if sentinel.exists():
+            # review minor 22: an unconsumed sentinel drained every later job at its first poll, executing nothing
+            raise RunRefused(f"control sentinel {sentinel} is present: remove it before starting a stage "
+                             f"(`rm {sentinel}`) -- it would drain this job immediately")
     locks = endpoint_rule.read_locks(run_root)
     inputs = apply_provider_map(BaseInputs.load(cfg["base_run_root"], model=cfg["primary_model"]), run_root)
     stack = await build_stack(cfg, run_root, client=client, locks=locks, ceiling_usd=Decimal(str(max_usd)),
@@ -683,7 +802,8 @@ async def launch_stage(cfg: Mapping[str, Any], paths: Any, *, stage: str, cells:
         adapters = adapters_from_config(cfg)
         settings = RunnerSettings.from_config(cfg, run_root=run_root, concurrency=concurrency)
         runner = Runner(stack.core, adapters, settings, proxy_url=server.base_url, store=stack.store, inputs=inputs,
-                        reply_log=server.reply_log, cfg=cfg, journal=stack.journal)
+                        reply_log=server.reply_log, cfg=cfg, journal=stack.journal,
+                        wait_for_run=server.wait_for_run)
         try:
             install_drain_handler(runner)
         except (ValueError, RuntimeError, NotImplementedError) as exc:     # not the main thread / no signals

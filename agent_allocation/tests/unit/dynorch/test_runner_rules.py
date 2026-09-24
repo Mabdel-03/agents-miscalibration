@@ -5,7 +5,7 @@ double, everything else against an in-memory store."""
 from __future__ import annotations
 
 import asyncio
-import json
+import dataclasses
 from pathlib import Path
 from typing import Any
 
@@ -99,3 +99,80 @@ async def test_watchdog_does_not_fire_while_the_run_still_has_budget(monkeypatch
     await asyncio.sleep(0.15)
     proc.returncode = 0
     assert await asyncio.wait_for(task, timeout=2.0) is False
+
+
+# ---- the store is always consulted; attempts are bounded (review majors 4/15, minor 17) ------------------------
+
+def _store_with(tmp_path: Path, record: RunRecord):
+    from agent_allocation.dynorch.journal import RunStore
+
+    store = RunStore(tmp_path)
+    store.save(record)
+    return store
+
+
+def _record(spec: RunSpec, *, status: str, rerun_reason: str | None = None, error: str | None = None) -> RunRecord:
+    record = new_run_record(spec, status=status, started_at="2026-09-23T00:00:00Z")
+    record.status = status
+    record.rerun_reason = rerun_reason
+    record.error = error
+    if status != "running":
+        record.finished_at = "2026-09-23T00:05:00Z"
+    return record
+
+
+async def test_a_finished_cell_is_skipped_even_without_resume(tmp_path: Path):
+    """Review major 4: re-running a stage without --resume must not re-execute (and overwrite in place, and
+    conflict in the write-once journal after paying for) a cell that already has a paid, terminal record."""
+    spec = make_spec(rung=4, partition="canary")
+    store = _store_with(tmp_path, _record(spec, status="done"))
+    runner = make_runner(FakeCore({}), make_settings(run_root=tmp_path), store=store)
+    summary = await runner.run_specs("canary", [spec], resume=False)
+    assert summary.skipped == 1 and summary.executed == 0
+    assert store.load(spec).status == "done"
+
+
+async def test_an_unfinished_cell_without_resume_is_refused_loudly(tmp_path: Path):
+    """Review major 15: continuing an interrupted or rerun-eligible cell needs --resume (which resolves the
+    inherited ledger attempts and bumps the execution generation); silently re-running it as attempt 1 collides
+    with the ledger attempt ids and the call journal AFTER the upstream call was paid."""
+    from agent_allocation.live import RunRefused
+
+    spec = make_spec(rung=4, partition="canary")
+    store = _store_with(tmp_path, _record(spec, status="running"))
+    runner = make_runner(FakeCore({}), make_settings(run_root=tmp_path), store=store)
+    with pytest.raises(RunRefused, match="--resume"):
+        await runner.run_specs("canary", [spec], resume=False)
+    killed = make_spec(rung=8, partition="canary", item_id="aime/2025/2")
+    store2 = _store_with(tmp_path / "b", _record(killed, status="failed", rerun_reason="killed_by_drain"))
+    runner2 = make_runner(FakeCore({}), make_settings(run_root=tmp_path / "b"), store=store2)
+    with pytest.raises(RunRefused):
+        await runner2.run_specs("canary", [killed], resume=False)
+
+
+async def test_an_interrupted_record_beyond_the_rerun_cap_is_not_executed_again(tmp_path: Path):
+    """Review minor 17: only terminal records went through the ``<= 2 reruns`` cap, so a cell interrupted over and
+    over (crash, scancel, drain timeout) accumulated paid attempts a4, a5, ... The cap now applies to both."""
+    spec = dataclasses.replace(make_spec(rung=4, partition="main"), attempt=3, generation=3)
+    store = _store_with(tmp_path, _record(spec, status="running"))
+    runner = make_runner(FakeCore({}), make_settings(run_root=tmp_path, max_reruns=2), store=store)
+    summary = await runner.run_specs("main", [spec], resume=True)
+    assert summary.executed == 0 and summary.skipped == 1
+    final = store.load(spec)
+    assert final.status == "failed" and final.rerun_reason is None and "attempt cap" in (final.error or "")
+    assert final.correct is None                      # y stays NaN
+
+
+async def test_an_infrastructure_stop_is_rerun_without_consuming_a_rerun(tmp_path: Path):
+    """Plan B6 / Gate 3 (review major 11): an upstream 402/401 is an infrastructure stop -- no model ran, nothing
+    was paid -- so the cell stays rerun-eligible on the next --resume however many times the account refused."""
+    spec = dataclasses.replace(make_spec(rung=4, partition="main"), attempt=4, generation=4)
+    record = _record(spec, status="transport_failed", rerun_reason="infrastructure_stop",
+                     error="infrastructure_stop: payment_required")
+    runner = make_runner(FakeCore({}), make_settings(run_root=tmp_path, max_reruns=2),
+                         store=_store_with(tmp_path, record))
+    assert runner._rerun_pending(record) is True
+    assert runner._attempts_left(record) is True
+    spent = _record(dataclasses.replace(spec, attempt=4), status="transport_failed",
+                    rerun_reason="last_reply_transport_or_ledger_error", error="upstream_failed: ambiguous_timeout")
+    assert runner._rerun_pending(spent) is False      # a paid transport failure still obeys the cap

@@ -8,7 +8,9 @@ Protocol (chat completions over ``OPENAI_BASE_URL`` with ``Authorization: Bearer
    (``: dynorch keepalive``) and accumulates ``delta.reasoning_content`` / ``delta.content`` /
    ``delta.tool_calls[index]`` until ``data: [DONE]``;
 2. every returned tool call is executed by opening a *second* conversation ``[system (SOLVER file), user (task)]``
-   with no tools, whose visible content becomes the ``tool`` message (``tool_call_id`` echoed back);
+   with no tools, whose visible content becomes the ``tool`` message (``tool_call_id`` echoed back); with
+   ``--tolerate-tool-errors`` a failed child call becomes a tool error message and the root keeps going (what a
+   real orchestrator does with a fallible sub-agent);
 3. the assistant turn is re-sent WITHOUT ``reasoning_content`` (OpenClaude does not re-send it either, so the
    proxy's reasoning re-injection is exercised) and the loop continues until a reply has no tool calls or
    ``--max-turns`` is hit;
@@ -175,8 +177,16 @@ def run(args: argparse.Namespace) -> int:
                 except ValueError:
                     task = call["function"]["arguments"]
                 spawns += 1
-                child = client.chat([{"role": "system", "content": solver_text}, {"role": "user", "content": str(task)}],
-                                    [], stream=not args.no_stream)
+                try:
+                    child = client.chat([{"role": "system", "content": solver_text},
+                                         {"role": "user", "content": str(task)}], [], stream=not args.no_stream)
+                except HarnessError as exc:
+                    if not args.tolerate_tool_errors:
+                        raise
+                    # a real orchestrator treats a failed sub-agent as fallible data and keeps going
+                    messages.append({"role": "tool", "tool_call_id": call["id"],
+                                     "content": f"Error: the sub-agent failed (HTTP {exc.status})"})
+                    continue
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": child["content"] or ""})
     except HarnessError as exc:
         print(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
@@ -200,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tools", default="spawn_subagent", help="comma-separated tool names to offer ('' = none)")
     parser.add_argument("--timeout", type=float, default=3600.0, help="socket timeout per read (seconds)")
     parser.add_argument("--no-stream", action="store_true", help="use non-streaming requests")
+    parser.add_argument("--tolerate-tool-errors", action="store_true",
+                        help="a failed sub-agent call becomes a tool error message instead of ending the run")
     return run(parser.parse_args(argv))
 
 

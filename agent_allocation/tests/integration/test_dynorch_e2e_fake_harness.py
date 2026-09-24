@@ -40,7 +40,7 @@ from agent_allocation.dynorch.harness.fake import FakeAdapter
 from agent_allocation.dynorch.harness.null import NullAdapter
 from agent_allocation.dynorch.httpd import ProxyServer, ReplyLog
 from agent_allocation.dynorch.plan import BaseInputs, plan_runs, plan_path, read_plan, run_key_for
-from agent_allocation.dynorch.runner import Runner, RunnerSettings, build_stack
+from agent_allocation.dynorch.runner import Runner, RunnerSettings, build_stack, summary_dict
 
 PROJECT = Path(__file__).resolve().parents[2]
 CFG = json.loads((PROJECT / "configs" / "dynorch_v1.json").read_text("utf-8"))
@@ -88,7 +88,7 @@ class Harness:
     tmp. ``script`` is the fake upstream's script (replies per item via ``set_reply`` or per run via ``by_node``)."""
 
     def __init__(self, tmp: Path, cfg: dict[str, Any], *, script: FakeScript | None = None, concurrency: int = 2,
-                 max_reruns: int | None = None) -> None:
+                 max_reruns: int | None = None, drain_wait_seconds: float | None = None) -> None:
         self.tmp = tmp
         self.cfg = cfg
         self.run_root = tmp / "run_root"
@@ -109,6 +109,8 @@ class Harness:
             self.settings = RunnerSettings(**{**self.settings.__dict__, "max_reruns": max_reruns})
         self.settings = RunnerSettings(**{**self.settings.__dict__, "poll_seconds": 0.2, "sigkill_after": 2.0,
                                           "sigterm_after_exhaustion": 1.0})
+        if drain_wait_seconds is not None:
+            self.settings = RunnerSettings(**{**self.settings.__dict__, "drain_wait_seconds": drain_wait_seconds})
         self.adapters = {"fake": FakeAdapter(model=cfg["primary_model"], python=sys.executable),
                          "null": NullAdapter(model=cfg["primary_model"])}
         self.stack: Any = None
@@ -120,7 +122,8 @@ class Harness:
         self.server = ProxyServer(self.core, keepalive_seconds=1.0, reply_log=self.reply_log)
         await self.server.start()
         self.runner = Runner(self.core, self.adapters, self.settings, proxy_url=self.server.base_url, store=self.store,
-                             inputs=None, reply_log=self.reply_log, cfg=self.cfg, journal=self.journal)
+                             inputs=None, reply_log=self.reply_log, cfg=self.cfg, journal=self.journal,
+                             wait_for_run=self.server.wait_for_run)
         return self
 
     def with_inputs(self, base: BaseInputs) -> "Harness":
@@ -224,7 +227,43 @@ async def test_three_items_two_rungs_fake_and_null_arms(tmp_path: Path, base: Ba
 
 
 @pytest.mark.timeout(600)
+async def test_drain_lets_the_in_flight_run_finish(tmp_path: Path, base: BaseInputs):
+    """Plan §6 / review major 7: the drain stops ADMISSIONS and waits ``drain_wait_seconds`` for the runs already
+    in flight. Killing them at once threw away up to 12 paid runs at every job boundary and burned one of their
+    two reruns each."""
+    cfg = _cfg_with_fake_arm()
+    slow_item = base.panels["hmmt"].main_item_ids[0]
+    script = FakeScript()
+    script.set_reply(slow_item, reply=FakeReply(delay_seconds=1.0))
+    async with Harness(tmp_path, cfg, script=script, concurrency=1) as h:
+        h.with_inputs(base)
+        specs = h.specs(base, arms=("HF",), rungs=(4,))
+        specs = sorted(specs, key=lambda s: s.item_id == slow_item)
+        specs = [specs[0], specs[-1], specs[1]] if specs[-1].item_id == slow_item else specs
+        slow_key = next(s.run_key for s in specs if s.item_id == slow_item)
+        task = asyncio.create_task(h.runner.run_specs("main", specs))
+        while slow_key not in h.runner._in_flight:
+            await asyncio.sleep(0.05)
+        h.runner.request_drain()
+        summary = await task
+    assert summary.drained is True and summary.executed == 2
+    records = h.store.scan()
+    assert len(records) == 2 and {r.status for r in records.values()} == {"done"}
+    slow = records[slow_key]
+    assert slow.rerun_reason is None and slow.parse_status == "valid" and slow.final_message
+    assert slow.harness_reported["killed_by_drain"] is False
+    # the third cell was never admitted: --resume runs exactly it
+    async with Harness(tmp_path, cfg, script=script, concurrency=1) as h2:
+        h2.with_inputs(base)
+        summary2 = await h2.runner.run_specs("main", specs, resume=True)
+    assert summary2.skipped == 2 and summary2.executed == 1 and summary2.reruns == 0
+    assert len(h2.store.scan()) == 3 and all(r.status == "done" for r in h2.store.scan().values())
+
+
+@pytest.mark.timeout(600)
 async def test_kill_and_resume(tmp_path: Path, base: BaseInputs):
+    """A harness that outlives the drain wait is SIGTERMed (``killed_by_drain``) and rerun by the next
+    ``--resume`` as attempt 2 / generation 2, with the interrupted attempt superseded, never released."""
     cfg = _cfg_with_fake_arm()
     slow_item = base.panels["hmmt"].main_item_ids[0]
 
@@ -233,7 +272,7 @@ async def test_kill_and_resume(tmp_path: Path, base: BaseInputs):
         s.set_reply(slow_item, reply=FakeReply(delay_seconds=1.5))
         return s
 
-    async with Harness(tmp_path, cfg, script=script(), concurrency=1) as h:
+    async with Harness(tmp_path, cfg, script=script(), concurrency=1, drain_wait_seconds=0.2) as h:
         h.with_inputs(base)
         specs = h.specs(base, arms=("HF",), rungs=(4,))
         # order the slow item second so the first cell completes before the drain and the third never starts
@@ -243,7 +282,7 @@ async def test_kill_and_resume(tmp_path: Path, base: BaseInputs):
         task = asyncio.create_task(h.runner.run_specs("main", specs))
         while slow_key not in h.runner._in_flight:        # wait until the slow harness is in flight
             await asyncio.sleep(0.05)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
         assert sum(1 for r in h.store.scan().values() if r.status == "done") == 1
         h.runner.request_drain()
         summary = await task
@@ -270,12 +309,87 @@ async def test_kill_and_resume(tmp_path: Path, base: BaseInputs):
     assert resumed.parse_status == "valid"
     superseded = h2.store.scan(include_superseded=True)
     assert killed[0].spec.run_key in superseded and killed[0].spec.run_key not in records
+    # review minor 20: the superseded copy on disk carries the mutated verdict, not a stale `running`
+    assert superseded[killed[0].spec.run_key].status == "failed"
+    assert superseded[killed[0].spec.run_key].rerun_reason == "killed_by_drain"
     untouched = next(r for r in records.values() if r.spec.item_id == first_done.spec.item_id)
     assert untouched.started_at == first_done.started_at and untouched.spec.run_key == first_done.spec.run_key
     attempts = [json.loads(l) for l in (h2.run_root / "state" / "dynorch_attempts.jsonl").read_text().splitlines()]
     assert [a["rerun_reason"] for a in attempts].count("killed_by_drain") == 1 and len(attempts) == 4
     assert summary2.reruns == 1
     assert h2.stack.ledger.snapshot().in_flight == 0 and h2.stack.ledger.snapshot().unresolved == 0
+
+
+@pytest.mark.timeout(600)
+async def test_a_failed_sub_agent_call_does_not_discard_the_delivered_answer(tmp_path: Path, base: BaseInputs):
+    """Review major 10: the frozen rule reruns only when the LAST proxy reply was a transport/ledger error. A
+    sub-agent call that failed mid-run (charged whole, the harness carried on, the root answered) made the whole
+    run transport_failed and threw the delivered answer away."""
+    cfg = _cfg_with_fake_arm()
+    script = FakeScript()
+    async with Harness(tmp_path, cfg, script=script) as h:
+        h.with_inputs(base)
+        h.runner.adapters["fake"] = FakeAdapter(model=cfg["primary_model"], python=sys.executable,
+                                                extra_args=("--tolerate-tool-errors",))
+        specs = h.specs(base, arms=("HF",), rungs=(16,), items=_items(base)[:1])
+        script.by_node[specs[0].run_key] = [SPAWN_REPLY,                                   # root: delegate
+                                            FakeReply(fault=Fault.READ_TIMEOUT),           # solver: ambiguous
+                                            FakeReply(content="<final>43</final>", think_tokens=150)]  # root answers
+        summary = await h.runner.run_specs("main", specs)
+    record = next(iter(h.store.scan().values()))
+    assert summary.statuses == {"done": 1} and record.spec.attempt == 1
+    assert record.status == "done" and record.rerun_reason is None
+    assert record.final_message == "<final>43</final>" and record.parse_status == "valid"
+    assert record.final_answer == "43" and record.correct in (True, False)
+    assert record.error and record.error.startswith("upstream_failed:")     # recorded, but not a rerun
+    assert [c.conversation_class for c in record.calls_detail] == ["root", "solver", "root"]
+
+
+@pytest.mark.timeout(600)
+async def test_an_upstream_402_drains_the_stage_and_resumes_without_consuming_reruns(tmp_path: Path,
+                                                                                     base: BaseInputs):
+    """Plan B6 / Gate 3 (review major 11): an upstream 402 is an infrastructure stop. The stage must drain instead
+    of burning every remaining cell against a refusing account, and --resume must be able to re-execute them."""
+    cfg = _cfg_with_fake_arm()
+    script = FakeScript()
+    async with Harness(tmp_path, cfg, script=script, concurrency=1) as h:
+        h.with_inputs(base)
+        specs = h.specs(base, arms=("HF",), rungs=(4,))
+        script.by_node[specs[1].run_key] = FakeReply(fault=Fault.PAYMENT_REQUIRED)
+        summary = await h.runner.run_specs("main", specs)
+    assert summary.drained is True
+    records = h.store.scan()
+    assert len(records) == 2, "the stage kept admitting cells after the account refused"
+    stopped = records[specs[1].run_key]
+    assert stopped.rerun_reason == "infrastructure_stop" and stopped.spec.attempt == 1
+    assert str(stopped.error).startswith("infrastructure_stop:") and stopped.status == "transport_failed"
+    assert summary_dict(summary, h.stack.ledger)["upstream_402"] is True
+    async with Harness(tmp_path, cfg, script=FakeScript(), concurrency=1) as h2:
+        h2.with_inputs(base)
+        summary2 = await h2.runner.run_specs("main", specs, resume=True)
+    assert summary2.executed == 2 and summary2.skipped == 1 and not summary2.drained
+    assert all(r.status == "done" for r in h2.store.scan().values())
+
+
+@pytest.mark.timeout(600)
+async def test_one_unlaunchable_cell_does_not_take_the_stage_down(tmp_path: Path, base: BaseInputs):
+    """Review major 8: an OSError from create_subprocess_exec (``openclaude`` not on the job's PATH) propagated
+    through the gather and tore down the proxy under the other 11 runs, orphaning harnesses and skipping the
+    stage's tables and reconciliation."""
+    cfg = _cfg_with_fake_arm()
+    async with Harness(tmp_path, cfg, script=FakeScript(), concurrency=2, max_reruns=1) as h:
+        h.with_inputs(base)
+        h.runner.adapters["fake"] = FakeAdapter(model=cfg["primary_model"], python="/nonexistent/python3")
+        specs = h.specs(base, arms=("HF", "H0"), rungs=(4,), items=_items(base)[:1])
+        summary = await h.runner.run_specs("main", specs)
+    assert summary.errors == 0 and summary.executed == 2
+    assert summary.statuses == {"failed": 1, "done": 1}
+    records = h.store.scan()
+    broken = next(r for r in records.values() if r.spec.arm == "HF")
+    assert broken.status == "failed" and "FileNotFoundError" in str(broken.error)
+    assert broken.spec.attempt == 2 and broken.calls == 0 and broken.correct is None
+    good = next(r for r in records.values() if r.spec.arm == "H0")
+    assert good.status == "done" and good.parse_status == "valid"
 
 
 @pytest.mark.timeout(600)
