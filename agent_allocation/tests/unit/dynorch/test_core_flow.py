@@ -158,6 +158,30 @@ async def test_terminal_path_renders_the_verbatim_sentence_without_thinking_or_t
     assert record.completion_total == first.usage.completion_tokens      # the terminal call is outside C
 
 
+async def test_the_terminal_prompt_carries_reinjected_reasoning_and_returns_no_tool_calls(make_env):
+    """Review minor 25: the TERMINAL call renders the RE-INJECTED messages (OpenClaude never re-sends
+    ``reasoning_content``, so dropping the cache here empties every prior think block although the hits were
+    already counted), and its reply is the final answer verbatim -- B4 offers no tools, so a tool-call-shaped
+    block must not be parsed away from the delivered content."""
+    script = FakeScript()
+    script.default = FakeReply(content=FINAL, think_tokens=1000)
+    tool_text = fake_tool_call_text("Agent", {"prompt": "go", "subagent_type": "solver"}, prefix="<final>8</final>")
+    script.hook = lambda call: (FakeReply(content=tool_text)
+                                if call.coordinates.get("phase") == "terminal" else None)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=1))
+    first = await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert first.reasoning_content
+    history = root_messages() + [Message("assistant", first.content),       # no reasoning_content, like OpenClaude
+                                 Message("user", "Please double-check.")]
+    reply = await env.core.chat(spec.run_key, make_request(history))
+    prompt = env.think_calls(phase="terminal")[0].body["prompt"]
+    assert first.reasoning_content in prompt, "the terminal prompt lost the cached reasoning of the prior turn"
+    assert reply.call.reinjection == "hit" and reply.call.forced_close_kind == "terminal"
+    assert reply.finish_reason == "stop" and reply.tool_calls == () and reply.call.tool_calls == 0
+    assert reply.content == tool_text.strip() and reply.call.tool_parse == "none"
+
+
 async def test_terminal_path_is_root_only_a_solver_at_the_boundary_gets_402(make_env):
     script = FakeScript()
     script.default = FakeReply(content=FINAL, think_tokens=1000)
@@ -275,6 +299,105 @@ async def test_upstream_402_is_an_infrastructure_stop_not_an_exhaustion(make_env
     assert exc.value.code == "upstream_failed"
     record = env.core.record_of(spec.run_key)
     assert record.error.startswith("infrastructure_stop") and not record.exhausted and record.refused_calls == 0
+
+
+# ---- provider-side cuts are transport outcomes, not the cap binding (B3, review major 9) -----------------------
+
+async def test_a_provider_cut_is_a_transport_failure_not_a_forced_close(make_env):
+    """finish_reason null / error / content_filter with most of the grant unspent is forced_v2's
+    ``forced_think_short``: it must NOT spend the run's one grace and 402 the rest of an unspent budget."""
+    script = FakeScript()
+    script.default = FakeReply(content=FINAL, think_tokens=100, finish_reason=None)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=4))
+    with pytest.raises(ProxyError) as exc:
+        await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert exc.value.code == "upstream_failed" and exc.value.status == 502
+    record = env.core.record_of(spec.run_key)
+    assert record.forced_close_kind == "none" and record.grace_tokens == 0 and not record.exhausted
+    assert len(env.think_calls(phase="answer")) == 0             # no ANSWER continuation was made
+    assert record.calls == 1 and record.completion_total == record.calls_detail[0].completion_tokens > 0
+    view = env.core.budget_view(spec.run_key)
+    assert view["remaining"] == 4096 - record.completion_total and view["grace_tokens"] == 0
+    # the budget is intact: the next call is served, not refused
+    script.default = FakeReply(content=FINAL, think_tokens=100)
+    again = await env.core.chat(spec.run_key, make_request(root_messages(task="TASK\nsecond\n")))
+    assert again.finish_reason == "stop" and again.call.granted_max_tokens == view["remaining"]
+
+
+async def test_length_below_the_grant_is_a_transport_failure_on_root_and_on_a_solver(make_env):
+    script = FakeScript()
+    script.default = FakeReply(content=FINAL, think_tokens=100, finish_reason="length")
+    env = make_env(script)
+    spec = env.open(make_spec(rung=4))
+    with pytest.raises(ProxyError) as root_exc:
+        await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert root_exc.value.code == "upstream_failed"
+    assert env.core.record_of(spec.run_key).grace_tokens == 0
+    with pytest.raises(ProxyError) as solver_exc:
+        await env.core.chat(spec.run_key, solver_request())
+    assert solver_exc.value.code == "upstream_failed"
+    assert all(c.forced_close_kind == "none" for c in env.core.record_of(spec.run_key).calls_detail)
+
+
+async def test_length_at_the_grant_is_still_the_cap_binding(make_env):
+    """The narrowing must not turn a real cap-bound call into a transport failure."""
+    script = FakeScript()
+    script.default = FakeReply(content=FINAL, think_tokens=99999)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=1))
+    reply = await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert reply.call.forced_close_kind == "mid_call" and reply.call.finish_reason_upstream == "length"
+    assert env.core.record_of(spec.run_key).completion_total == 1024
+
+
+# ---- every settled grant is journaled (review major 16) --------------------------------------------------------
+
+async def test_a_ledger_refusal_between_think_and_answer_still_journals_the_paid_think(make_env):
+    """The THINK exchange was paid and settled; if the $ ledger refuses the ANSWER continuation the call must
+    still appear in the journal (its generation id reconciles against /generation) and in ``calls_detail``."""
+    script = FakeScript()
+    script.default = FakeReply(content=FINAL, think_tokens=5000)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=1))
+    original = env.ledger.reserve
+
+    async def gated(*, attempt_id: str, **kw):
+        if ":answer:" in attempt_id:
+            env.ledger.last_refusal = "ceiling reached between THINK and ANSWER"
+            return False
+        return await original(attempt_id=attempt_id, **kw)
+
+    env.ledger.reserve = gated
+    with pytest.raises(ProxyError) as exc:
+        await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert exc.value.code == "ledger_refused"
+    journaled = env.journal.scan(spec)
+    assert len(journaled) == 1 and journaled[0]["call_no"] == 1
+    phases = journaled[0]["phases"]
+    assert [p["phase"] for p in phases] == ["think"] and phases[0]["generation_id"]
+    assert journaled[0]["error"]["code"] == "ledger_refused"
+    record = env.core.record_of(spec.run_key)
+    assert record.calls == 1 and len(record.calls_detail) == 1
+    assert record.calls_detail[0].completion_tokens == record.completion_total == 1024
+    assert record.grace_tokens == 1024                # conservative: the grace is booked as spent
+    assert Decimal(record.cost_usd) > 0
+
+
+async def test_an_e0_ceiling_continuation_that_fails_settles_the_full_amount_inside_c(make_env):
+    """B2 minor 24: an ambiguous ANSWER outcome on an E0 ceiling close settles think + cont_max inside C (the
+    clamp to the ceiling-bound grant lost up to G tokens that may have been generated)."""
+    script = FakeScript()
+    script.default = FakeReply(content=FINAL, think_tokens=99999)
+    script.hook = lambda call: (FakeReply(fault=Fault.READ_TIMEOUT)
+                                if call.coordinates.get("phase") == "answer" else None)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=16, arm="H1c", root_call_ceiling=4096))
+    with pytest.raises(ProxyError) as exc:
+        await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert exc.value.code == "upstream_failed"
+    view = env.core.budget_view(spec.run_key)
+    assert view["spent"] == 4096 + 1024 and view["grace_tokens"] == 0    # inside C, no grace on a ceiling close
 
 
 # ---- duplicates (B9) ------------------------------------------------------------------------------------------------

@@ -37,7 +37,7 @@ from typing import Any, Mapping, Sequence
 
 from agent_allocation.api.forced import answer_prompt
 from agent_allocation.api.normalize import answer_visible_text
-from agent_allocation.contracts import Usage
+from agent_allocation.contracts import TransportStatus, Usage
 from agent_allocation.dynorch.budget import Grant, TokenBudget
 from agent_allocation.dynorch.config import PROXY_VERSION, DynorchSettings
 from agent_allocation.dynorch.journal import JOURNAL_LAYOUT, CallJournal, RunStore, attempt_id
@@ -471,9 +471,11 @@ class ProxyCore:
                 state.record.error = f"ledger_refused: {exc.detail}"
                 self.store.save(state.record)
             raise
-        except BaseException:
+        except BaseException as exc:
             budget.mark_sent(grant)                   # cancelled mid-flight: the call may have been sent
             budget.settle_full(grant)
+            self._journal_failure(state, request, prompt_sha, len(prompt), grant, conv_key, conv_class,
+                                  reinjection, (), exc)
             raise
         budget.mark_sent(grant)
         phases.extend(think.phases)
@@ -484,7 +486,24 @@ class ProxyCore:
         prompt_tokens = usage.prompt_tokens or 0
         reasoning, visible, closed = think.reasoning, think.text, think.closed
         upstream_finish = think.finish_reason
-        cut = (upstream_finish or "").strip().lower() != "stop"     # cap / ceiling / provider cut
+        finish_norm = (upstream_finish or "").strip().lower()
+        # B3 binds on the CAP, not on 'anything that is not stop': only `length` at (or past) the grant is the cap
+        # binding. A provider-side cut -- finish null / error / content_filter, or `length` well below the grant --
+        # is forced_v2's ``forced_think_short``: settle what was reported, journal it and fail the call as a
+        # transport outcome so the rerun rule can retry it, instead of spending the run's one grace and 402-ing the
+        # rest of a budget that is still unspent (review major 9).
+        cut = finish_norm == "length" and think_tokens >= grant.max_tokens
+        if finish_norm != "stop" and not cut:
+            budget.settle(grant, think_tokens, prompt_tokens)
+            exc = UpstreamFailed(
+                f"provider cut the call short (finish_reason={upstream_finish!r}, {think_tokens} of "
+                f"{grant.max_tokens} granted tokens)", transport_status=TransportStatus.ERROR_ENVELOPE,
+                phases=tuple(phases), cost_usd=cost, charged_max=False)
+            exc.detail = "forced_think_short"
+            log.warning("dynorch core: %s call %d %s", spec.run_key, call_no, exc.message)
+            self._journal_failure(state, request, prompt_sha, len(prompt), grant, conv_key, conv_class,
+                                  reinjection, tuple(phases), exc, cost=cost)
+            raise exc
         kind = "none"
         grace_tokens = 0
         extra_inside_c = 0
@@ -511,15 +530,20 @@ class ProxyCore:
                     # the continuation may have been sent: charge it whole (inside C for a ceiling close, as the
                     # spent grace otherwise) before re-raising; an UpstreamFailed is also journaled
                     if kind == "ceiling_close":
-                        budget.settle(grant, min(grant.max_tokens, think_tokens + cont_max), prompt_tokens)
+                        # B2: an ambiguous outcome settles the FULL amount; the ceiling continuation is inside C and
+                        # may have generated up to cont_max beyond the (ceiling-bound) grant (review minor 24)
+                        budget.settle(grant, think_tokens + cont_max, prompt_tokens)
                     else:
                         budget.settle(grant, think_tokens, prompt_tokens)
                         budget.record_grace(kind, cont_max)      # conservative: the grace is spent
                     if isinstance(exc, UpstreamFailed):
                         phases.extend(exc.phases)
                         cost += exc.cost_usd
-                        self._journal_failure(state, request, prompt_sha, len(prompt), grant, conv_key,
-                                              conv_class, reinjection, tuple(phases), exc, cost=cost)
+                    # every settled grant is journaled, whatever ended it: the paid THINK exchange (its generation
+                    # id, its cost) must be in the audit trail /generation reconciles against, and calls_detail must
+                    # agree with completion_total or Gate 1's granted == remaining trips on the next call (major 16)
+                    self._journal_failure(state, request, prompt_sha, len(prompt), grant, conv_key,
+                                          conv_class, reinjection, tuple(phases), exc, cost=cost)
                     raise
                 phases.extend(answer.phases)
                 cost += Decimal(answer.cost_usd)
@@ -629,10 +653,12 @@ class ProxyCore:
         budget.prompt_total += prompt_tokens
         budget.record_grace("terminal", tokens)
         visible = answer_visible_text(answer.reasoning, answer.text)
-        parse = (parse_tool_calls(visible, request.tools, call_no=call_no) if request.tools
-                 else ToolParse(content=visible.strip(), calls=(), status="none"))
-        finish = "tool_calls" if parse.calls else "stop"
-        state.cache.insert(answer.reasoning, content=parse.content, call_ids=[c.id for c in parse.calls])
+        # B4: the TERMINAL call is rendered with no tools, so its output is the final answer verbatim -- never
+        # parsed as a tool call (that would strip it from the delivered content and return finish 'tool_calls'
+        # after exhaustion; review minor 25)
+        parse = ToolParse(content=visible.strip(), calls=(), status="none")
+        finish = "stop"
+        state.cache.insert(answer.reasoning, content=parse.content, call_ids=[])
         if parse.content.strip():
             state.root_contents.append((call_no, parse.content))
         cost = Decimal(answer.cost_usd)
@@ -722,9 +748,18 @@ class ProxyCore:
 
     def _journal_failure(self, state: _RunState, request: ChatRequest, prompt_sha: str, rendered_chars: int,
                          grant: Grant, conv_key: str, conv_class: str, reinjection: str,
-                         phases: Sequence[Mapping[str, Any]], exc: UpstreamFailed, *,
+                         phases: Sequence[Mapping[str, Any]], exc: BaseException, *,
                          cost: Decimal | None = None) -> None:
-        total = exc.cost_usd if cost is None else cost
+        """Journal a call whose grant was settled but whose reply never reached the harness (contract §5: every
+        settled grant is journaled, so the audit trail, ``calls_detail`` and ``completion_total`` agree even when
+        the call ended in an upstream failure, a ledger refusal between THINK and ANSWER, or a cancellation)."""
+        failed = exc if isinstance(exc, UpstreamFailed) else None
+        total = (failed.cost_usd if failed is not None else Decimal("0")) if cost is None else cost
+        detail = getattr(exc, "detail", None) or f"{type(exc).__name__}: {exc}"
+        status = getattr(exc, "status", 502) if isinstance(exc, ProxyError) else 500
+        code = getattr(exc, "code", None) or type(exc).__name__
+        transport = failed.transport_status.value if failed is not None else "ambiguous_timeout"
+        charged_max = failed.charged_max if failed is not None else True
         record = CallRecord(
             call_no=grant.call_no, conversation_key=conv_key, conversation_class=conv_class,
             requested_max_tokens=request.requested_max_tokens, granted_max_tokens=grant.max_tokens,
@@ -735,8 +770,8 @@ class ProxyCore:
             tool_calls=0, spawn_calls=0, tool_parse="none", reinjection=reinjection,
             reasoning_effort_requested=requested_effort(request.requested_reasoning_effort), cost_usd=str(total),
             generation_ids=tuple(p["generation_id"] for p in phases if p.get("generation_id")),
-            latency_seconds=sum(p["latency_seconds"] for p in phases), transport_status=exc.transport_status.value,
-            returned_status=exc.status, stream=request.stream, wire=request.wire, cache_status=None,
+            latency_seconds=sum(p["latency_seconds"] for p in phases), transport_status=transport,
+            returned_status=status, stream=request.stream, wire=request.wire, cache_status=None,
             duplicate_served=False, ignored_body_keys=tuple(request.ignored_keys))
         payload = {
             "layout": JOURNAL_LAYOUT, "run_key": state.spec.run_key, "call_no": grant.call_no,
@@ -745,8 +780,8 @@ class ProxyCore:
             "tool_parse": {"status": "none", "reason": None, "calls": 0},
             "budget": {"granted": grant.max_tokens, "realized": record.completion_tokens,
                        "remaining_after": state.budget.remaining},
-            "call": to_json(record), "error": {"code": exc.code, "message": exc.message, "detail": exc.detail,
-                                               "charged_max": exc.charged_max},
+            "call": to_json(record), "error": {"code": code, "message": str(exc), "detail": detail,
+                                               "charged_max": charged_max},
             "proxy_version": PROXY_VERSION,
         }
         self.journal.write(state.spec, grant.call_no, payload)
@@ -755,9 +790,9 @@ class ProxyCore:
         run.calls_by_class[conv_class] = run.calls_by_class.get(conv_class, 0) + 1
         run.cost_usd = str(Decimal(run.cost_usd) + total)
         run.calls_detail.append(record)
-        run.error = f"upstream_failed: {exc.detail}"
-        if exc.infrastructure_stop:
+        run.error = f"{code}: {detail}"
+        if failed is not None and failed.infrastructure_stop:
             state.infrastructure_stop = True
-            run.error = f"infrastructure_stop: {exc.detail}"
+            run.error = f"infrastructure_stop: {detail}"
         self._refresh(state)
         self.store.save(run)
