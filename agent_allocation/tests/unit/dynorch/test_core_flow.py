@@ -325,10 +325,14 @@ async def test_a_provider_cut_is_a_transport_failure_not_a_forced_close(make_env
     assert record.calls == 1 and record.completion_total == record.calls_detail[0].completion_tokens > 0
     view = env.core.budget_view(spec.run_key)
     assert view["remaining"] == 4096 - record.completion_total and view["grace_tokens"] == 0
-    # the budget is intact: the next call is served, not refused
+    # contract §10.38: the cut latches the run -- the next call is refused before any grant (no upstream call, no
+    # TERMINAL); the rerun rule re-executes the cell with a fresh budget instead
+    assert view["upstream_latched"] == 1
     script.default = FakeReply(content=FINAL, think_tokens=100)
-    again = await env.core.chat(spec.run_key, make_request(root_messages(task="TASK\nsecond\n")))
-    assert again.finish_reason == "stop" and again.call.granted_max_tokens == view["remaining"]
+    with pytest.raises(ProxyError) as again:
+        await env.core.chat(spec.run_key, make_request(root_messages(task="TASK\nsecond\n")))
+    assert again.value.code == "upstream_failed" and len(env.think_calls()) == 1
+    assert env.core.upstream_latch(spec.run_key)["detail"] == "forced_think_short"
 
 
 async def test_length_below_the_grant_is_a_transport_failure_on_root_and_on_a_solver(make_env):
@@ -343,6 +347,7 @@ async def test_length_below_the_grant_is_a_transport_failure_on_root_and_on_a_so
     with pytest.raises(ProxyError) as solver_exc:
         await env.core.chat(spec.run_key, solver_request())
     assert solver_exc.value.code == "upstream_failed"
+    assert len(env.think_calls()) == 1          # contract §10.38: the root's cut latched the run; nothing more sent
     assert all(c.forced_close_kind == "none" for c in env.core.record_of(spec.run_key).calls_detail)
 
 
@@ -959,3 +964,123 @@ async def test_a_late_reply_after_close_never_overwrites_the_next_attempts_recor
     import json as _json
     late = _json.loads(archived.read_text())
     assert late["spec"]["run_key"] == spec.run_key and late["calls"] == 1       # the paid call is on attempt 1
+
+
+# ---- the upstream-failure latch (contract §10.38; main stage 2026-09-24) ---------------------------------------
+
+async def _ledger_attempts(env) -> dict:
+    from agent_allocation.runtime.ledger import journal_attempts
+    await env.ledger_journal.flush()
+    return journal_attempts(env.ledger_journal.path)
+
+
+async def test_a_stream_interrupted_envelope_latches_the_run_and_the_harness_retry_gets_no_terminal(make_env):
+    """The live defect: Parasail's "Stream interrupted" error envelope settles the full grant (B2) and returns 502;
+    OpenClaude retries the 502, found ``remaining < 64`` and was served the B4 TERMINAL call -- a no-thinking answer
+    scored as a model outcome. The retry must be refused before any grant: no upstream call, no ledger attempt."""
+    script = FakeScript()
+    script.default = FakeReply(fault=Fault.STREAM_INTERRUPTED)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=16))
+    request = make_request(root_messages())
+    with pytest.raises(ProxyError) as first:
+        await env.core.chat(spec.run_key, request)
+    assert first.value.code == "upstream_failed" and first.value.status == 502
+    stored = env.journal.read(spec, 1)
+    assert stored["error"]["code"] == "upstream_failed" and stored["error"]["detail"] == "error_envelope"
+    assert "Stream interrupted" in stored["phases"][0]["error_detail"]
+    record = env.core.record_of(spec.run_key)
+    assert record.completion_total == 16 * 1024 and env.core.budget_view(spec.run_key)["remaining"] == 0
+    attempts_before = await _ledger_attempts(env)
+    upstream_before = len(env.script.calls)
+    script.default = FakeReply(content=FINAL, think_tokens=100)
+    with pytest.raises(ProxyError) as retry:                          # the harness's own 502 retry
+        await env.core.chat(spec.run_key, request)
+    assert retry.value.code == "upstream_failed" and retry.value.status == 502
+    assert "latched" in retry.value.message
+    assert len(env.script.calls) == upstream_before and env.think_calls(phase="terminal") == []
+    assert await _ledger_attempts(env) == attempts_before              # nothing reserved, nothing charged
+    record = env.core.record_of(spec.run_key)
+    assert record.calls == 1 and record.refused_calls == 1 and record.grace_tokens == 0
+    assert record.forced_close_kind == "none" and len(record.calls_detail) == 1
+    assert env.core.close_run(spec.run_key, status="done").final_message is None
+    latch = env.core.upstream_latch(spec.run_key)
+    assert latch["call_no"] == 1 and latch["conversation_class"] == "root" and latch["refused_after"] == 1
+    assert latch["transport_status"] == "error_envelope" and not latch["infrastructure_stop"]
+    assert env.core.budget_view(spec.run_key)["upstream_latched"] == 1
+
+
+async def test_a_failed_sub_agent_call_latches_the_root(make_env):
+    """A sub-agent's ambiguous outcome settles the full remaining grant too; the root's next call used to be the
+    TERMINAL call. It is refused, and so is a further solver call."""
+    script = FakeScript()
+    spawn = fake_tool_call_text("Agent", {"description": "d", "prompt": "solve", "subagent_type": "solver"})
+    env = make_env(script)
+    spec = env.open(make_spec(rung=4))
+    script.by_node[spec.run_key] = [FakeReply(content=spawn, think_tokens=200), FakeReply(fault=Fault.READ_TIMEOUT)]
+    first = await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert first.finish_reason == "tool_calls"
+    with pytest.raises(ProxyError) as child:
+        await env.core.chat(spec.run_key, solver_request())
+    assert child.value.code == "upstream_failed"
+    sent = len(env.script.calls)
+    follow_up = make_request(root_messages() + [
+        Message("assistant", first.content, tool_calls=first.tool_calls),
+        Message("tool", "Error: the sub-agent failed", tool_call_id=first.tool_calls[0].id)])
+    for request in (follow_up, solver_request("again")):
+        with pytest.raises(ProxyError) as refused:
+            await env.core.chat(spec.run_key, request)
+        assert refused.value.code == "upstream_failed"
+    assert len(env.script.calls) == sent and env.think_calls(phase="terminal") == []
+    latch = env.core.upstream_latch(spec.run_key)
+    assert latch["call_no"] == 2 and latch["conversation_class"] == "solver" and latch["refused_after"] == 2
+
+
+async def test_a_call_queued_behind_the_failing_call_is_refused_by_the_latch(make_env):
+    """A call waiting on the run's FIFO lock while the failing call is in flight is refused once it gets the lock."""
+    import asyncio
+    script = FakeScript()
+    env = make_env(script)
+    spec = env.open(make_spec(rung=4))
+    script.by_node[spec.run_key] = [FakeReply(fault=Fault.STREAM_INTERRUPTED, delay_seconds=0.3),
+                                    FakeReply(content=FINAL, think_tokens=100)]
+    results = await asyncio.gather(env.core.chat(spec.run_key, make_request(root_messages())),
+                                   env.core.chat(spec.run_key, solver_request()), return_exceptions=True)
+    assert all(isinstance(r, ProxyError) and r.code == "upstream_failed" for r in results)
+    assert len(env.think_calls()) == 1 and env.core.record_of(spec.run_key).refused_calls == 1
+
+
+async def test_an_account_refusal_latches_and_stays_the_last_outcome(make_env):
+    """Contract §10.31 + §10.38: an upstream 402 is an infrastructure stop; with the latch no later reply can clear
+    the flag, so the runner always sees it at close."""
+    script = FakeScript()
+    script.default = FakeReply(fault=Fault.PAYMENT_REQUIRED)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=2))
+    with pytest.raises(ProxyError):
+        await env.core.chat(spec.run_key, make_request(root_messages()))
+    script.default = FakeReply(content=FINAL, think_tokens=100)
+    with pytest.raises(ProxyError) as again:
+        await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert again.value.code == "upstream_failed" and len(env.think_calls()) == 1
+    view = env.core.budget_view(spec.run_key)
+    assert view["infrastructure_stop"] == 1 and view["upstream_latched"] == 1
+    assert env.core.record_of(spec.run_key).error.startswith("infrastructure_stop:")
+    assert env.core.upstream_latch(spec.run_key)["infrastructure_stop"] is True
+
+
+async def test_a_failed_grace_continuation_latches_before_the_budget_refusal(make_env):
+    """The ANSWER continuation of a forced close fails: the run is latched (upstream_failed), not a 402 exhaustion
+    the rerun rule would never rerun."""
+    script = FakeScript()
+    env = make_env(script)
+    spec = env.open(make_spec(rung=1))
+    script.by_node[spec.run_key] = [FakeReply(content=FINAL, think_tokens=5000),
+                                    FakeReply(fault=Fault.STREAM_INTERRUPTED)]
+    with pytest.raises(ProxyError) as first:
+        await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert first.value.code == "upstream_failed"
+    with pytest.raises(ProxyError) as again:
+        await env.core.chat(spec.run_key, make_request(root_messages(task="again")))
+    assert again.value.code == "upstream_failed" and "latched" in again.value.message
+    assert env.core.upstream_latch(spec.run_key)["transport_status"] == "error_envelope"
