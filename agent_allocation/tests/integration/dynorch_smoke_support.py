@@ -187,10 +187,18 @@ class ProbingRunner(Runner):
 
     stack: "SmokeStack"
 
+    def _harness_gone(self, spec: RunSpec) -> None:
+        # deferred to _await_settled (which the runner calls right after): the probe must go out after the harness
+        # exited but BEFORE the core is told so (contract §10.33: from then on every call is ``run_closed``), so it
+        # pins the BUDGET's verdict on one more call (B4: after the grace / the TERMINAL every call is 402)
+        if not self.stack.probe_after_exit:
+            super()._harness_gone(spec)
+
     async def _await_settled(self, spec: RunSpec) -> None:
-        await super()._await_settled(spec)
         if self.stack.probe_after_exit:
             await self.stack.probe(spec)
+            super()._harness_gone(spec)
+        await super()._await_settled(spec)
 
 
 def load_base() -> BaseInputs | None:
