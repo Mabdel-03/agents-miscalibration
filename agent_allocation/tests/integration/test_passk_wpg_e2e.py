@@ -227,3 +227,4 @@ def test_passk_e2e_all_partitions_kill_resume_fence_and_order(tmp_path):
     assert g3["passed"] and not paths_m.drain_sentinel.exists(), g3
     g4 = cp.gate4(cfg_m, paths_m, check_duplicates=False)
     assert g4["criteria"]["completion"]["passed"] and g4["criteria"]["dev_grades"]["passed"], g4
+    assert cp.graded(cfg_m, paths_m)["passed"] and cp.graded(cfg, paths)["passed"]   # the seal released everything

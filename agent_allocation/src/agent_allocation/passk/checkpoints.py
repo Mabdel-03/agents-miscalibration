@@ -13,6 +13,7 @@
   trailing 500 attempts AND >= 10 AND spanning >= 5 min. A failing rule touches ``control/DRAIN`` of the shard.
 * ``sample`` -- every 30 min: ``/generation`` of the 5 most recent results must carry the permaslug and the pin
   (a violation drains the shard).
+* ``graded`` -- after the seal: every candidate (held-out included) graded (exit 4 while some are not).
 * ``gate4`` -- completion: >= 99% of planned nodes succeeded per partition (failures reported, never replaced); zero
   duplicate THINK texts across legacy and new; every non-fenced candidate graded.
 
@@ -290,7 +291,7 @@ def think_text_shas(parsed_roots: Sequence[Path]) -> list[str]:
 
 def gate4(cfg: Mapping[str, Any], paths, *, legacy_root: str | Path | None = None,
           check_duplicates: bool = True) -> dict[str, Any]:
-    from agent_allocation.passk.grade_scope import grade_scope
+    from agent_allocation.passk.grade_scope import heldout_splits
     rows = node_rows(paths, MAIN_PARTITIONS)
     per_partition = {}
     for partition in MAIN_PARTITIONS:
@@ -304,8 +305,9 @@ def gate4(cfg: Mapping[str, Any], paths, *, legacy_root: str | Path | None = Non
     crit: dict[str, Any] = {"completion": {"passed": bool(per_partition) and all(v["passed"] for v in
                                                                                per_partition.values()),
                                            "partitions": per_partition}}
-    _skip, only = grade_scope(paths, cfg)
-    ungraded = [r["node_id"] for r in rows if r.get("has_candidate") and (only is None or r["node_id"] in only)
+    # "dev grades complete": the non-held-out partitions, whatever the seal state (held-out grading is `graded`)
+    heldout = {p for ps in heldout_splits(cfg).values() for p in ps}
+    ungraded = [r["node_id"] for r in rows if r.get("has_candidate") and r["partition"] not in heldout
                 and not paths.grade(r["node_id"]).exists()]
     crit["dev_grades"] = {"passed": not ungraded, "ungraded": len(ungraded)}
     if check_duplicates:
@@ -315,6 +317,17 @@ def gate4(cfg: Mapping[str, Any], paths, *, legacy_root: str | Path | None = Non
         dupes = [s for s, n in Counter(shas).items() if n > 1]
         crit["unique_think_texts"] = {"passed": not dupes, "texts": len(shas), "duplicates": len(dupes)}
     return {"gate": "gate4", "passed": all(c["passed"] for c in crit.values()), "criteria": crit,
+            "evaluated_at": _utc()}
+
+
+def graded(cfg: Mapping[str, Any], paths) -> dict[str, Any]:
+    """After the seal: every candidate the fence now allows (held-out included) has a grade."""
+    from agent_allocation.passk.grade_scope import grade_scope
+    skip, only = grade_scope(paths, cfg)
+    rows = node_rows(paths, MAIN_PARTITIONS)
+    ungraded = [r["node_id"] for r in rows if r.get("has_candidate") and not paths.grade(r["node_id"]).exists()]
+    fenced = [n for n in ungraded if n in skip]
+    return {"gate": "graded", "passed": not ungraded, "ungraded": len(ungraded), "still_fenced": len(fenced),
             "evaluated_at": _utc()}
 
 
@@ -350,7 +363,7 @@ def sample_check(cfg: Mapping[str, Any], paths, metadata: Mapping[str, Any]) -> 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m agent_allocation.passk.checkpoints")
-    parser.add_argument("stage", choices=["gate1-smoke", "gate2", "gate3", "gate4", "sample"])
+    parser.add_argument("stage", choices=["gate1-smoke", "gate2", "gate3", "gate4", "sample", "graded"])
     parser.add_argument("--config", required=True)
     parser.add_argument("--study-root", required=True)
     parser.add_argument("--shard", required=True)
@@ -380,6 +393,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=1))
             return 4
         name, code = f"gate2_{args.shard}", (0 if result["passed"] else 3)
+    elif args.stage == "graded":
+        result = graded(cfg, paths)
+        name, code = f"graded_{args.shard}", (0 if result["passed"] else 4)
     elif args.stage == "sample":
         import asyncio
         from agent_allocation.live import fetch_metadata

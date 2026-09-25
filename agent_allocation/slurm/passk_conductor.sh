@@ -104,6 +104,14 @@ PY
 # Gate 0 ($0): suite + mocked e2e, node lists, parity, E0 subset, slices, forecast, /key re-read
 # ====================================================================================================================
 if [ "$START_AT" = gate0 ]; then
+  if [ ! -f "$RUN/shards/assignment.json" ]; then
+    note shard-plan "materializing the provider shards and adopting the forced_v2 endpoint locks"
+    $A shard-plan --config "$CFG" --run-dir "$RUN" --write || stop shard-plan "shard-plan --write failed" 1
+  fi
+  for s in "${SHARDS[@]}"; do
+    $A passk-run --config "$CFG" --run-dir "$RUN" --shard "$s" --partitions smoke --adopt-legacy-lock \
+      || stop shard-plan "legacy lock adoption failed on $s" 1
+  done
   note gate0 "offline Gate 0 + /key"
   ok=""
   for attempt in 1 2 3; do
@@ -255,6 +263,15 @@ if [ "$START_AT" = gate4 ]; then
     checkpoint gate4 "$s"; rc=$?
     [ $rc -eq 0 ] || stop gate4 "Gate 4 failed on $s (gates/gate4_$s.json)"
   done
+  # the seal exists (ANALYSIS_PRE ends with `seal`): the grade --follow jobs now grade the held-out partitions; wait
+  # (max ~4 h) until every candidate of both shards is graded before releasing labels
+  for i in $(seq 1 48); do
+    pending=""
+    for s in "${SHARDS[@]}"; do checkpoint graded "$s" >/dev/null || pending="$pending $s"; done
+    [ -z "$pending" ] && break
+    note gate4 "waiting for held-out grading on:$pending ($i/48)"; sleep 300
+  done
+  [ -n "$pending" ] && stop gate4 "held-out grading incomplete on:$pending (is grade --follow running? is the seal valid?)"
   run_analysis "${ANALYSIS_POST[@]}"
   for s in "${SHARDS[@]}"; do touch "$RUN/shards/$s/control/STOP"; done      # ends the grade --follow jobs
   note done "chain complete: report built"
