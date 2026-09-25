@@ -21,7 +21,8 @@ from agent_allocation.passk.features import FEATURES, LATENCY, diag_features
 from agent_allocation.passk.models import glm as glm_mod
 from agent_allocation.passk.models.inputs import (
     BENCHMARKS, CONFIGS_16A, CONFIGS_8A, MIXTURE, PASSK_SEED, PREDICT_CONFIGS, ClassSource, build_prefix_pools,
-    fitting_draws, label_value, load_analysis_inputs, load_panels, observed_pool_table, parse_config, sha256_file,
+    fitting_draws, label_value, load_analysis_inputs, load_assignment_t200, load_panels, observed_pool_table,
+    parse_config, sha256_file,
 )
 from agent_allocation.passk.models.predictors import (
     PREDICTORS, P2Predictor, RidgePredictor, WITHHELD, config_rank, guard_training_frame, ridge_design,
@@ -155,19 +156,22 @@ def fit_and_predict(run_root: Path | str | None = None, *, draws: pd.DataFrame |
     l96, t200, c48 = list(panels["L96"]), list(panels["T200"]), list(panels.get("C48", []))
     feats_all = diag_features(draws, cls, pools=pools)
     dev_feats = feats_all[feats_all.item_id.isin(l96)]
-    res = _fit_predict_core(draws, pools, cls, l96, c48, t200, dev_feats, feats_all, seed=seed, n_sim=n_sim)
+    assignment = load_assignment_t200(Path(run_root)) if run_root is not None else {}
+    res = _fit_predict_core(draws, pools, cls, l96, c48, t200, dev_feats, feats_all, seed=seed, n_sim=n_sim,
+                            default_provider=assignment)
     if write:
         _write(out_dir, res, seed=seed, n_sim=n_sim, cls=cls)
     return res
 
 
 def _fit_predict_core(draws, pools, cls, train_items, c48, test_items, dev_feats, feats_all, *, seed, n_sim,
-                      bench_map=None) -> dict:
+                      bench_map=None, default_provider=None) -> dict:
     draw_frame = dev_draw_frame(draws, train_items, dev_feats)
     pool_frame = dev_pool_frame(draws, pools, cls, train_items, c48, dev_feats)
     models = fit_models(draw_frame, pool_frame, seed=seed, n_sim=n_sim)
     bench_map = bench_map or dict(zip(draws.item_id, draws.benchmark))
-    test_feats = impute_features(feats_all[feats_all.item_id.isin(test_items)], test_items, bench_map, dev_feats)
+    test_feats = impute_features(feats_all[feats_all.item_id.isin(test_items)], test_items, bench_map, dev_feats,
+                                 default_provider)
     frame = predict_frame(test_feats)
     pred = predict_all(models, frame, seed=seed)
     return {"predictions": pred, "features": test_feats, "models": models, "draw_frame": draw_frame,
@@ -183,6 +187,11 @@ def _write(out_dir: Path, res: dict, *, seed: int, n_sim: int, cls: ClassSource)
         payload = m if isinstance(m, dict) else m.to_dict()
         (out_dir / "models" / f"{name}.json").write_text(json.dumps(payload, indent=1, default=float))
     pf = res["pool_frame"]
+    # the materialized development pool table (withheld configurations physically absent) and the draw frame keys
+    pf.drop(columns=[c for c in pf.columns if c == "member_partitions"]).to_parquet(
+        out_dir / "models" / "dev_pool_table.parquet", index=False)
+    res["draw_frame"][["candidate_id", "item_id", "partition", "a", "y"]].to_parquet(
+        out_dir / "models" / "dev_draw_frame.parquet", index=False)
     (out_dir / "seeds.json").write_text(json.dumps({
         "passk_seed": seed, "n_sim": n_sim, "cv_folds": 5, "train_configs": list(TRAIN_CONFIGS),
         "c48_only_configs": list(C48_ONLY_CONFIGS), "withheld": list(WITHHELD_IDS)}, indent=1))

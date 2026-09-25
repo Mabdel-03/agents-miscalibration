@@ -199,6 +199,15 @@ def load_panels(run_root: Path) -> dict[str, list[str]]:
     return json.loads(path.read_text())["panels"]
 
 
+def load_assignment_t200(run_root: Path) -> dict[str, str]:
+    import json
+    path = Path(run_root) / "artifacts" / "manifests" / "splits.json"
+    try:
+        return dict(json.loads(path.read_text()).get("assignment_t200") or {})
+    except (OSError, ValueError):
+        return {}
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with Path(path).open("rb") as f:
