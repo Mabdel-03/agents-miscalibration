@@ -21,7 +21,7 @@ from typing import Iterable
 
 import pandas as pd
 
-__all__ = ["B16_MENU", "B8_MENU", "CONFIGS", "DEV_TRAINING", "LEGACY_CONFIGS", "POOL_COLUMNS", "WITHHELD", "build_pools", "config",
+__all__ = ["B16_MENU", "B8_MENU", "CONFIGS", "DEV_TRAINING", "LEGACY_CONFIGS", "POOL_COLUMNS", "WITHHELD", "build_pools", "c48_fit_scopes", "config",
            "pool_id"]
 
 PASSK_SEED = 20260925
@@ -84,8 +84,8 @@ def build_pools(draws: pd.DataFrame, *, panels: Iterable[str] = ("L96", "C48", "
     for panel in panels:
         items = _panel_items(draws, panel)
         if panel in ("V48", "T200"):
-            items = sorted(set(items) | set(draws.loc[draws["partition"].isin(_PANEL_PARTITIONS[panel]),
-                                                      "item_id"]))
+            extra = _PANEL_PARTITIONS[panel] + (("t200_diag",) if panel == "T200" else ())
+            items = sorted(set(items) | set(draws.loc[draws["partition"].isin(extra), "item_id"]))
         sources = _PANEL_PARTITIONS[panel]
         for item_id in items:
             mine = draws[(draws["item_id"] == item_id)]
@@ -117,4 +117,23 @@ def build_pools(draws: pd.DataFrame, *, panels: Iterable[str] = ("L96", "C48", "
                              "benchmark": bench, "panel": panel, "config_id": config_id, "n": n, "a": a, "R": 1,
                              "B": n * a, "member_ids": members, "view": view, "candidate_order_seed": PASSK_SEED,
                              "source_partitions": parts})
+    return pd.DataFrame(rows, columns=POOL_COLUMNS)
+
+
+def c48_fit_scopes(draws: pd.DataFrame, *, a_slots: int = 16, view: str = "current") -> pd.DataFrame:
+    """One class-building scope per C48 item over its fitting draws only (A slots 0-15 + every deep replicate
+    from legacy/e1_fill/c48_extra), in frozen (allowance, replicate) order. ``config_id = "c48fit"``."""
+    rows = []
+    for item_id in _panel_items(draws, "C48"):
+        mine = draws[(draws["item_id"] == item_id) & draws["partition"].isin(_PANEL_PARTITIONS["C48"])]
+        mine = mine[(mine["allowance_a"] > 1) | (mine["replicate"] < a_slots)]
+        mine = mine[mine["allowance_a"] != 25].sort_values(["allowance_a", "replicate"])
+        members = list(mine["candidate_id"])
+        if not members:
+            continue
+        rows.append({"pool_id": pool_id(item_id, "c48fit", view, members), "item_id": item_id,
+                     "benchmark": mine["benchmark"].iloc[0], "panel": "C48", "config_id": "c48fit",
+                     "n": len(members), "a": 0, "R": 1, "B": int(mine["allowance_a"].sum()), "member_ids": members,
+                     "view": view, "candidate_order_seed": PASSK_SEED,
+                     "source_partitions": sorted(set(mine["partition"]))})
     return pd.DataFrame(rows, columns=POOL_COLUMNS)

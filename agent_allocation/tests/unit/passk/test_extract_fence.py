@@ -34,7 +34,8 @@ def test_pre_seal_allow_list_and_label_fence(tmp_path):
     dev = draws[draws["partition"] == "e1_fill"].sort_values("replicate")
     assert list(dev["correct"]) == [True, True, True] and list(dev["vote_exact_key"]) == ["7", "7", "7"]
     assert manifest["labelled_partitions"] == ["smoke", "e1_fill", "c48_extra"]
-    assert set(manifest["sha256"]) == {"draws.parquet"}
+    assert set(manifest["sha256"]) == {"draws.parquet", "pools.parquet", "classes.parquet", "readouts.parquet",
+                                       "dev_training_readouts.parquet"}
 
 
 def test_release_requires_verifying_seal(tmp_path):

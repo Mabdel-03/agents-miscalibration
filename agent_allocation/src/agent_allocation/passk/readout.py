@@ -29,7 +29,7 @@ from agent_allocation.selection.keys import VoteKey
 from agent_allocation.selection.plurality import AnswerClass, build_classes, class_tie_key
 
 __all__ = ["LEGACY_SEED", "PASSK_SEED", "Readout", "kind_of", "passk_tie_key", "plurality", "pool_classes",
-           "readout_pools", "tie_averaged"]
+           "readout_pools", "tie_averaged", "class_rows"]
 
 PASSK_SEED = 20260925
 LEGACY_SEED = 20260917
@@ -153,3 +153,31 @@ def readout_pools(pools: pd.DataFrame, draws: pd.DataFrame, *, cache=None, mode:
             "n_member_unknown": sum(v is None for v in member_correct),
         })
     return pd.DataFrame(rows)
+
+
+def class_rows(pools: pd.DataFrame, draws: pd.DataFrame, *, cache=None) -> tuple[pd.DataFrame, list[str]]:
+    """Every class of every pool/scope (member lists in frozen order); pools needing an uncached pair are skipped
+    and returned by id (fill the pair cache, then re-run)."""
+    from agent_allocation.passk.pairs import MissingPair
+
+    by_id = draws.set_index("candidate_id")
+    present = set(draws.loc[~draws["absent"].astype(bool), "candidate_id"])
+    rows, missing = [], []
+    for pool in pools.itertuples(index=False):
+        members = list(pool.member_ids)
+        sub = by_id.loc[members]
+        votes = [(cid, VoteKey(exact=e, text=t)) for cid, e, t in zip(members, sub["vote_exact_key"],
+                                                                       sub["vote_text"])
+                 if cid in present and isinstance(e, str) and isinstance(t, str)]
+        kind = kind_of(pool.benchmark)
+        equivalence = None if cache is None or kind is not OutputKind.MATH else cache.equivalence(pool.item_id)
+        try:
+            classes, _unknown = pool_classes(votes, kind, equivalence) if votes else ((), 0)
+        except MissingPair:
+            missing.append(pool.pool_id)
+            continue
+        for index, c in enumerate(classes):
+            rows.append({"pool_id": pool.pool_id, "item_id": pool.item_id, "panel": pool.panel,
+                         "config_id": pool.config_id, "class_index": index, "class_id": c.class_id,
+                         "member_ids": list(c.member_ids), "support": c.support, "n_votes": len(votes)})
+    return pd.DataFrame(rows), missing

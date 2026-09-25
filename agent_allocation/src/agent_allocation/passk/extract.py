@@ -336,6 +336,7 @@ def extract(run_root: Path = RUN_ROOT, *, legacy_root: Path = LEGACY_ROOT, relea
     tmp = out_dir / f".draws.parquet.tmp{os.getpid()}"
     draws.to_parquet(tmp, index=False)
     os.replace(tmp, target)
+    derived = _derived_tables(run_root, draws, out_dir)
     manifest = {
         "version": "passk-extract-v1",
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -348,12 +349,50 @@ def extract(run_root: Path = RUN_ROOT, *, legacy_root: Path = LEGACY_ROOT, relea
                        "fenced_banks": list(FENCED_BANKS)},
         "n_rows": int(len(draws)),
         "n_rows_by_partition": {str(k): int(v) for k, v in draws["partition"].value_counts().sort_index().items()},
-        "sha256": {"draws.parquet": _sha256(target)},
+        "sha256": {"draws.parquet": _sha256(target), **{k: _sha256(out_dir / k) for k in derived["written"]}},
+        "classes_pending_pools": derived["missing"],
     }
     tmp_manifest = out_dir / f".manifest.json.tmp{os.getpid()}"
     tmp_manifest.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(tmp_manifest, out_dir / "manifest.json")
     return manifest
+
+
+def _derived_tables(run_root: Path, draws: pd.DataFrame, out_dir: Path) -> dict:
+    """``pools.parquet`` (every panel pool + C48 fit scopes), ``classes.parquet`` and ``readouts.parquet`` from the
+    rows just extracted. Pools needing an uncached pair are listed (run ``--stage pairs`` then extract again)."""
+    from agent_allocation.passk.metrics import pool_metrics
+    from agent_allocation.passk.pairs import MissingPair, PairCache
+    from agent_allocation.passk.pools import build_pools, c48_fit_scopes
+    from agent_allocation.passk.readout import class_rows, readout_pools
+
+    written = []
+    pools = build_pools(draws)
+    scopes = pd.concat([pools, c48_fit_scopes(draws)], ignore_index=True)
+    cache = PairCache(Path(run_root) / "catalog" / "pair_verdicts.parquet")
+    classes, missing = class_rows(scopes, draws, cache=cache)
+    for name, frame in (("pools.parquet", scopes), ("classes.parquet", classes)):
+        tmp = out_dir / f".{name}.tmp{os.getpid()}"
+        frame.to_parquet(tmp, index=False)
+        os.replace(tmp, out_dir / name)
+        written.append(name)
+    ready = pools[~pools["pool_id"].isin(set(missing))]
+    try:
+        readouts = pool_metrics(readout_pools(ready, draws, cache=cache, mode="passk"), draws)
+    except MissingPair:                                   # unreachable: missing pools were removed above
+        readouts = pd.DataFrame()
+    # E5 development training table: the withheld aggregate targets are physically absent (plan E5)
+    from agent_allocation.passk.pools import DEV_TRAINING, WITHHELD
+    dev = readouts[readouts["panel"].isin(["L96", "C48"]) & readouts["config_id"].isin(DEV_TRAINING)] \
+        if len(readouts) and "panel" in readouts else readouts
+    if len(dev):
+        dev = dev[[(int(n), int(a)) not in WITHHELD for n, a in zip(dev["n"], dev["a"])]]
+    for name, frame in (("readouts.parquet", readouts), ("dev_training_readouts.parquet", dev)):
+        tmp = out_dir / f".{name}.tmp{os.getpid()}"
+        frame.to_parquet(tmp, index=False)
+        os.replace(tmp, out_dir / name)
+        written.append(name)
+    return {"written": written, "missing": len(missing)}
 
 
 def load_draws(run_root: Path = RUN_ROOT, *, verify: bool = True) -> pd.DataFrame:

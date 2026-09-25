@@ -57,6 +57,8 @@ def decomposition(h_arc: float, h_cur: float, s: float, *, tol: float = 1e-12) -
 
 def pool_metrics(readouts: pd.DataFrame, draws: pd.DataFrame) -> pd.DataFrame:
     """Add H/S/S_tie bounds, entropy, top-wrong mass and the decomposition to a readout frame."""
+    if readouts.empty:
+        return readouts.copy()
     correct = {cid: _tri(v) for cid, v in zip(draws["candidate_id"], draws["correct"])}
     out = readouts.copy()
     n = out["n"].astype(int)

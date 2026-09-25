@@ -111,3 +111,28 @@ def test_pass_at_k_and_mixed_coverage():
     hits = sum((rng.choice(bank1, 3, replace=False).any() or rng.choice(bank2, 2, replace=False).any())
                for _ in range(20000))
     assert abs(hits / 20000 - float(g)) < 0.015
+
+
+def test_dev_training_table_has_no_withheld_configs(tmp_path):
+    from agent_allocation.passk.extract import _derived_tables
+    answers = {(1, r): str(r % 2) for r in range(25)}
+    answers.update({(a, r): "1" for a, n in ((2, 8), (4, 4), (8, 2), (16, 1)) for r in range(n)})
+    draws = _draws(answers=answers, correct={k: True for k in answers})
+    from agent_allocation.passk.pairs import PairCache, enumerate_pairs, math_votes_from_frame
+
+    def evaluator(task):
+        item, a, b, _ = task
+        return item, a, b, False, 0.0
+    PairCache(tmp_path / "catalog" / "pair_verdicts.parquet", evaluator=evaluator).fill(
+        enumerate_pairs(math_votes_from_frame(draws)))
+    out = tmp_path / "analysis_inputs"
+    out.mkdir()
+    result = _derived_tables(tmp_path, draws, out)
+    assert result["missing"] == 0
+    dev = pd.read_parquet(out / "dev_training_readouts.parquet")
+    allr = pd.read_parquet(out / "readouts.parquet")
+    assert {"4x4", "8x1", "4x2", "2x4"} <= set(allr.config_id)
+    assert not {(int(n), int(a)) for n, a in zip(dev.n, dev.a)} & WITHHELD
+    assert {"16x1", "8x2", "2x8", "1x16", "1x8"} <= set(dev.config_id)
+    classes = pd.read_parquet(out / "classes.parquet")
+    assert set(classes.pool_id) <= set(pd.read_parquet(out / "pools.parquet").pool_id)
