@@ -13,7 +13,8 @@
 #   grade         allocation grade --resume (one pass; the held-out fence applies)
 #   grade-follow  allocation grade --resume --follow (fenced every pass; ends when control/STOP exists)
 #   checkpoint    python -m agent_allocation.passk.checkpoints ${STAGE} --shard SHARD (Gate 1 smoke / 2 / 3 / 4)
-#   analyze       allocation passk-analyze --stage ${STAGE} (WP-A)                                  (no SHARD)
+#   analyze       allocation passk-analyze --stage ${STAGE} [--release r for r in RELEASE split on '+']
+#                 [FLAGS split on '+', e.g. FLAGS=--sandbox for the fit stages] (WP-A)             (no SHARD)
 #
 # Paid verbs (canary, smoke, run) always pass --account-auto-reload to passk-run (the account auto-refills; the key
 # limit, --max-usd and the shard slice still bind). SIGTERM (Slurm --signal, scancel --signal=TERM --batch) drains:
@@ -55,9 +56,13 @@ print(shard_config(load_config(sys.argv[1]), sys.argv[2])['budget']['credit_ceil
 }
 
 CHILD=""
-on_term(){
-  echo "[passk] $(date -Is) SIGTERM: draining ${SHARD_DIR}"
-  if [ -n "$SHARD" ] && [ -d "$SHARD_DIR" ]; then mkdir -p "$SHARD_DIR/control"; touch "$SHARD_DIR/control/DRAIN"; fi
+on_term(){  # only a paid verb drains its shard: a grade-follow/grade/checkpoint TERM must never stop generation
+  case "$VERB" in
+    canary|smoke|run)
+      echo "[passk] $(date -Is) SIGTERM: draining ${SHARD_DIR}"
+      if [ -n "$SHARD" ] && [ -d "$SHARD_DIR" ]; then mkdir -p "$SHARD_DIR/control"; touch "$SHARD_DIR/control/DRAIN"; fi ;;
+    *) echo "[passk] $(date -Is) SIGTERM: verb=$VERB ends (no DRAIN)"; [ -n "$CHILD" ] && kill -TERM "$CHILD" 2>/dev/null ;;
+  esac
 }
 trap on_term TERM
 
@@ -110,6 +115,9 @@ case "$VERB" in
       --shard "$SHARD" ;;
   analyze)
     : "${STAGE:?STAGE required}"
-    run_waited $A passk-analyze --config "$CFG" --run-root "$STUDY" --stage "$STAGE" ;;
+    aargs=(--config "$CFG" --run-root "$STUDY" --stage "$STAGE")
+    if [ -n "${RELEASE:-}" ]; then IFS='+' read -r -a rels <<< "$RELEASE"; for r in "${rels[@]}"; do aargs+=(--release "$r"); done; fi
+    if [ -n "${FLAGS:-}" ]; then IFS='+' read -r -a fl <<< "$FLAGS"; aargs+=("${fl[@]}"); fi
+    run_waited $A passk-analyze "${aargs[@]}" ;;
   *) echo "unknown VERB=$VERB"; exit 2 ;;
 esac

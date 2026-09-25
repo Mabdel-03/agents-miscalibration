@@ -6,6 +6,9 @@
 #SBATCH --mem=8G
 #SBATCH --time=2-00:00:00
 #SBATCH --mail-type=FAIL,END
+# Mail recipient: never hard-coded. Export OWNER_MAIL and submit with
+#   sbatch --mail-user="$OWNER_MAIL" --export=ALL slurm/passk_conductor.sbatch
+# (the conductor also sets its own job's MailUser from OWNER_MAIL via scontrol, and STATUS.md shows it).
 #SBATCH --output=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/passk_cont_v1/logs/conductor_%j.out
 # Runs the passk_cont_v1 gate chain (slurm/passk_conductor.sh) independently of any interactive session. It submits
 # every paid / grading / analysis step as its own job of slurm/passk_cont.sbatch, evaluates the gates between them and
