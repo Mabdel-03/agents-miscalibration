@@ -52,9 +52,9 @@ def test_static_scan_flags_label_access(tmp_path):
     (tmp_path / "models").mkdir()
     (tmp_path / "models" / "e2.py").write_text(
         "from agent_allocation.passk.labels import join_labels\nPATH = 'artifacts/shards/x'\n")
-    (tmp_path / "pools.py").write_text("x = 1\n")
+    (tmp_path / "pools.py").write_text('"""Never reads shards/ or private/."""\nx = 1\n')
     result = seal_mod.static_scan(tmp_path)
-    assert not result["ok"] and "models/e2.py" in result["findings"]
+    assert not result["ok"] and "models/e2.py" in result["findings"] and "pools.py" not in result["findings"]
     assert seal_mod.static_scan()["ok"]                                  # the real modules are clean
 
 

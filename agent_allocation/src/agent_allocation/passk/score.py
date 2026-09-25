@@ -102,6 +102,9 @@ def score(run_root: Path, *, n_resamples: int = 10_000) -> dict:
     else:
         primary["p2_vs_p1"] = None
         primary["holm"] = None
+    from agent_allocation.passk.records import write_records
+    primary["records"] = write_records(run_root, draws, pools,
+                                       metrics.drop(columns=["class_sizes", "class_first_ids"]))["sha256"]
     tmp = out / f".primary.json.tmp{os.getpid()}"
     tmp.write_text(json.dumps(primary, indent=2, sort_keys=True, default=float) + "\n")
     os.replace(tmp, out / "primary.json")

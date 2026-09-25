@@ -60,8 +60,14 @@ def static_scan(root: Path = PASSK_DIR) -> dict:
     files = _scanned_files(root)
     for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        docstrings = {id(n.body[0].value) for n in ast.walk(tree)
+                      if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                      and n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)
+                      and isinstance(n.body[0].value.value, str)}
         hits = []
         for node in ast.walk(tree):
+            if id(node) in docstrings:
+                continue                                   # prose may name the fence; code may not touch it
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 module = getattr(node, "module", None) or ""
                 names = [a.name for a in node.names]
