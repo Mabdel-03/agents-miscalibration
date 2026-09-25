@@ -59,6 +59,9 @@ DRAW_COLUMNS = [
     "answer_len_chars", "answer_finish_reason", "think_latency_s", "latency_s", "think_in", "think_out",
     "answer_in", "answer_out", "cost_usd", "generation_id_think", "generation_id_answer", "observed_model",
     "observed_provider", "absent", "correct", "grade_state",
+    # provenance extras (E0 / reuse manifest; not labels)
+    "raw_response_path", "raw_response_sha256", "think_body_sha", "answer_body_sha", "provider_only",
+    "decoding_config_hash", "prompt_version", "completion_headroom", "endpoint_lock_hash", "grader_version",
 ]
 
 
@@ -102,20 +105,34 @@ def read_jobs(shard_dir: Path, partition: str) -> list[tuple[str, dict]]:
     return out
 
 
-def _think_generation_id(shard_dir: Path, raw_path: str | None) -> str | None:
-    if not raw_path:
+def _body_sha(body: dict | None, *, drop: tuple[str, ...] = ()) -> str | None:
+    if not isinstance(body, dict):
         return None
+    kept = {k: v for k, v in body.items() if k not in drop}
+    return hashlib.sha256(json.dumps(kept, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _raw_facts(shard_dir: Path, raw_path: str | None) -> dict:
+    """THINK generation id and request-body hashes (THINK without ``max_tokens``) from the raw gz record."""
+    if not raw_path:
+        return {}
     path = Path(shard_dir) / raw_path
     if not path.exists():
-        return None
+        return {}
     try:
         with gzip.open(path, "rt", encoding="utf-8") as handle:
             record = json.load(handle)
         body = json.loads(record.get("response_body_text") or "{}")
-        think = body.get("think") if isinstance(body, dict) else None
-        return think.get("id") if isinstance(think, dict) else None
     except (OSError, ValueError):
-        return None
+        return {}
+    think = body.get("think") if isinstance(body, dict) else None
+    request = record.get("request_body") or {}
+    think_req = request.get("think") if isinstance(request, dict) else None
+    only = ((think_req or {}).get("provider") or {}).get("only")
+    return {"generation_id_think": think.get("id") if isinstance(think, dict) else None,
+            "think_body_sha": _body_sha(think_req, drop=("max_tokens",)),
+            "answer_body_sha": _body_sha(request.get("answer") if isinstance(request, dict) else None),
+            "provider_only": None if only is None else ",".join(only)}
 
 
 def _usage(result: dict) -> dict:
@@ -139,7 +156,9 @@ def draw_row(shard_dir: Path, node_id: str, spec: dict, task: PublicTask | None,
                benchmark=spec["benchmark"], shard=shard, kind=spec["kind"], allowance_a=budget // A,
                replicate=int(spec.get("draw_id", spec.get("root_slot", 0)) if source == "passk"
                              else (spec.get("root_slot", 0) if spec["kind"] == "root" else 0)),
-               absent=True, final_present=False)
+               absent=True, final_present=False, decoding_config_hash=spec.get("decoding_config_hash"),
+               prompt_version=spec.get("prompt_version"), completion_headroom=spec.get("completion_headroom"),
+               endpoint_lock_hash=spec.get("endpoint_lock_hash"))
     record = _read_json(parsed_path) if parsed_path.exists() else None
     cand_rec = None if record is None else record.get("candidate")
     result = None if record is None else record.get("result")
@@ -150,8 +169,10 @@ def draw_row(shard_dir: Path, node_id: str, spec: dict, task: PublicTask | None,
         row["observed_model"] = result.get("observed_model")
         row["observed_provider"] = result.get("observed_provider")
         row["generation_id_answer"] = result.get("generation_id")
+        row["raw_response_path"] = result.get("raw_response_path")
+        row["raw_response_sha256"] = result.get("raw_response_sha256")
         if read_raw:
-            row["generation_id_think"] = _think_generation_id(shard_dir, result.get("raw_response_path"))
+            row.update(_raw_facts(shard_dir, result.get("raw_response_path")))
     if candidate is not None:
         row["absent"] = False
         row["parse_status"] = candidate.parse_status.value
@@ -171,6 +192,7 @@ def draw_row(shard_dir: Path, node_id: str, spec: dict, task: PublicTask | None,
         if candidate is None:
             grade = None
         state = candidate_state(candidate, grade)
+        row["grader_version"] = None if grade is None else grade.grader_version
         row["grade_state"] = _STATE[state]
         row["correct"] = {CandidateState.CORRECT: True, CandidateState.WRONG: False,
                           CandidateState.INVALID: False}.get(state)

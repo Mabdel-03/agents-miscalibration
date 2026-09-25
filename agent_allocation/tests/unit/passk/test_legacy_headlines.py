@@ -73,3 +73,19 @@ def test_legacy_replay_matches_sealed_selections(legacy_root, draws, cache):
     out = replay(legacy_root, draws, cache)
     clean = out[~out.drift_eligible]
     assert len(clean) > 0 and clean.match.all()
+
+
+def test_e0_outputs(tmp_path, legacy_root, draws, cache):
+    from agent_allocation.passk.e0.run import run_e0
+    audit = run_e0(tmp_path, legacy_root=legacy_root, draws=draws, cache=cache)
+    assert audit["cohorts"] == {"96": 96, "94": 94, "93": 93}
+    assert audit["observed_model_all_pinned"] and audit["replay"]["gate_100pct_clean"]
+    assert round(audit["headlines"]["deep/16 (79.2 / 78.5)"]["macro_94"], 4) == 0.7853
+    out = tmp_path / "e0"
+    for name in ("audit.json", "provenance.parquet", "candidate_catalog.parquet", "exclusions.csv",
+                 "legacy_metrics.csv", "legacy_replay.parquet", "reuse_manifest.json",
+                 "decomposition_sample_k.png", "decomposition_deep_m.png", "decomposition_b16_by_benchmark.png"):
+        assert (out / name).exists(), name
+    excl = pd.read_csv(out / "exclusions.csv")
+    assert set(excl.loc[~excl.in_94, "item_id"]) == EXCLUDED_94
+    assert set(excl.loc[~excl.in_93, "item_id"]) == EXCLUDED_94 | {"hmmt/2026/9"}
