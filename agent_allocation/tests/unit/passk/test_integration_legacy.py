@@ -71,6 +71,10 @@ def test_pipeline_on_real_legacy(tmp_path, legacy_root, cache_path):
     draws = load_draws(run_root)
     assert not (draws.partition == "v48_bank").any()
     assert (draws.partition == "e1_fill").sum() == 96 * 11
+    dev = pd.read_parquet(run_root / "analysis_inputs" / "dev_training_readouts.parquet")
+    assert dev.pool_id.is_unique and not set(dev.config_id) & {"4x4", "8x1", "4x2", "2x4"}
+    pools = pd.read_parquet(run_root / "analysis_inputs" / "pools.parquet")
+    assert (pools.config_id == "c48fit").sum() == len(c48)
 
     payload = e1_lock(run_root)
     assert payload["selected"] in ("8x2", "4x4", "2x8")

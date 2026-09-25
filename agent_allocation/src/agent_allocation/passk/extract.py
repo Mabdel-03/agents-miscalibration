@@ -416,6 +416,8 @@ def _derived_tables(run_root: Path, draws: pd.DataFrame, out_dir: Path) -> dict:
         if len(readouts) and "panel" in readouts else readouts
     if len(dev):
         dev = dev[[(int(n), int(a)) not in WITHHELD for n, a in zip(dev["n"], dev["a"])]]
+        # a C48 item's L96 and C48 pools share members and hence pool_id: keep one row per pool (no double weight)
+        dev = dev.drop_duplicates("pool_id", keep="first")
     for name, frame in (("readouts.parquet", readouts), ("dev_training_readouts.parquet", dev)):
         tmp = out_dir / f".{name}.tmp{os.getpid()}"
         frame.to_parquet(tmp, index=False)
