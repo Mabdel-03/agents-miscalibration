@@ -1,7 +1,7 @@
 """Model-side inputs (WP-M): configurations, classes, pools and observed pool outcomes.
 
 Reads ONLY ``analysis_inputs/`` frames handed in by the caller (``draws.parquet``, ``pools.parquet``, optionally
-``classes.parquet``) -- never ``shards/``, ``private/`` or the legacy run root (seal static scan).
+``classes.parquet``) and nothing else: no generation-side directories and no legacy run root (seal static scan).
 
 Classes: WP-A may publish ``analysis_inputs/classes.parquet`` with columns ``scope_id, candidate_id, class_id``
 (scope = a pool_id, a ``diag5`` pool_id, or ``e2fit:<item_id>``). When it is absent the fallback builds classes by
@@ -134,14 +134,14 @@ class ClassSource:
         return exact_classes(self.draws, scope_id, member_ids)
 
 
-def pool_outcome(member_ids: list[str], classes: dict[str, str | None], labels: dict[str, float]) -> dict:
+def pool_outcome(member_ids: list[str], classes: dict[str, str | None], lab_map: dict[str, float]) -> dict:
     """Observed coverage and tie-averaged plurality correctness of one pool (tri-state aware).
 
     Coverage: 1 if any member correct; nan if none correct but some unknown; else 0.
     Plurality: modal class among voters, ties averaged (= expectation of the seeded uniform tie rule); a class is
     correct when the majority of its known member labels are correct; nan when a tied class's label is unknown.
     """
-    labs = [labels.get(c, np.nan) for c in member_ids]
+    labs = [lab_map.get(c, np.nan) for c in member_ids]
     if any(v == 1.0 for v in labs):
         cov = 1.0
     elif any(np.isnan(v) for v in labs):
@@ -159,7 +159,7 @@ def pool_outcome(member_ids: list[str], classes: dict[str, str | None], labels: 
     tied = [k for k, v in support.items() if len(v) == top]
     vals = []
     for k in tied:
-        known = [labels.get(c, np.nan) for c in support[k]]
+        known = [lab_map.get(c, np.nan) for c in support[k]]
         known = [v for v in known if not np.isnan(v)]
         vals.append(np.nan if not known else float(np.mean(known) > 0.5))
     plur = np.nan if any(np.isnan(v) for v in vals) else float(np.mean(vals))
@@ -167,12 +167,12 @@ def pool_outcome(member_ids: list[str], classes: dict[str, str | None], labels: 
 
 
 def observed_pool_table(pools: pd.DataFrame, draws: pd.DataFrame, cls: ClassSource) -> pd.DataFrame:
-    labels = {c: label_value(v) for c, v in zip(draws.candidate_id, draws.get("correct", pd.Series(
+    lab_map = {c: label_value(v) for c, v in zip(draws.candidate_id, draws.get("correct", pd.Series(
         [None] * len(draws))))}
     rows = []
     for p in pools.itertuples(index=False):
         mem = list(p.member_ids)
-        out = pool_outcome(mem, cls.classes(p.pool_id, mem), labels)
+        out = pool_outcome(mem, cls.classes(p.pool_id, mem), lab_map)
         rows.append(dict(pool_id=p.pool_id, item_id=p.item_id, config_id=p.config_id, n=p.n, a=p.a, **out))
     return pd.DataFrame(rows)
 

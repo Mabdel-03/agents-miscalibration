@@ -334,24 +334,27 @@ def score(run_root: Path | str | None = None, *, draws=None, pools=None, classes
 
 
 # ---------------------------------------------------------------------- development validation
-def holdout_split(items_bench: dict[str, str], n_test_per_bench: int = 6, salt: str = "wpm-e5-validate"
-                  ) -> tuple[list[str], list[str]]:
+def holdout_split(items_bench: dict[str, str], n_test_per_bench: int = 6, salt: str = "wpm-e5-validate",
+                  fold: int = 0) -> tuple[list[str], list[str]]:
+    """Hash-ordered per benchmark; fold k holds out positions [k*n, (k+1)*n) (folds are disjoint)."""
     train, test = [], []
     for b in BENCHMARKS:
         its = sorted([i for i, x in items_bench.items() if x == b],
                      key=lambda i: hashlib.sha256(f"{salt}|{i}".encode()).hexdigest())
-        test += its[:n_test_per_bench]
-        train += its[n_test_per_bench:]
+        lo, hi = fold * n_test_per_bench, (fold + 1) * n_test_per_bench
+        test += its[lo:hi]
+        train += its[:lo] + its[hi:]
     return train, test
 
 
 def validate_split(draws: pd.DataFrame, items: list[str], *, classes=None, pools=None, c48=None,
-                   n_test_per_bench: int = 6, seed: int = PASSK_SEED, n_sim: int = 1000, min_known: int = 3) -> dict:
+                   n_test_per_bench: int = 6, seed: int = PASSK_SEED, n_sim: int = 1000, min_known: int = 3,
+                   fold: int = 0) -> dict:
     """Fit on the development items minus a hashed held-out subset, predict the subset's diag features (legacy slots
     20-24), and score against the subset's own development pools (prefix pools; whatever configurations exist)."""
     cls = ClassSource(draws=draws, table=classes)
     bench = dict(zip(draws.item_id, draws.benchmark))
-    train, test = holdout_split({i: bench[i] for i in items}, n_test_per_bench)
+    train, test = holdout_split({i: bench[i] for i in items}, n_test_per_bench, fold=fold)
     feats_all = diag_features(draws, cls, pools=pools)
     dev_feats = feats_all[feats_all.item_id.isin(train)]
     res = _fit_predict_core(draws, pools, cls, train, [i for i in (c48 or []) if i in train], test, dev_feats,

@@ -50,7 +50,7 @@ def item_classes(fit_draws_item: pd.DataFrame, cls: ClassSource, *, scope_id: st
     item = str(d.item_id.iloc[0]) if len(d) else ""
     mem = list(d.candidate_id)
     classes = cls.classes(scope_id or f"e2fit:{item}", mem) if mem else {}
-    labels = dict(zip(d.candidate_id, [label_value(v) for v in d["correct"]]))
+    lab_map = dict(zip(d.candidate_id, [label_value(v) for v in d["correct"]]))
     members: dict[str, list[float]] = {}
     novote = 0
     for c in mem:
@@ -58,7 +58,7 @@ def item_classes(fit_draws_item: pd.DataFrame, cls: ClassSource, *, scope_id: st
         if k is None:
             novote += 1
         else:
-            members.setdefault(k, []).append(labels.get(c, np.nan))
+            members.setdefault(k, []).append(lab_map.get(c, np.nan))
     corr, wrong = [], []
     for k, labs in members.items():
         known = [v for v in labs if not np.isnan(v)]

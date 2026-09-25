@@ -91,7 +91,7 @@ def _ridge_row(bench: str, n: int, a: int, f: dict) -> list[float]:
 
 def fit_ridge(fit: pd.DataFrame, cls: ClassSource, items_bench: dict[str, str], configs: list[str],
               rng: np.random.Generator, subsets: int = 6) -> dict:
-    labels = dict(zip(fit.candidate_id, [label_value(v) for v in fit["correct"]]))
+    lab_map = dict(zip(fit.candidate_id, [label_value(v) for v in fit["correct"]]))
     X, yc, yp, grp = [], [], [], []
     feats = {}
     for item, g in fit.groupby("item_id"):
@@ -106,7 +106,7 @@ def fit_ridge(fit: pd.DataFrame, cls: ClassSource, items_bench: dict[str, str], 
             picks = [ids[:n]] + [list(rng.choice(ids, size=n, replace=False)) for _ in range(subsets - 1)
                                  if len(ids) > n]
             for mem in picks:
-                out = pool_outcome(mem, classes, labels)
+                out = pool_outcome(mem, classes, lab_map)
                 if np.isnan(out["coverage"]) or np.isnan(out["plurality"]):
                     continue
                 X.append(_ridge_row(items_bench[item], n, a, feats[item]))
@@ -295,10 +295,15 @@ def _write(out_dir: Path, res: dict, *, seed: int, S: int, inner: int, items: li
 def observed_v48(draws: pd.DataFrame, pools: pd.DataFrame | None, cls: ClassSource,
                  v48: list[str]) -> pd.DataFrame:
     vd = draws[draws.partition == "v48_bank"]
+    local = build_prefix_pools(vd, v48, needed_configs(), "V48")
     if pools is not None:
         vp = pools[(pools.panel == "V48") & pools.config_id.isin(needed_configs())]
+        have = set(zip(vp.item_id, vp.config_id))
+        # crossover arms (2x1, 1x2, ...) may be absent from WP-A pools: fill them by the same prefix rule
+        extra = local[[(i, c) not in have for i, c in zip(local.item_id, local.config_id)]]
+        vp = pd.concat([vp, extra], ignore_index=True)
     else:
-        vp = build_prefix_pools(vd, v48, needed_configs(), "V48")
+        vp = local
     return observed_pool_table(vp, vd, cls)
 
 

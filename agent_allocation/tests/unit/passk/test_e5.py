@@ -130,3 +130,13 @@ def test_items_without_diagnostics_are_imputed_and_predicted(tmp_path):
     res = e5.fit_and_predict(draws=draws, panels=panels, write=False, n_sim=100)
     assert missing in set(res["predictions"].item_id)
     assert bool(res["features"].set_index("item_id").loc[missing, "imputed"])
+
+
+def test_holdout_folds_are_disjoint_and_cover():
+    items = {f"{b}/{j}": b for b in BENCH for j in range(24)}
+    seen = []
+    for k in range(4):
+        train, test = e5.holdout_split(items, 6, fold=k)
+        assert not set(train) & set(test) and len(test) == 24 and len(train) == 72
+        seen += test
+    assert sorted(seen) == sorted(items)
