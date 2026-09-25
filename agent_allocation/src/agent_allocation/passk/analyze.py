@@ -376,8 +376,12 @@ def cmd_passk_analyze(argv: list[str]) -> int:
         from agent_allocation.passk.seal import run_seal
         return run_seal(run_root)
     if args.stage == "score":
-        from agent_allocation.passk.score import score
-        primary = score(run_root)
+        from agent_allocation.passk.score import ScoreBlocked, score
+        try:
+            primary = score(run_root)
+        except ScoreBlocked as exc:
+            print(f"blocked: {exc}", file=sys.stderr)
+            return EXIT_BLOCKED
         print(json.dumps({"locked": primary["locked"], "holm": primary["holm"]}, default=str))
         return EXIT_OK
     if args.stage == "report":

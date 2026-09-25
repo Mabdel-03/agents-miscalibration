@@ -9,7 +9,7 @@ import pytest
 from agent_allocation.passk.extract import extract, load_draws
 from agent_allocation.passk.pairs import PairCache, enumerate_pairs, math_votes_from_frame
 from agent_allocation.passk.pools import B16_MENU
-from agent_allocation.passk.score import score
+from agent_allocation.passk.score import ScoreBlocked, score
 
 from . import fakeroot
 
@@ -34,8 +34,11 @@ def test_release_then_score_primary_family(tmp_path):
     sealed = tmp_path / "sealed"
     (sealed / "t200").mkdir(parents=True)
     (sealed / "e1_selection.json").write_text(json.dumps({"selected": "4x4"}))
-    rows = [{"item_id": i, "config_id": c, "predictor": p, "p_delivered": 0.5 if p == "P1" else 0.6,
-             "p_coverage": 0.7} for i in items for c in B16_MENU for p in ("P0", "P1", "P2")]
+    bench = pre.drop_duplicates("item_id").set_index("item_id")["benchmark"].to_dict()
+    # WP-M's real schema (e5.predict_all): benchmark included -- the join must not suffix it away
+    rows = [{"item_id": i, "benchmark": bench.get(i, "aime"), "config_id": c, "predictor": p,
+             "p_delivered": 0.5 if p == "P1" else 0.6, "p_coverage": 0.7}
+            for i in items for c in B16_MENU for p in ("P0", "P1", "P2")]
     pd.DataFrame(rows).to_parquet(sealed / "t200" / "predictions.parquet")
     with pytest.raises(PermissionError):
         score(tmp_path)
@@ -43,9 +46,18 @@ def test_release_then_score_primary_family(tmp_path):
     extract(tmp_path, include_legacy=False, release=["t200"])
     draws = load_draws(tmp_path)
     assert draws.loc[draws.partition == "t200_bank", "correct"].notna().all()
+    if json.loads((tmp_path / "analysis_inputs" / "manifest.json").read_text())["classes_pending_pools"]:
+        with pytest.raises(ScoreBlocked):                   # release -> pairs -> extract -> score, never skip
+            score(tmp_path, n_resamples=300)
     PairCache(tmp_path / "catalog" / "pair_verdicts.parquet", evaluator=_eval).fill(
         enumerate_pairs(math_votes_from_frame(draws)))
+    extract(tmp_path, include_legacy=False)                 # sticky release; classes now complete
+    (tmp_path / "artifacts" / "manifests").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "artifacts" / "manifests" / "splits.json").write_text(json.dumps(
+        {"panels": {"L96": [], "C48": [], "V48": [], "T200": list(items)}}))
     primary = score(tmp_path, n_resamples=300)
+    assert primary["scored_splits"] == ["t200"]
+    assert not (tmp_path / "scores" / "e2").exists()         # V48 not released: E2 is not scored
     assert primary["locked"] == "4x4"
     assert primary["mixed_vs_deep"]["n_items"] == len(items)
     assert set(primary["holm"]) == {"mixed_vs_deep", "p2_vs_p1"}

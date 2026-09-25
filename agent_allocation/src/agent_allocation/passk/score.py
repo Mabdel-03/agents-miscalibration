@@ -26,7 +26,7 @@ from agent_allocation.passk.pools import B8_MENU, B16_MENU, build_pools
 from agent_allocation.passk.readout import readout_pools
 from agent_allocation.passk.stats import MACRO, MIXTURE, contrast, holm2
 
-__all__ = ["brier_items", "coverage_tables", "mixed_vs_deep", "score"]
+__all__ = ["ScoreBlocked", "brier_items", "coverage_tables", "mixed_vs_deep", "score"]
 
 
 def _seal(run_root: Path) -> dict:
@@ -60,8 +60,10 @@ def brier_items(predictions: pd.DataFrame, metrics: pd.DataFrame, *, panel: str 
     """Per item: mean Brier of ``p_delivered`` vs delivered correctness over its known 16A configurations."""
     obs = metrics[(metrics["panel"] == panel) & metrics["config_id"].isin(B16_MENU)][
         ["item_id", "benchmark", "config_id", "S_known"]]
-    joined = predictions[predictions["config_id"].isin(B16_MENU)].merge(obs, on=["item_id", "config_id"],
-                                                                         how="inner")
+    # WP-M's sealed frame also carries ``benchmark`` (and p_coverage): join on the keys only, benchmark from metrics.
+    pred = predictions.loc[predictions["config_id"].isin(B16_MENU), ["item_id", "config_id", "predictor",
+                                                                     "p_delivered"]]
+    joined = pred.merge(obs, on=["item_id", "config_id"], how="inner")
     joined = joined.dropna(subset=["S_known"])
     joined["brier"] = (joined["p_delivered"].astype(float) - joined["S_known"].astype(float)) ** 2
     per = joined.groupby(["item_id", "benchmark", "predictor"]).agg(brier=("brier", "mean"),
@@ -96,12 +98,32 @@ def coverage_tables(draws: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+class ScoreBlocked(RuntimeError):
+    """Scoring inputs are not complete yet (pending classes, nothing released): exit 2, the conductor retries."""
+
+
+def _released_sealed(run_root: Path, seal: dict) -> dict[str, bool]:
+    """Per split: released by the extract (sticky ``releases``) AND its predictions are in the verifying seal."""
+    manifest_path = run_root / "analysis_inputs" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    pending = int(manifest.get("classes_pending_pools") or 0)
+    if pending:
+        raise ScoreBlocked(f"classes_pending_pools={pending}: run pairs then extract before score")
+    releases = set(manifest.get("releases") or [])
+    return {split: split in releases and f"sealed/{split}/predictions.parquet" in (seal.get("artifacts") or {})
+            for split in ("v48", "t200")}
+
+
 def score(run_root: Path, *, n_resamples: int = 10_000) -> dict:
     run_root = Path(run_root)
     seal = _seal(run_root)
+    ready = _released_sealed(run_root, seal)
+    if not any(ready.values()):
+        raise ScoreBlocked("no split is both released and sealed; nothing to score")
     draws = load_draws(run_root)
     cache = PairCache(run_root / "catalog" / "pair_verdicts.parquet")
-    pools = build_pools(draws, panels=("L96", "V48", "T200"),
+    panels = ("L96",) + (("V48",) if ready["v48"] else ()) + (("T200",) if ready["t200"] else ())
+    pools = build_pools(draws, panels=panels,
                         configs=B16_MENU + B8_MENU + ("1x1", "2x1", "1x2", "4x1", "2x2", "1x4"))
     metrics = pool_metrics(readout_pools(pools, draws, cache=cache, mode="passk"), draws)
     out = run_root / "scored"
@@ -114,20 +136,21 @@ def score(run_root: Path, *, n_resamples: int = 10_000) -> dict:
         .to_csv(out / "menu_contrasts.csv", index=False)
     coverage_tables(draws).to_csv(out / "finite_bank_coverage.csv", index=False)
     locked = json.loads((run_root / "sealed" / "e1_selection.json").read_text())["selected"]
-    primary: dict = {"seal_code_commit": seal.get("code_commit"), "locked": locked}
-    primary["mixed_vs_deep"] = mixed_vs_deep(metrics, locked, n_resamples=n_resamples)
-    tie = metrics.assign(S_known=metrics["S_tie"])            # secondary: the analytic tie-averaged readout
-    primary["mixed_vs_deep_tie_averaged"] = {k: v for k, v in mixed_vs_deep(tie, locked, n_resamples=n_resamples)
-                                             .items() if k in ("estimate", "ci95_studentized", "p", "n_items")}
-    pred_path = run_root / "sealed" / "t200" / "predictions.parquet"
-    if pred_path.exists():
+    primary: dict = {"seal_code_commit": seal.get("code_commit"), "locked": locked,
+                     "scored_splits": sorted(k for k, v in ready.items() if v)}
+    primary["mixed_vs_deep"] = primary["mixed_vs_deep_tie_averaged"] = None
+    primary["p2_vs_p1"] = primary["holm"] = None
+    if ready["t200"]:                                          # both primary tests live on T200
+        primary["mixed_vs_deep"] = mixed_vs_deep(metrics, locked, n_resamples=n_resamples)
+        tie = metrics.assign(S_known=metrics["S_tie"])        # secondary: the analytic tie-averaged readout
+        primary["mixed_vs_deep_tie_averaged"] = {
+            k: v for k, v in mixed_vs_deep(tie, locked, n_resamples=n_resamples).items()
+            if k in ("estimate", "ci95_studentized", "p", "n_items")}
+        pred_path = run_root / "sealed" / "t200" / "predictions.parquet"
         items, dropped = brier_items(pd.read_parquet(pred_path), metrics)
         primary["p2_vs_p1"] = contrast(items, "p2", "p1", weights=MIXTURE, n_resamples=n_resamples)
         primary["p2_vs_p1"]["dropped_items_lt3_known"] = dropped
         primary["holm"] = holm2(primary["mixed_vs_deep"]["p"], primary["p2_vs_p1"]["p"])
-    else:
-        primary["p2_vs_p1"] = None
-        primary["holm"] = None
     from agent_allocation.passk.records import write_records
     primary["records"] = write_records(run_root, draws, pools,
                                        metrics.drop(columns=["class_sizes", "class_first_ids"]))["sha256"]
@@ -135,11 +158,9 @@ def score(run_root: Path, *, n_resamples: int = 10_000) -> dict:
     tmp.write_text(json.dumps(primary, indent=2, sort_keys=True, default=float) + "\n")
     os.replace(tmp, out / "primary.json")
     import importlib
-    for which in ("e2", "e5"):
-        try:
-            module = importlib.import_module(f"agent_allocation.passk.models.{which}")
-        except ModuleNotFoundError:
+    for which, split in (("e2", "v48"), ("e5", "t200")):     # WP-M scorers only on released + sealed splits
+        if not ready[split]:
             continue
-        if hasattr(module, "score"):
-            module.score(run_root)
+        module = importlib.import_module(f"agent_allocation.passk.models.{which}")
+        module.score(run_root)
     return primary
