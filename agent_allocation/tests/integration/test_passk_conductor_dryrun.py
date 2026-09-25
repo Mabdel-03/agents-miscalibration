@@ -222,3 +222,12 @@ def test_gate4_failure_of_one_split_releases_the_other(tmp_path):
     assert [e[0] for e in exports if e[0] in ("release", "pairs", "extract", "score", "report")] == \
         ["release", "pairs", "extract", "score", "report"]
     assert [e[2] for e in exports if e[0] == "release"] == ["release=t200"]
+
+
+def test_conductor_resumes_at_smoke_without_canaries(tmp_path):
+    code, study, stubs, env = _setup(tmp_path)
+    (study / "artifacts" / "shards" / "mancer" / "control" / "DRAIN").touch()     # a previous stop's leftover
+    proc = _run(code, env, START_AT="smoke")
+    assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
+    verbs = [s[0] for s in _submitted(stubs)]
+    assert "canary" not in verbs and verbs[:2] == ["smoke", "smoke"] and verbs.count("run") == 2

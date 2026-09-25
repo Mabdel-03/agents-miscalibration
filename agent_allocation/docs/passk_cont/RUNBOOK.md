@@ -65,7 +65,8 @@ cat $STUDY/STATUS.md $STUDY/conductor.state $STUDY/analysis.failed; squeue -u $U
 `OWNER_MAIL`: the conductor also sets its own job's `MailUser` from it (`scontrol update`), and STATUS.md shows the
 recipient (`UNSET` means no mail will reach you: fix it before the paid launch).
 
-`START_AT` tokens, in run order: `gate0`, `gate1`, `main`, then the analysis steps `extract` (= `analysis`), `pairs`,
+`START_AT` tokens, in run order: `gate0`, `gate1`, `smoke` (canaries already passed and evaluated: no re-paid
+canary), `main`, then the analysis steps `extract` (= `analysis`), `pairs`,
 `extract2`, `e1-lock`, `e2-fit`, `e5-fit`, `seal`, then `gate4` (Gate 4 + held-out grading wait), then `post` (=
 `release-v48`), `pairs-v48`, `extract-v48`, `score-v48`, `report-v48`, `release-t200`, `pairs-t200`, `extract-t200`,
 `score-t200`, `report-t200`. A stopped step names its own resume token in STATUS.md (`resume: START_AT=<token>`). The

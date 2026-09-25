@@ -5,7 +5,7 @@
 # grades is its own sbatch job of slurm/passk_cont.sbatch; the conductor evaluates the gates between them, writes
 # conductor.state + STATUS.md at every transition, and stops (exit != 0 -> Slurm mails the owner) on any failure.
 #
-# Resume: START_AT=gate0|gate1|main|<any analysis step token>|gate4 (default gate0). Analysis step tokens (the order
+# Resume: START_AT=gate0|gate1|smoke|main|<any analysis step token>|gate4 (default gate0). Analysis step tokens (the order
 # they run in): extract pairs extract2 e1-lock e2-fit e5-fit seal | gate4 | release-v48 pairs-v48 extract-v48
 # score-v48 report-v48 release-t200 pairs-t200 extract-t200 score-t200 report-t200 ("analysis" = extract). A stopped
 # chain is safe: held-out labels stay fenced until sealed/SEAL_predictions.json verifies.
@@ -213,6 +213,11 @@ if [ "$START_AT" = gate1 ]; then
     $A canary --config "$CFG" --run-dir "$RUN" --shard "$s" --allow-paid --max-usd "$MAX" --evaluate-only
     rc=$?; [ $rc -eq 0 ] || stop gate1 "canary evaluate-only $s rc=$rc (gates/gate1_canary.json of the shard)"
   done
+  START_AT=smoke
+fi
+# START_AT=smoke: the canaries passed (and were evaluated) already; resume at the smoke without re-paying them
+if [ "$START_AT" = smoke ]; then
+  clear_sentinels
   note gate1-smoke "passk-run smoke on both shards"
   declare -A SJ
   for s in "${SHARDS[@]}"; do SJ[$s]=$(submit smoke "$s"); [ -n "${SJ[$s]}" ] || stop gate1 "smoke $s not submitted" 1; done
@@ -410,6 +415,6 @@ if step_tokens "${ANALYSIS_POST[@]}" | grep -qx "$START_AT"; then
   exit 0
 fi
 case "$START_AT" in
-  gate0|gate1|main|gate4) exit 0 ;;
+  gate0|gate1|smoke|main|gate4) exit 0 ;;
   *) stop start "unknown START_AT=$START_AT" 2 ;;
 esac
