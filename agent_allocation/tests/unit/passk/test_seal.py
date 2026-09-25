@@ -17,6 +17,7 @@ def _prepare(run_root, *, bad_open: bool = False):
     (run_root / "sealed" / "e1_selection.json").write_text('{"selected": "4x4"}')
     (run_root / "analysis_inputs").mkdir()
     (run_root / "analysis_inputs" / "draws.parquet").write_bytes(b"draws")
+    (run_root / "analysis_inputs" / "manifest.json").write_text('{"n_rows": 1}')
     logs = run_root / "logs" / "strace"
     logs.mkdir(parents=True)
     ok = f'123 openat(AT_FDCWD, "{run_root}/analysis_inputs/draws.parquet", O_RDONLY) = 3\n'
@@ -28,9 +29,12 @@ def _prepare(run_root, *, bad_open: bool = False):
 def test_seal_written_and_verifies(tmp_path):
     _prepare(tmp_path)
     assert seal_mod.run_seal(tmp_path, require_git=False) == 0
-    seal = verify_seal(tmp_path) if False else json.loads((tmp_path / "sealed" / "SEAL_predictions.json").read_text())
+    seal = json.loads((tmp_path / "sealed" / "SEAL_predictions.json").read_text())
     assert "sealed/v48/predictions.parquet" in seal["artifacts"]
-    assert "analysis_inputs/draws.parquet" in seal["artifacts"]
+    assert "analysis_inputs/draws.parquet" in seal["inputs_at_seal"]
+    assert "sealed/inputs_manifest_at_seal.json" in seal["artifacts"]
+    (tmp_path / "analysis_inputs" / "draws.parquet").write_bytes(b"re-extracted after release")
+    assert verify_seal(tmp_path) is not None                            # a release re-extract keeps the seal
     assert seal["static_scan"]["ok"]
     assert seal_mod.run_seal(tmp_path, require_git=False) == 1          # written once
 

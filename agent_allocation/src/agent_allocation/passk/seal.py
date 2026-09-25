@@ -8,7 +8,9 @@ All must hold, or nothing is written and the stage exits 1:
 3. the fit stages' strace logs (``logs/strace/{e2-fit,e5-fit}.log``, written by ``strace -f -e
    trace=open,openat,openat2``) show no open under ``artifacts/shards/``, ``artifacts/private/``, the HF cache or the
    legacy run root;
-4. every artifact under ``sealed/`` (except the seal) and ``analysis_inputs/`` is hashed into the seal.
+4. every artifact under ``sealed/`` (except the seal) is hashed into ``artifacts`` (what ``verify_seal`` checks);
+   ``analysis_inputs/`` hashes go to ``inputs_at_seal`` plus a snapshot ``sealed/inputs_manifest_at_seal.json``
+   (a later release re-extract rewrites ``analysis_inputs/`` and must not un-verify the seal).
 """
 from __future__ import annotations
 
@@ -139,6 +141,11 @@ def run_seal(run_root: Path, *, require_git: bool = True, stages: tuple[str, ...
                 problems.append(f"HEAD {head} != reviewed commit {reviewed}")
         if dirty:
             problems.append("worktree is not clean")
+    if not require_git:
+        try:
+            head = _git(["rev-parse", "HEAD"])
+        except (OSError, subprocess.CalledProcessError):
+            head = None
     scan = static_scan()
     if not scan["ok"]:
         problems.append(f"static scan findings: {scan['findings']}")
@@ -153,17 +160,28 @@ def run_seal(run_root: Path, *, require_git: bool = True, stages: tuple[str, ...
         straces[str(log.relative_to(run_root))] = result
         if not result["ok"]:
             problems.append(f"{stage}: strace shows forbidden opens {result['examples']}")
+    # The fit inputs are recorded (``inputs_at_seal``) and their manifest is snapshotted into sealed/, but only
+    # sealed/ files are *verified*: a release re-extract rewrites analysis_inputs/, which must not un-verify the seal.
+    inputs = {}
+    for path in sorted((run_root / "analysis_inputs").rglob("*")):
+        if path.is_file() and not path.name.startswith("."):
+            inputs[str(path.relative_to(run_root))] = _sha256(path)
+    manifest = run_root / "analysis_inputs" / "manifest.json"
+    if manifest.exists() and not problems:
+        snapshot = run_root / "sealed" / "inputs_manifest_at_seal.json"
+        snapshot.write_text(json.dumps({"manifest": json.loads(manifest.read_text()), "sha256": inputs},
+                                       indent=2, sort_keys=True) + "\n")
     artifacts = {}
-    for base in ("sealed", "analysis_inputs"):
-        for path in sorted((run_root / base).rglob("*")):
-            if path.is_file() and path.name != "SEAL_predictions.json" and not path.name.startswith("."):
-                artifacts[str(path.relative_to(run_root))] = _sha256(path)
-    if not any(k.startswith("sealed/") for k in artifacts):
+    for path in sorted((run_root / "sealed").rglob("*")):
+        if path.is_file() and path.name != "SEAL_predictions.json" and not path.name.startswith("."):
+            artifacts[str(path.relative_to(run_root))] = _sha256(path)
+    if not any(k.startswith("sealed/") and not k.endswith("inputs_manifest_at_seal.json") for k in artifacts):
         problems.append("nothing under sealed/ to seal")
     if problems:
         print(json.dumps({"seal": "refused", "problems": problems}, indent=2), file=sys.stderr)
         return 1
-    seal = {"code_commit": head, "reviewed_commit": reviewed, "artifacts": artifacts, "strace_logs": straces,
+    seal = {"code_commit": head, "reviewed_commit": reviewed, "artifacts": artifacts, "inputs_at_seal": inputs,
+            "strace_logs": straces,
             "static_scan": scan, "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     target = run_root / "sealed" / "SEAL_predictions.json"
     if target.exists():
