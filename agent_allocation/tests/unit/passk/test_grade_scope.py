@@ -120,3 +120,15 @@ def test_one_fence_implementation():
     assert labels.verify_seal is grade_scope.verify_seal
     assert labels.blocked_node_ids is grade_scope.blocked_node_ids
     assert extract._seal_functions() is grade_scope.verify_seal
+
+
+def test_seal_artifacts_must_live_under_sealed(tmp_path):
+    from hashlib import sha256 as _sha
+    study = tmp_path
+    (study / "sealed").mkdir()
+    outside = study / "x.bin"
+    outside.write_bytes(b"x")
+    for rel in (str(outside), "x.bin", "sealed/../x.bin"):
+        (study / "sealed" / "SEAL_predictions.json").write_text(json.dumps(
+            {"code_commit": "c", "artifacts": {rel: _sha(b"x").hexdigest()}}))
+        assert gs.verify_seal(study) is None, rel

@@ -59,7 +59,9 @@ def verify_seal(run_root: Any) -> dict[str, Any] | None:
         return None                                  # same acceptance rule as WP-A's labels.verify_seal
     for rel, expected in artifacts.items():
         path = Path(rel)
-        path = path if path.is_absolute() else root / path
+        if path.is_absolute() or ".." in path.parts or path.parts[:1] != ("sealed",):
+            return None                              # a seal hashes only its own sealed/ tree (no /etc/hostname seals)
+        path = root / path
         try:
             if not path.is_file() or _file_sha(path) != str(expected):
                 return None
