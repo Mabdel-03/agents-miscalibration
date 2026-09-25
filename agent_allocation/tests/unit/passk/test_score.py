@@ -57,3 +57,6 @@ def test_release_then_score_primary_family(tmp_path):
     assert set(t.config_id) == {"16x1", "8x2", "4x4", "2x8"}
     assert (t.simul_lo <= t.ci95_lo + 1e-12).all() and (t.simul_hi >= t.ci95_hi - 1e-12).all()
     assert (tmp_path / "records" / "run_manifest.json").exists()
+    cov = pd.read_csv(tmp_path / "scored" / "finite_bank_coverage.csv")
+    assert set(cov[cov.panel == "T200"].config_id) >= {"16x1", "8x2", "4x4", "2x8", "1x16"}
+    assert cov.G_lo.between(0, 1).all()

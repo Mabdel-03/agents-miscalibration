@@ -26,7 +26,7 @@ from agent_allocation.passk.pools import B8_MENU, B16_MENU, build_pools
 from agent_allocation.passk.readout import readout_pools
 from agent_allocation.passk.stats import MACRO, MIXTURE, contrast, holm2
 
-__all__ = ["brier_items", "mixed_vs_deep", "score"]
+__all__ = ["brier_items", "coverage_tables", "mixed_vs_deep", "score"]
 
 
 def _seal(run_root: Path) -> dict:
@@ -78,6 +78,27 @@ def brier_items(predictions: pd.DataFrame, metrics: pd.DataFrame, *, panel: str 
     return items, dropped
 
 
+def coverage_tables(draws: pd.DataFrame) -> pd.DataFrame:
+    """Finite-bank coverage G per item for every menu configuration whose bank exceeds the pool (never k > m)."""
+    from agent_allocation.passk.metrics import bank_counts, item_mixed_coverage
+    from agent_allocation.passk.pools import CONFIGS
+    frames = []
+    for panel, parts in (("L96", ("legacy_main", "e1_fill", "c48_extra")), ("V48", ("v48_bank",)),
+                         ("T200", ("t200_bank",))):
+        sub = draws[draws["partition"].isin(parts)]
+        if panel == "L96":
+            sub = sub[sub["partition"] != "legacy_pilot"]
+        if sub.empty:
+            continue
+        banks = bank_counts(sub, parts)
+        for config_id in B16_MENU + B8_MENU:
+            n, a = CONFIGS[config_id]
+            g = item_mixed_coverage(banks, {a: n})
+            if len(g):
+                frames.append(g.assign(panel=panel, config_id=config_id))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def score(run_root: Path, *, n_resamples: int = 10_000) -> dict:
     run_root = Path(run_root)
     seal = _seal(run_root)
@@ -94,6 +115,7 @@ def score(run_root: Path, *, n_resamples: int = 10_000) -> dict:
     pd.concat([menu_contrasts(metrics, B16_MENU, "1x16", n_resamples=n_resamples),
                menu_contrasts(metrics, B8_MENU, "1x8", n_resamples=n_resamples)], ignore_index=True) \
         .to_csv(out / "menu_contrasts.csv", index=False)
+    coverage_tables(draws).to_csv(out / "finite_bank_coverage.csv", index=False)
     locked = json.loads((run_root / "sealed" / "e1_selection.json").read_text())["selected"]
     primary: dict = {"seal_code_commit": seal.get("code_commit"), "locked": locked}
     primary["mixed_vs_deep"] = mixed_vs_deep(metrics, locked, n_resamples=n_resamples)
