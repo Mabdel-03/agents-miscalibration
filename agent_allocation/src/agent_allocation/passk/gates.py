@@ -191,3 +191,176 @@ def slices_match(base_cfg: Mapping[str, Any]) -> dict[str, Any]:
         total = sum(Decimal(r[key]) for r in rows.values())
         ok &= total <= Decimal(str(base_cfg["budget"][key]))
     return {"passed": bool(ok), "slices": rows}
+
+
+# ------------------------------------------------------------------------------------------------------------------
+# Gate 0 (offline + optional live /key re-read)
+# ------------------------------------------------------------------------------------------------------------------
+
+GATE0_TESTS = ("tests/unit/passk", "tests/integration/test_passk_wpg_e2e.py")
+HOME_PREFIXES = ("/home/",)
+
+
+def _legacy_decoding_hash(legacy_root: Path) -> str | None:
+    for jobs in sorted(legacy_root.glob("shards/*/manifests/jobs/main.jsonl")):
+        with open(jobs, encoding="utf-8") as handle:
+            line = handle.readline()
+        if line.strip():
+            return json.loads(line)["record"]["decoding_config_hash"]
+    return None
+
+
+def _run_tests(code_dir: Path, targets: Sequence[str]) -> dict[str, Any]:
+    import subprocess
+    import sys
+    cmd = [sys.executable, "-m", "pytest", "-q", *targets]
+    proc = subprocess.run(cmd, cwd=code_dir, capture_output=True, text=True, check=False)
+    tail = (proc.stdout or "").strip().splitlines()[-3:]
+    return {"passed": proc.returncode == 0, "returncode": proc.returncode, "targets": list(targets), "tail": tail}
+
+
+def _git_head(code_dir: Path) -> dict[str, Any]:
+    import subprocess
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=code_dir, capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=code_dir,
+                           capture_output=True, text=True).stdout.strip()
+    return {"head": head, "clean": dirty == ""}
+
+
+def key_check(base_cfg: Mapping[str, Any], snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Sum of shard credit ceilings <= limit_remaining - 3 (the owner's key limit covers the whole cap)."""
+    from agent_allocation.shards import shard_config, shard_ids
+    total = sum(Decimal(str(shard_config(base_cfg, s)["budget"]["credit_ceiling_usd"])) for s in shard_ids(base_cfg))
+    if snapshot is None:
+        return {"passed": None, "note": "not evaluated (offline)", "sum_credit_ceilings": str(total)}
+    remaining = snapshot.get("key", {}).get("limit_remaining")
+    if remaining is None:
+        return {"passed": False, "note": "key has no limit_remaining", "sum_credit_ceilings": str(total)}
+    ok = total <= Decimal(str(remaining)) - Decimal("3")
+    return {"passed": ok, "sum_credit_ceilings": str(total), "limit_remaining": str(remaining)}
+
+
+def evaluate_gate0(base_cfg: Mapping[str, Any], study_root: str | Path, *, legacy_root: str | Path | None = None,
+                   snapshot: Mapping[str, Any] | None = None, tests: dict[str, Any] | None = None,
+                   e0: Mapping[str, Any] | None = None, local_state_root: str | Path | None = None
+                   ) -> dict[str, Any]:
+    """Every offline Gate 0 criterion of the plan over the materialized shards of ``study_root``."""
+    import os
+    from agent_allocation.live import load_tasks, read_endpoint_locks
+    from agent_allocation.passk import banks
+    from agent_allocation.passk.forecast import forecast_study
+    from agent_allocation.passk.run import shard_plan
+    from agent_allocation.paths import RunPaths
+    from agent_allocation.prompts.render import prompt_version
+    from agent_allocation.config import decoding_config_hash
+    from agent_allocation.shards import shard_config, shard_ids, shard_run_dir
+    study = Path(study_root)
+    artifacts = study / "artifacts"
+    legacy_root = Path(legacy_root or base_cfg["passk"]["legacy_run_root"])
+    crit: dict[str, Any] = {}
+    # Gate S and the splits manifest
+    gate_s = study / "gates" / "gate_s.json"
+    splits_sha = banks.splits_sha256(artifacts) if banks.splits_path(artifacts).is_file() else None
+    if gate_s.is_file():
+        rec = json.loads(gate_s.read_text())
+        recorded = rec.get("splits_sha256") or (rec.get("sha256") or {}).get("splits.json")
+        crit["gate_s"] = {"passed": bool(rec.get("passed")) and (recorded is None or recorded == splits_sha),
+                          "recorded_splits_sha256": recorded, "splits_sha256": splits_sha}
+    else:
+        crit["gate_s"] = {"passed": False, "note": f"{gate_s} missing", "splits_sha256": splits_sha}
+    splits = banks.load_splits(artifacts)
+    plans, locks, tasks_all = {}, {}, {}
+    for sid in shard_ids(base_cfg):
+        cfg = shard_config(base_cfg, sid)
+        local = Path(local_state_root) / sid if local_state_root else None
+        paths = RunPaths.for_run(shard_run_dir(artifacts, sid), local_state_dir=local or
+                                 (study / "logs" / "gate0_local" / sid))
+        shard_locks = read_endpoint_locks(paths)
+        if cfg["primary_model"] not in shard_locks:
+            crit[f"lock_{sid}"] = {"passed": False, "note": "no endpoint lock (passk-run --adopt-legacy-lock)"}
+            continue
+        locks[sid] = shard_locks[cfg["primary_model"]]
+        tasks = load_tasks(paths)
+        tasks_all.update(tasks)
+        plans[sid] = shard_plan(cfg, paths, banks.PARTITIONS, splits=splits, tasks=tasks, lock=locks[sid])
+    counts = {p: sum(len([n for g in plans[s].get(p, []) for n in g.nodes]) for s in plans) for p in banks.PARTITIONS}
+    all_ids = [n.node_id for s in plans for gs in plans[s].values() for g in gs for n in g.nodes]
+    crit["planned_counts"] = {"passed": counts == banks.EXPECTED_COUNTS, "counts": counts,
+                              "expected": banks.EXPECTED_COUNTS}
+    legacy_ids = banks.legacy_node_ids(legacy_root) if legacy_root.is_dir() else set()
+    crit["node_ids"] = {"passed": len(all_ids) == len(set(all_ids)) == sum(banks.EXPECTED_COUNTS.values())
+                        and bool(legacy_ids) and not (set(all_ids) & legacy_ids),
+                        "planned": len(all_ids), "unique": len(set(all_ids)), "legacy_ids": len(legacy_ids),
+                        "legacy_collisions": len(set(all_ids) & legacy_ids)}
+    legacy_dec = _legacy_decoding_hash(legacy_root)
+    crit["prompt_and_decoding"] = {
+        "passed": prompt_version() == base_cfg["passk"]["legacy_prompt_version"]
+        and decoding_config_hash(base_cfg) == legacy_dec,
+        "prompt_version": prompt_version(), "decoding_config_hash": decoding_config_hash(base_cfg),
+        "legacy_decoding_config_hash": legacy_dec}
+    parity_items = [*splits["panels"]["L96"], *splits["panels"]["D32"]]
+    crit["think_parity"] = think_parity(base_cfg, legacy_root, parity_items, tasks_all, locks=locks) \
+        if len(locks) == len(shard_ids(base_cfg)) else {"passed": False, "note": "locks missing"}
+    e0 = e0 if e0 is not None else (json.loads((study / "gates" / "e0_gate.json").read_text())
+                                    if (study / "gates" / "e0_gate.json").is_file() else None)
+    crit["e0_gate"] = {"passed": bool(e0 and e0.get("passed")),
+                       "checks": {k: v.get("passed") for k, v in ((e0 or {}).get("checks") or {}).items()}}
+    crit["slices"] = slices_match(base_cfg)
+    slices = {s: shard_config(base_cfg, s)["budget"]["soft_admission_ceiling_usd"] for s in shard_ids(base_cfg)}
+    forecast = forecast_study(plans, max_usd=base_cfg["passk"].get("forecast_max_usd", 115), slices=slices)
+    crit["forecast"] = {"passed": bool(forecast["passed"]), "total_usd": forecast["total_usd"],
+                        "by_shard": {s: v["forecast_usd"] for s, v in forecast["shards"].items()},
+                        "checks": forecast["checks"]}
+    crit["key"] = key_check(base_cfg, snapshot)
+    home = [k for k in ("UV_CACHE_DIR", "HF_HOME", "MPLCONFIGDIR", "TMPDIR")
+            if str(os.environ.get(k, "")).startswith(HOME_PREFIXES)]
+    crit["nothing_under_home"] = {"passed": not home and not str(study.resolve()).startswith(HOME_PREFIXES),
+                                  "env_under_home": home}
+    crit["tests"] = tests or {"passed": None, "note": "not run (--run-tests)"}
+    required = [k for k in crit if k not in ("key", "tests")]
+    passed = all(crit[k].get("passed") for k in required) and crit["key"].get("passed") is not False \
+        and crit["tests"].get("passed") is not False
+    return {"gate": "gate0", "passed": bool(passed), "criteria": crit, "jobs_sha256": jobs_shas(plans),
+            "splits_sha256": splits_sha, "evaluated_at": _utc(),
+            "complete": crit["key"].get("passed") is not None and crit["tests"].get("passed") is not None}
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(prog="python -m agent_allocation.passk.gates")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    g0 = sub.add_parser("gate0", help="evaluate Gate 0 and write <study>/gates/gate0.json")
+    g0.add_argument("--config", required=True)
+    g0.add_argument("--study-root", required=True)
+    g0.add_argument("--check-key", action="store_true", help="re-read /key (live, $0) for the sum-of-slices check")
+    g0.add_argument("--run-tests", action="store_true", help="run the passk unit suite + mocked e2e first")
+    g0.add_argument("--run-e0", action="store_true", help="(re)run the E0 gate subset (several minutes)")
+    g0.add_argument("--overwrite", action="store_true", help="allow a changed jobs sha (owner decision only)")
+    args = parser.parse_args(argv)
+    from agent_allocation.config import load_config
+    from agent_allocation.shards import base_config
+    cfg = base_config(load_config(args.config))
+    study = Path(args.study_root)
+    code_dir = Path(__file__).resolve().parents[3]
+    tests = _run_tests(code_dir, GATE0_TESTS) if args.run_tests else None
+    e0 = None
+    if args.run_e0:
+        from agent_allocation.passk.e0_gate import e0_gate, write_e0_gate
+        from agent_allocation.passk.banks import load_splits
+        e0 = e0_gate(cfg["passk"]["legacy_run_root"], splits=load_splits(study / "artifacts"))
+        write_e0_gate(study, e0)
+    snapshot = None
+    if args.check_key:
+        from agent_allocation.apikey import load_api_key
+        from agent_allocation.doctor import provider_snapshot as fetch
+        snapshot = fetch(load_api_key())
+    result = evaluate_gate0(cfg, study, snapshot=snapshot, tests=tests, e0=e0)
+    result["code"] = _git_head(code_dir)
+    target = write_gate0(study, result, overwrite=args.overwrite)
+    print(json.dumps({"gate0": str(target), "passed": result["passed"], "complete": result["complete"],
+                      "criteria": {k: v.get("passed") for k, v in result["criteria"].items()}}, indent=1))
+    return 0 if result["passed"] and result["complete"] else 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
