@@ -196,9 +196,15 @@ if [ "$START_AT" = main ]; then
     [ -n "${RJ[$s]}" ] && [ -n "${FJ[$s]}" ] || stop_main main "run/grade-follow $s not submitted" 1
   done
   analysis_started=""
+  polls=0
   while true; do
     sleep "$POLL"
+    polls=$((polls + 1))
     for s in "${SHARDS[@]}"; do
+      if [ $((polls * POLL)) -ge 1800 ] && [ $(( (polls * POLL) % 1800 )) -lt "$POLL" ]; then   # every ~30 min
+        checkpoint sample "$s" >/dev/null; rc=$?
+        [ $rc -eq 3 ] && stop_main main "permaslug/provider sample failed on $s (gates/gate3_sample_$s.json)"
+      fi
       checkpoint gate3 "$s" >/dev/null; rc=$?
       [ $rc -eq 3 ] && stop_main main "Gate 3 stop rule on $s (gates/gate3_$s.json; control/DRAIN touched)"
       checkpoint gate2 "$s" >/dev/null; rc=$?

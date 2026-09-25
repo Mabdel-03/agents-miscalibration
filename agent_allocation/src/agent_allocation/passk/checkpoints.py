@@ -11,6 +11,8 @@
 * ``gate3`` -- stop rules: an accepted node that is not exact; >= 3 ``forced_think_closed`` (or ``forced_think_short``
   with finish=stop) attempts in any 30 min window; stream cuts (``forced_think_short`` with finish None) > 2% of the
   trailing 500 attempts AND >= 10 AND spanning >= 5 min. A failing rule touches ``control/DRAIN`` of the shard.
+* ``sample`` -- every 30 min: ``/generation`` of the 5 most recent results must carry the permaslug and the pin
+  (a violation drains the shard).
 * ``gate4`` -- completion: >= 99% of planned nodes succeeded per partition (failures reported, never replaced); zero
   duplicate THINK texts across legacy and new; every non-fenced candidate graded.
 
@@ -317,12 +319,38 @@ def gate4(cfg: Mapping[str, Any], paths, *, legacy_root: str | Path | None = Non
 
 
 # ------------------------------------------------------------------------------------------------------------------
+# Gate 3 sampling: permaslug + provider of the most recent generations (every 30 min; $0 /generation reads)
+# ------------------------------------------------------------------------------------------------------------------
+
+def recent_generation_ids(paths, n: int = 5) -> list[str]:
+    parsed = sorted((paths.run_dir / "parsed").glob("*/*.json"), key=lambda p: p.stat().st_mtime)[-n:]
+    out = []
+    for path in parsed:
+        gid = (json.loads(path.read_text()).get("result") or {}).get("generation_id")
+        if gid:
+            out.append(gid)
+    return out
+
+
+def sample_check(cfg: Mapping[str, Any], paths, metadata: Mapping[str, Any]) -> dict[str, Any]:
+    pin_name, _ = _pin(paths, cfg["primary_model"])
+    rows = []
+    for gid, data in metadata.items():
+        data = data.get("data", data) if isinstance(data, Mapping) else {}
+        slugs = {data.get("model")} | {r.get("model_permaslug") for r in data.get("provider_responses") or []}
+        rows.append({"generation_id": gid, "ok": slugs == {EXPECTED_PERMASLUG} and data.get("provider_name") == pin_name,
+                     "slugs": sorted(map(str, slugs)), "provider": data.get("provider_name")})
+    return {"gate": "gate3_sample", "passed": bool(rows) and all(r["ok"] for r in rows), "samples": rows,
+            "evaluated_at": _utc()}
+
+
+# ------------------------------------------------------------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m agent_allocation.passk.checkpoints")
-    parser.add_argument("stage", choices=["gate1-smoke", "gate2", "gate3", "gate4"])
+    parser.add_argument("stage", choices=["gate1-smoke", "gate2", "gate3", "gate4", "sample"])
     parser.add_argument("--config", required=True)
     parser.add_argument("--study-root", required=True)
     parser.add_argument("--shard", required=True)
@@ -352,6 +380,18 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=1))
             return 4
         name, code = f"gate2_{args.shard}", (0 if result["passed"] else 3)
+    elif args.stage == "sample":
+        import asyncio
+        from agent_allocation.live import fetch_metadata
+        ids = recent_generation_ids(paths)
+        if not ids:
+            print(json.dumps({"gate": "gate3_sample", "due": False}))
+            return 4
+        result = sample_check(cfg, paths, asyncio.run(fetch_metadata(paths, ids, attempts=6, delay_s=20.0)) or {})
+        name, code = f"gate3_sample_{args.shard}", (0 if result["passed"] else 3)
+        if not result["passed"]:
+            paths.control_dir.mkdir(parents=True, exist_ok=True)
+            paths.drain_sentinel.touch()
     elif args.stage == "gate3":
         result = gate3(cfg, paths)
         name, code = f"gate3_{args.shard}", (0 if result["passed"] else 3)
