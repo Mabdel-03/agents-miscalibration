@@ -79,6 +79,7 @@ that run root:
 - `e5.validate_split(..., classes=, pools=)` ran on WP-A's tables. Its fold-0 primary Brier (min_known 2) was P2 0.171,
   P1 0.177, P0 0.201. Only fold 0 was run, so these are not the 4-fold numbers above.
 
+WP-A's `seal.static_scan` passes over this worktree's `passk/models` and `features.py`: `"ok": true`, no findings.
 The script is `wpa_build.py` in this session's scratchpad, which is not committed. Rebuild it by running WP-A's
 `extract.legacy_draws` → `pools.build_pools` + `c48_fit_scopes` → `readout.class_rows(cache=None)` with
 `PYTHONPATH=<wpA>/agent_allocation/src`.
