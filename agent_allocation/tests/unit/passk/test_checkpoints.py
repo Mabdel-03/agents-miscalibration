@@ -31,4 +31,63 @@ def test_sample_check_permaslug_and_pin(tmp_path):
     drifted = {**good, "provider_responses": [{"model_permaslug": "qwen/qwen3.8-27b-20261001"}]}
     assert not cp.sample_check(cfg, paths, {"g1": good, "g2": drifted})["passed"]
     assert not cp.sample_check(cfg, paths, {"g1": {**good, "provider_name": "Other"}})["passed"]
-    assert not cp.sample_check(cfg, paths, {})["passed"]
+    empty = cp.sample_check(cfg, paths, {})
+    assert not empty["passed"] and not empty["drift"] and not empty["conclusive"]
+
+
+def test_sample_unavailable_generation_is_not_drift(tmp_path):
+    """ops_budget review: '/generation not available yet' (404 -> absent, None, empty record) is retried, never drift."""
+    cfg = shard_config(load_config(PROJECT / "configs" / "passk_cont_v1.json"), "mancer")
+    paths = RunPaths.for_run(tmp_path / "shards" / "mancer", local_state_dir=tmp_path / "l")
+    lock = fake_forced_endpoint_lock("qwen/qwen3.8-27b", tag="mancer/fp8")
+    paths.endpoint_lock.parent.mkdir(parents=True)
+    paths.endpoint_lock.write_text(json.dumps({"locks": {"qwen/qwen3.8-27b": dump_record(lock)}}))
+    good = {"model": cp.EXPECTED_PERMASLUG, "provider_name": lock.provider_name,
+            "provider_responses": [{"model_permaslug": cp.EXPECTED_PERMASLUG}]}
+    none_yet = cp.sample_check(cfg, paths, {"g2": None, "g3": {}}, requested=["g1", "g2", "g3"])
+    assert not none_yet["drift"] and not none_yet["conclusive"] and none_yet["unavailable"] == ["g1", "g2", "g3"]
+    mixed = cp.sample_check(cfg, paths, {"g1": good}, requested=["g1", "g2"])
+    assert mixed["passed"] and not mixed["drift"] and mixed["unavailable"] == ["g2"]
+    other = cp.sample_check(cfg, paths, {"g1": {**good, "provider_name": "Other"}}, requested=["g1", "g2"])
+    assert other["drift"] and not other["passed"]
+
+
+def test_sample_cli_inconclusive_returns_4_and_retries_pending(tmp_path, monkeypatch):
+    import agent_allocation.live as live
+    study = tmp_path / "study"
+    paths = cp._shard_paths(study, "mancer")
+    lock = fake_forced_endpoint_lock("qwen/qwen3.8-27b", tag="mancer/fp8")
+    paths.endpoint_lock.parent.mkdir(parents=True, exist_ok=True)
+    paths.endpoint_lock.write_text(json.dumps({"locks": {"qwen/qwen3.8-27b": dump_record(lock)}}))
+    parsed = paths.run_dir / "parsed" / "n1"
+    parsed.mkdir(parents=True)
+    import os
+    for i in range(2):
+        f = parsed / f"r{i}.json"
+        f.write_text(json.dumps({"result": {"generation_id": f"gen-{i}"}}))
+        os.utime(f, (1, 1))                                     # old enough to be indexed
+    fresh = parsed / "fresh.json"
+    fresh.write_text(json.dumps({"result": {"generation_id": "gen-fresh"}}))   # too young: not sampled
+    seen = []
+
+    async def fake_fetch(_paths, ids, **_kw):
+        seen.append(list(ids))
+        return {}
+
+    monkeypatch.setattr(live, "fetch_metadata", fake_fetch)
+    argv = ["sample", "--config", str(PROJECT / "configs" / "passk_cont_v1.json"), "--study-root", str(study),
+            "--shard", "mancer"]
+    assert cp.main(argv) == 4
+    assert seen[-1] == ["gen-0", "gen-1"]
+    assert not paths.drain_sentinel.exists()
+    rec = json.loads((study / "gates" / "gate3_sample_mancer.json").read_text())
+    assert rec["unavailable"] == ["gen-0", "gen-1"]
+    good = {"model": cp.EXPECTED_PERMASLUG, "provider_name": lock.provider_name}
+
+    async def fetch_one(_paths, ids, **_kw):
+        seen.append(list(ids))
+        return {"gen-0": good}
+
+    monkeypatch.setattr(live, "fetch_metadata", fetch_one)
+    assert cp.main(argv) == 0
+    assert seen[-1][:2] == ["gen-0", "gen-1"]                  # the pending ids are retried first

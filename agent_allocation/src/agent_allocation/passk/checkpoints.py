@@ -335,8 +335,16 @@ def graded(cfg: Mapping[str, Any], paths) -> dict[str, Any]:
 # Gate 3 sampling: permaslug + provider of the most recent generations (every 30 min; $0 /generation reads)
 # ------------------------------------------------------------------------------------------------------------------
 
-def recent_generation_ids(paths, n: int = 5) -> list[str]:
-    parsed = sorted((paths.run_dir / "parsed").glob("*/*.json"), key=lambda p: p.stat().st_mtime)[-n:]
+SAMPLE_MIN_AGE_S = 300.0     # /generation indexes a result with a lag: never judge a generation younger than this
+SAMPLE_PENDING_CAP = 25      # unavailable ids carried to the next sample (retried later, never counted as drift)
+
+
+def recent_generation_ids(paths, n: int = 5, *, min_age_s: float = SAMPLE_MIN_AGE_S,
+                          now: float | None = None) -> list[str]:
+    import time
+    cutoff = (time.time() if now is None else now) - min_age_s
+    files = [p for p in (paths.run_dir / "parsed").glob("*/*.json") if p.stat().st_mtime <= cutoff]
+    parsed = sorted(files, key=lambda p: p.stat().st_mtime)[-n:]
     out = []
     for path in parsed:
         gid = (json.loads(path.read_text()).get("result") or {}).get("generation_id")
@@ -345,16 +353,33 @@ def recent_generation_ids(paths, n: int = 5) -> list[str]:
     return out
 
 
-def sample_check(cfg: Mapping[str, Any], paths, metadata: Mapping[str, Any]) -> dict[str, Any]:
+def sample_check(cfg: Mapping[str, Any], paths, metadata: Mapping[str, Any],
+                 requested: list[str] | None = None) -> dict[str, Any]:
+    """Permaslug + provider of sampled generations. Only a POSITIVE mismatch (a fetched record naming another
+    permaslug or another provider) is drift. An id whose /generation record is not available yet (404 -> absent,
+    None, or a record with neither model nor provider) is `unavailable`: recorded and retried by the next sample,
+    never drift. `passed` needs at least one conclusive record and no drift; `drift` alone stops the run."""
     pin_name, _ = _pin(paths, cfg["primary_model"])
-    rows = []
-    for gid, data in metadata.items():
-        data = data.get("data", data) if isinstance(data, Mapping) else {}
-        slugs = {data.get("model")} | {r.get("model_permaslug") for r in data.get("provider_responses") or []}
-        rows.append({"generation_id": gid, "ok": slugs == {EXPECTED_PERMASLUG} and data.get("provider_name") == pin_name,
-                     "slugs": sorted(map(str, slugs)), "provider": data.get("provider_name")})
-    return {"gate": "gate3_sample", "passed": bool(rows) and all(r["ok"] for r in rows), "samples": rows,
-            "evaluated_at": _utc()}
+    rows, unavailable = [], []
+    for gid in (requested if requested is not None else list(metadata)):
+        data = metadata.get(gid)
+        data = data.get("data", data) if isinstance(data, Mapping) else None
+        if not isinstance(data, Mapping):
+            unavailable.append(gid)
+            continue
+        slugs = ({data.get("model")} | {r.get("model_permaslug") for r in data.get("provider_responses") or []
+                                        if isinstance(r, Mapping)}) - {None, ""}
+        provider = data.get("provider_name")
+        if not slugs and not provider:
+            unavailable.append(gid)
+            continue
+        slug_ok = not slugs or slugs == {EXPECTED_PERMASLUG}
+        provider_ok = not provider or provider == pin_name
+        rows.append({"generation_id": gid, "ok": slug_ok and provider_ok, "slugs": sorted(map(str, slugs)),
+                     "provider": provider})
+    drift = any(not r["ok"] for r in rows)
+    return {"gate": "gate3_sample", "passed": bool(rows) and not drift, "drift": drift, "conclusive": bool(rows),
+            "samples": rows, "unavailable": unavailable[:SAMPLE_PENDING_CAP], "evaluated_at": _utc()}
 
 
 # ------------------------------------------------------------------------------------------------------------------
@@ -399,13 +424,20 @@ def main(argv: list[str] | None = None) -> int:
     elif args.stage == "sample":
         import asyncio
         from agent_allocation.live import fetch_metadata
-        ids = recent_generation_ids(paths)
+        prior = study / "gates" / f"gate3_sample_{args.shard}.json"
+        try:
+            pending = list(json.loads(prior.read_text()).get("unavailable") or []) if prior.is_file() else []
+        except (OSError, ValueError):
+            pending = []
+        ids = list(dict.fromkeys([*pending, *recent_generation_ids(paths)]))[:SAMPLE_PENDING_CAP]
         if not ids:
             print(json.dumps({"gate": "gate3_sample", "due": False}))
             return 4
-        result = sample_check(cfg, paths, asyncio.run(fetch_metadata(paths, ids, attempts=6, delay_s=20.0)) or {})
-        name, code = f"gate3_sample_{args.shard}", (0 if result["passed"] else 3)
-        if not result["passed"]:
+        result = sample_check(cfg, paths, asyncio.run(fetch_metadata(paths, ids, attempts=6, delay_s=20.0)) or {},
+                              requested=ids)
+        # 3 only on a positive permaslug/provider mismatch; nothing fetched yet = inconclusive (4), retried next time
+        name, code = f"gate3_sample_{args.shard}", (3 if result["drift"] else 0 if result["passed"] else 4)
+        if result["drift"]:
             paths.control_dir.mkdir(parents=True, exist_ok=True)
             paths.drain_sentinel.touch()
     elif args.stage == "gate3":
