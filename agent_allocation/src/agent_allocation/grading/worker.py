@@ -125,14 +125,16 @@ def load_tasks(paths: RunPaths) -> tuple[dict[str, PublicTask], dict[str, Privat
     return public, private
 
 
-def scan_candidates(paths: RunPaths, skip: set[str] | frozenset[str] = frozenset()) -> list[Candidate]:
-    """Candidates from ``parsed/``; ``skip`` holds candidate ids already finished in an earlier pass (follow mode)."""
+def scan_candidates(paths: RunPaths, skip: set[str] | frozenset[str] = frozenset(),
+                    only: set[str] | frozenset[str] | None = None) -> list[Candidate]:
+    """Candidates from ``parsed/``; ``skip`` holds candidate ids already finished in an earlier pass (follow mode) or
+    fenced (passk held-out); ``only`` (when not None) restricts the scan to those ids (passk: fail closed)."""
     parsed_root = paths.run_dir / "parsed"
     out: list[Candidate] = []
     if not parsed_root.is_dir():
         return out
     for path in sorted(parsed_root.glob("*/*.json")):
-        if path.stem in skip:
+        if path.stem in skip or (only is not None and path.stem not in only):
             continue
         payload = json.loads(path.read_text())
         candidate = load_record(Candidate, payload["candidate"])
@@ -301,7 +303,9 @@ def _read_cached(paths: RunPaths, kind: str, key: str | None, cls: type) -> Any 
 
 
 def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: bool, workers: int,
-               text_grader: str = TEXT_GRADER, log=print, finished: set[str] | None = None) -> dict[str, int]:
+               text_grader: str = TEXT_GRADER, log=print, finished: set[str] | None = None,
+               skip: frozenset[str] | set[str] = frozenset(), only: frozenset[str] | set[str] | None = None
+               ) -> dict[str, int]:
     """One scan: public checks for code candidates first, then private grades. Returns counters.
 
     Identical code for the same item shares one sandbox run within a pass and across passes (cache); every
@@ -309,18 +313,21 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
     """
     with single_grader_lock(paths):
         return _grade_pass_locked(paths, profile, resume=resume, workers=workers, text_grader=text_grader, log=log,
-                                  finished=finished)
+                                  finished=finished, skip=skip, only=only)
 
 
 def _grade_pass_locked(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: bool, workers: int,
-                       text_grader: str, log, finished: set[str] | None) -> dict[str, int]:
+                       text_grader: str, log, finished: set[str] | None,
+                       skip: frozenset[str] | set[str] = frozenset(),
+                       only: frozenset[str] | set[str] | None = None) -> dict[str, int]:
     from agent_allocation.grading.code.private import GRADER_VERSION
     from agent_allocation.grading.code.public import CHECKER_VERSION, code_sha256
 
     profile_mod.configure(profile)
     env = profile_mod.environment_digest(profile)
     public_tasks, private_specs = load_tasks(paths)
-    candidates = scan_candidates(paths, finished if finished is not None else frozenset())
+    done = finished if finished is not None else frozenset()
+    candidates = scan_candidates(paths, (set(done) | set(skip)) if skip else done, only)
     counts = {"candidates": len(candidates), "public_written": 0, "public_cached": 0, "public_skipped": 0,
               "grades_written": 0, "grades_cached": 0, "grades_skipped": 0, "blocked_text": 0, "unknown_item": 0,
               "infrastructure_errors": 0, "evaluator_errors": 0, "sandbox_denied": 0, "pool_failures": 0}
@@ -491,6 +498,24 @@ def _pool(workers: int, profile: profile_mod.GradingProfile):
                                initargs=(profile,))
 
 
+def _scope_config(paths: RunPaths, config: str | None) -> dict[str, Any] | None:
+    """The study config that decides the passk fence: ``--config``, else the shard's derived config, else the lock."""
+    for source in ([Path(config)] if config else []) + [paths.state_dir / "shard_config.json", paths.config_lock]:
+        if source.is_file():
+            cfg = json.loads(source.read_text())
+            if "grading" not in cfg and isinstance(cfg.get("config"), Mapping):
+                cfg = cfg["config"]
+            return cfg
+    return None
+
+
+def _grade_scope(paths: RunPaths, cfg: Mapping[str, Any] | None):
+    if not cfg or not isinstance(cfg.get("passk"), Mapping):
+        return frozenset(), None
+    from agent_allocation.passk.grade_scope import grade_scope
+    return grade_scope(paths, cfg)
+
+
 def cmd_grade(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="allocation grade", description=__doc__.splitlines()[0])
     parser.add_argument("--run-dir", required=True)
@@ -505,12 +530,18 @@ def cmd_grade(argv: list[str]) -> int:
     workers = worker_count(profile, args.workers)
     resume = args.resume
     finished: set[str] | None = set() if args.follow else None
+    scope_cfg = _scope_config(paths, args.config)
     while True:
+        # passk_cont_v1 held-out fence: recomputed every pass, so a verified seal releases within one poll.
+        skip, only = _grade_scope(paths, scope_cfg)
         try:
-            counts = grade_pass(paths, profile, resume=resume, workers=workers, finished=finished)
+            counts = grade_pass(paths, profile, resume=resume, workers=workers, finished=finished, skip=skip,
+                                only=only)
         except GradeRefused as exc:
             print(f"refused: {exc}", file=sys.stderr)
             return EXIT_BLOCKED
+        if only is not None:
+            counts = {**counts, "fenced_node_ids": len(skip), "gradeable_node_ids": len(only)}
         print(json.dumps({"grade_pass": counts, "workers": workers}, sort_keys=True), flush=True)
         if not args.follow or paths.stop_sentinel.exists():
             break
