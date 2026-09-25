@@ -18,6 +18,18 @@ read-only legacy files only). Operator commands: `agent_allocation/docs/passk_co
 | Gate 0 evaluator + record (`python -m agent_allocation.passk.gates gate0 --check-key --run-tests --run-e0`) | `passk/gates.py` | `test_gate0.py` |
 | P8 ops: `slurm/passk_cont.sbatch` (VERBs shard-plan, gate0, canary, canary-eval, smoke, run, grade, grade-follow, checkpoint, analyze; `--signal=B:TERM@900` + trap → `control/DRAIN`, python waited twice, no exec; `+`-joined PARTITIONS; `--account-auto-reload` on paid verbs), `slurm/passk_conductor.sh` + `.sbatch` (flock, squeue duplicate refusal, STATUS.md + conductor.state each transition, `--mail-type=FAIL,END`), in-run gates | `slurm/`, `passk/checkpoints.py` | e2e (gates), `test_checkpoints.py`; shell: `bash -n` only |
 
+## Validated against the lead's REAL manifests (scratch copy, 14:58 EDT; nothing written to the run root)
+
+Copied `passk_cont_v1/artifacts/{manifests,locks}` + `gates/gate_s.json` (no private/) to the scratchpad, then:
+`shard-plan --write` (reserve 10/10/50/30 per shard, legacy dev/main counts), `--adopt-legacy-lock` (lock hashes
+fa8b9ec9… mancer, 6050d9c4… parasail = forced_v2's), `passk-run --plan-only` (mancer 22 waves / parasail 19) and
+`python -m agent_allocation.passk.gates gate0 --run-e0`: **every offline criterion passed** — counts
+12/1056/816/1488/6200/1000, 10,572 unique ids with 0 legacy collisions, prompt/decoding equal, THINK parity 128/128
+with the lead's manifests, E0 subset, slices, forecast Mancer $57.30 / Parasail $40.32 (total $97.62 incl. probes).
+Only `key` and `tests` stay unevaluated offline (the conductor passes `--check-key --run-tests`). A CLI rehearsal of
+`passk-run --partitions smoke` on that scratch shard stops at `provider_mismatch` because the fake transport answers
+as "Mancer", not the real lock's "Mancer 2" — the pin guard working, not a defect.
+
 ## Remaining (priority order)
 
 1. **Merge `passk-wpg` into `passk-cont`** and rerun: `tests/unit/passk`, `tests/integration/test_passk_wpg_e2e.py`,
