@@ -81,3 +81,12 @@ Branch `passk-cont`. Commits in order: ddf82de, 919b795, 44c876f, bceaf08, 451ed
 ### Tests
 The passk fence/seal/score/entrypoint/legacy-seam/sandbox tests pass (see the commits). The full `tests/unit` run was
 started at 15:58 on a tree that was still changing; its result is recorded below if it finished.
+
+### Test results (16:08 EDT)
+- `pytest tests/unit/passk` at 7263463: **144 passed**, 0 failed, 0 skipped. The real-bwrap tests ran and were not
+  skipped.
+- `pytest tests/unit tests/integration/test_passk_wpg_e2e.py` (started 15:58, while this tree and the other fixer's
+  tree were still changing): **1114 passed, 1 failed**. The failure was
+  `tests/unit/runtime/test_status_control.py::test_status_json_is_written_live_and_at_the_end`, a timing assert
+  (`asyncio.sleep(0.15)`) run under the load of two concurrent suites. Run alone it passes (3/3). None of my files
+  are involved.
