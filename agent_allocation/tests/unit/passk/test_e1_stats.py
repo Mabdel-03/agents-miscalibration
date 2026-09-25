@@ -68,3 +68,17 @@ def test_contrast_mixture_and_holm():
     assert 0 < lv["mean"] < 1
     h = holm2(0.01, 0.04)
     assert h["mixed_vs_deep"]["p_holm"] == pytest.approx(0.02) and h["p2_vs_p1"]["p_holm"] == pytest.approx(0.04)
+
+
+def test_e1_lock_waits_for_pending_or_ungraded(tmp_path):
+    from agent_allocation.passk.analyze import NotReady
+    draws = _bank({2: True, 4: True, 8: True, 16: True})
+    draws["pending"] = False
+    draws["graded"] = True
+    draws.loc[3, "pending"] = True
+    with pytest.raises(NotReady):
+        e1_lock(tmp_path, draws=draws, cache=None)
+    draws.loc[3, "pending"] = False
+    draws.loc[4, "graded"] = False
+    with pytest.raises(NotReady):
+        e1_lock(tmp_path, draws=draws, cache=None)

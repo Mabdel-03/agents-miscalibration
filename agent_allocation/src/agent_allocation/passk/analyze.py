@@ -50,6 +50,13 @@ def e1_lock(run_root: Path, *, draws=None, cache=None) -> dict:
 
     draws = load_draws(run_root) if draws is None else draws
     cache = PairCache(Path(run_root) / "catalog" / "pair_verdicts.parquet") if cache is None else cache
+    needed = draws[draws["partition"].isin(["legacy_main", "e1_fill"]) & draws["allowance_a"].isin([2, 4, 8, 16])]
+    if "pending" in needed and needed["pending"].fillna(False).astype(bool).any():
+        raise NotReady(f"{int(needed['pending'].fillna(False).astype(bool).sum())} E1 nodes have not settled")
+    if "graded" in needed:
+        ungraded = (~needed["absent"].astype(bool)) & ~needed["graded"].fillna(False).astype(bool)
+        if ungraded.any():
+            raise NotReady(f"{int(ungraded.sum())} settled E1 nodes are not graded yet")
     pools = build_pools(draws, panels=("L96",), configs=E1_CANDIDATES + ("1x16",))
     counts = pools.groupby("config_id")["item_id"].nunique().to_dict()
     n_items = draws.loc[draws["partition"] == "legacy_main", "item_id"].nunique()

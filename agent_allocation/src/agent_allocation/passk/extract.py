@@ -58,7 +58,7 @@ DRAW_COLUMNS = [
     "allowance_a", "replicate", "parse_status", "final_present", "vote_text", "vote_exact_key", "option",
     "answer_len_chars", "answer_finish_reason", "think_latency_s", "latency_s", "think_in", "think_out",
     "answer_in", "answer_out", "cost_usd", "generation_id_think", "generation_id_answer", "observed_model",
-    "observed_provider", "absent", "correct", "grade_state",
+    "observed_provider", "absent", "pending", "graded", "correct", "grade_state",
     # provenance extras (E0 / reuse manifest; not labels)
     "raw_response_path", "raw_response_sha256", "think_body_sha", "answer_body_sha", "provider_only",
     "decoding_config_hash", "prompt_version", "completion_headroom", "endpoint_lock_hash", "grader_version",
@@ -160,6 +160,7 @@ def draw_row(shard_dir: Path, node_id: str, spec: dict, task: PublicTask | None,
                prompt_version=spec.get("prompt_version"), completion_headroom=spec.get("completion_headroom"),
                endpoint_lock_hash=spec.get("endpoint_lock_hash"))
     record = _read_json(parsed_path) if parsed_path.exists() else None
+    row["pending"] = record is None                  # never settled yet (a failed node stores a null candidate)
     cand_rec = None if record is None else record.get("candidate")
     result = None if record is None else record.get("result")
     candidate = None if cand_rec is None else load_record(Candidate, cand_rec)
@@ -189,6 +190,7 @@ def draw_row(shard_dir: Path, node_id: str, spec: dict, task: PublicTask | None,
     if with_labels:
         grade_path = shard_dir / "grades" / node_id[:2] / f"{node_id}.json"
         grade = load_record(GradeResult, _read_json(grade_path)) if grade_path.exists() else None
+        row["graded"] = grade is not None
         if candidate is None:
             grade = None
         state = candidate_state(candidate, grade)
