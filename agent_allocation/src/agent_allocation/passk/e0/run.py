@@ -55,6 +55,33 @@ def cohorts(legacy_root: Path, draws: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def trajectories(draws: pd.DataFrame, cache) -> pd.DataFrame:
+    """Correct-count trajectories on L96: per item and k = 1..25, correct/unknown roots among slots 0..k−1 and the
+    legacy-tie plurality readout of sample/k; per allowance the deep r0 outcome (k = allowance, family deep)."""
+    main = draws[draws["partition"] == "legacy_main"]
+    roots = main[main["kind"] == "root"].sort_values(["item_id", "replicate"])
+    rows = []
+    pools = []
+    for item, sub in roots.groupby("item_id"):
+        ids = list(sub["candidate_id"])
+        corr = [None if v is None or v != v else bool(v) for v in sub["correct"]]
+        for k in range(1, len(ids) + 1):
+            rows.append({"item_id": item, "benchmark": sub["benchmark"].iloc[0], "family": "sample", "k": k,
+                         "c_lo": sum(v is True for v in corr[:k]), "c_unknown": sum(v is None for v in corr[:k])})
+            pools.append({"pool_id": f"traj/{item}/{k}", "item_id": item, "benchmark": sub["benchmark"].iloc[0],
+                          "panel": "L96", "config_id": f"{k}x1", "n": k, "a": 1, "member_ids": ids[:k]})
+    frame = pd.DataFrame(rows)
+    got = readout_pools(pd.DataFrame(pools), draws, cache=cache, mode="legacy")
+    frame["plurality_correct"] = got["delivered_correct"].values
+    deep = main[main["kind"] == "deep"]
+    deep_rows = pd.DataFrame({"item_id": deep["item_id"], "benchmark": deep["benchmark"], "family": "deep",
+                              "k": deep["allowance_a"].astype(int),
+                              "c_lo": deep["correct"].map(lambda v: int(v is True)),
+                              "c_unknown": deep["correct"].map(lambda v: int(v is None or v != v)),
+                              "plurality_correct": deep["correct"]})
+    return pd.concat([frame, deep_rows], ignore_index=True)
+
+
 def _provenance(draws: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for r in draws.itertuples(index=False):
@@ -195,6 +222,7 @@ def run_e0(run_root: Path, *, legacy_root: Path = LEGACY_ROOT, draws: pd.DataFra
     catalog.to_parquet(out / "candidate_catalog.parquet", index=False)
     (out / "reuse_manifest.json").write_text(json.dumps(_reuse_manifest(draws), indent=1, sort_keys=True) + "\n")
     plots = _plots(metrics, out)
+    trajectories(draws, cache).to_csv(out / "correct_count_trajectories.csv", index=False)
     from agent_allocation.passk.costs import logical_ledger, physical_ledger, physical_summary
     ledger = physical_ledger(draws)
     physical_summary(ledger).to_csv(out / "legacy_physical_ledger.csv", index=False)

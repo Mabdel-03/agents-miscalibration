@@ -84,8 +84,13 @@ def test_e0_outputs(tmp_path, legacy_root, draws, cache):
     out = tmp_path / "e0"
     for name in ("audit.json", "provenance.parquet", "candidate_catalog.parquet", "exclusions.csv",
                  "legacy_metrics.csv", "legacy_replay.parquet", "reuse_manifest.json",
-                 "decomposition_sample_k.png", "decomposition_deep_m.png", "decomposition_b16_by_benchmark.png"):
+                 "decomposition_sample_k.png", "correct_count_trajectories.csv", "decomposition_deep_m.png", "decomposition_b16_by_benchmark.png"):
         assert (out / name).exists(), name
     excl = pd.read_csv(out / "exclusions.csv")
     assert set(excl.loc[~excl.in_94, "item_id"]) == EXCLUDED_94
     assert set(excl.loc[~excl.in_93, "item_id"]) == EXCLUDED_94 | {"hmmt/2026/9"}
+    traj = pd.read_csv(out / "correct_count_trajectories.csv")
+    s16 = traj[(traj.family == "sample") & (traj.k == 16)]
+    assert len(s16) == 96
+    by = s16.groupby("benchmark").plurality_correct.mean()
+    assert round(by.mean(), 4) == 0.4167

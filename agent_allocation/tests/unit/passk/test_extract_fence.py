@@ -49,10 +49,14 @@ def test_release_requires_verifying_seal(tmp_path):
     v48 = draws[draws["partition"] == "v48_bank"]
     assert len(v48) == 3 and v48["correct"].notna().all()
     assert draws.loc[draws["partition"] == "t200_diag", "correct"].isna().all()
+    extract(tmp_path, include_legacy=False)                       # the release is sticky while the seal verifies
+    assert (load_draws(tmp_path)["partition"] == "v48_bank").sum() == 3
     target.write_bytes(b"changed")                                # a changed artifact un-verifies the seal
     assert verify_seal(tmp_path) is None
     with pytest.raises(PermissionError):
         extract(tmp_path, include_legacy=False, release=["t200"])
+    extract(tmp_path, include_legacy=False)                       # the fence is restored
+    assert not (load_draws(tmp_path)["partition"] == "v48_bank").any()
 
 
 def test_blocked_ids_lift_only_with_seal(tmp_path):

@@ -317,9 +317,21 @@ def plan_partitions(run_root: Path, release: Iterable[str] = ()) -> ExtractPlan:
 
 def extract(run_root: Path = RUN_ROOT, *, legacy_root: Path = LEGACY_ROOT, release: Iterable[str] = (),
             read_raw: bool = True, include_legacy: bool = True) -> dict:
-    """Write ``analysis_inputs/draws.parquet`` + ``manifest.json``; returns the manifest."""
+    """Write ``analysis_inputs/draws.parquet`` + ``manifest.json``; returns the manifest.
+
+    Releases are sticky: a release recorded in the previous ``manifest.json`` is kept while the seal still verifies
+    (and dropped, with the fence restored, if it no longer does)."""
     run_root = Path(run_root)
-    plan = plan_partitions(run_root, release)
+    prior_path = run_root / "analysis_inputs" / "manifest.json"
+    prior = []
+    if prior_path.exists():
+        try:
+            prior = list(_read_json(prior_path).get("releases") or [])
+        except (OSError, ValueError):
+            prior = []
+    if prior and _seal_functions()(run_root) is None:
+        prior = []
+    plan = plan_partitions(run_root, set(release) | set(prior))
     splits = _splits(run_root)
     panels = splits.get("panels", {})
     frames = []
