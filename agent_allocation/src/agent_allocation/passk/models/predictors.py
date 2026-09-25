@@ -165,6 +165,7 @@ class P2Predictor:
     predictor: str = "P2"
     use_latency: bool = False
     n_sim: int = 2000
+    param_uncertainty: bool = True       # propagate Laplace draws of the fixed effects into every simulation
     response: glm_mod.GLMFit | None = None
     eta: glm_mod.GLMFit | None = None
     cv: dict = field(default_factory=dict)
@@ -182,7 +183,8 @@ class P2Predictor:
         g = draw_frame.item_id.to_numpy(object)
         best, table = glm_mod.cv_ridge(X, y, g, item_intercept=True, ridges=(1.0, 3.0, 10.0, 30.0), seed=seed,
                                        gh_nodes=12)
-        self.response = glm_mod.fit_glm(X, y, g, item_intercept=True, ridge=best, columns=names)
+        self.response = glm_mod.fit_glm(X, y, g, item_intercept=True, ridge=best, columns=names,
+                                        laplace=self.param_uncertainty)
         self.cv["response"] = {"best_ridge": best, "table": table}
         # out-of-fold per-call predictions for the eta model (problem-grouped folds)
         fid = glm_mod.grouped_folds(g, folds, seed)
@@ -208,12 +210,16 @@ class P2Predictor:
         """frame: one row per (item, config) with n, a, benchmark and features."""
         rng = np.random.default_rng(seed)
         X, _ = response_design(frame, self.feats)
-        eta_lin = self.response.linear_predictor(X)
+        if self.param_uncertainty and self.response.cov_std is not None:
+            b0, coef, _ = self.response.sample_params(self.n_sim, rng)
+            eta_sims = b0[:, None] + coef @ X.T                                      # (S, rows)
+        else:
+            eta_sims = np.broadcast_to(self.response.linear_predictor(X)[None, :], (self.n_sim, len(frame)))
         out_g = np.empty(len(frame))
         # one latent item effect per simulation, shared across every call and depth of an item
         for item, idx in frame.groupby("item_id").indices.items():
             b = self.response.sample_item_effects(self.n_sim, rng)
-            p = special.expit(eta_lin[idx][None, :] + b[:, None])                    # (S, rows)
+            p = special.expit(eta_sims[:, idx] + b[:, None])                         # (S, rows)
             n = frame.n.to_numpy(float)[idx]
             out_g[idx] = (1.0 - (1.0 - p) ** n[None, :]).mean(0)
         pcall = self.response.predict_proba(X)
@@ -224,4 +230,5 @@ class P2Predictor:
 
     def to_dict(self) -> dict:
         return {"predictor": self.predictor, "use_latency": self.use_latency, "n_sim": self.n_sim,
+                "param_uncertainty": self.param_uncertainty,
                 "response": self.response.to_dict(), "eta": self.eta.to_dict(), "cv": self.cv}

@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from agent_allocation.passk.models import glm as glm_mod
-from agent_allocation.passk.models.answers import item_classes, simulate_pools
+from agent_allocation.passk.models.answers import item_classes, modal_margin, simulate_pools
 from agent_allocation.passk.models.inputs import (
     BENCHMARKS, CONFIGS_16A, CONFIGS_8A, CROSSOVER_K, DEPTHS, PASSK_SEED, PREDICT_CONFIGS, ClassSource,
     build_prefix_pools, config_id, fitting_draws, label_value, load_analysis_inputs, load_panels,
@@ -182,7 +182,28 @@ def fit_and_predict(run_root: Path | str | None = None, *, draws: pd.DataFrame |
     cross = _crossover(pred, sims)
     pop = _population(pred, sims, rng)
     illus = _illustrative(cross)
+    curves = []
+    for item in illus.item_id:
+        g = fit[fit.item_id == item]
+        ic = item_classes(g, cls)
+        for rkind, P in (("beta", beta_P[item]), ("glm", pooled.draws(item, bench[item], S, rng))):
+            for j, a in enumerate(DEPTHS):
+                pa = P[:, j]
+                h_over_a = -np.log1p(-np.clip(pa, 0, 1 - 1e-12)) / a
+                row = {"item_id": item, "benchmark": bench[item], "response": rkind, "a": a,
+                       "p_mean": float(pa.mean()), "p_lo": float(np.quantile(pa, PI[0])),
+                       "p_hi": float(np.quantile(pa, PI[1])), "h_over_a_median": float(np.median(h_over_a)),
+                       "h_over_a_lo": float(np.quantile(h_over_a, PI[0])),
+                       "h_over_a_hi": float(np.quantile(h_over_a, PI[1]))}
+                for treat in ("diffuse", "concentrated"):
+                    mm = modal_margin(pa, ic, rng, treatment=treat)
+                    row[f"margin_{treat}_mean"] = float(mm.mean())
+                    row[f"margin_{treat}_lo"] = float(np.quantile(mm, PI[0]))
+                    row[f"margin_{treat}_hi"] = float(np.quantile(mm, PI[1]))
+                    row[f"p_correct_modal_{treat}"] = float(np.mean(mm > 0))
+                curves.append(row)
     result = {"predictions": pred, "crossover": cross, "population": pop, "illustrative": illus,
+              "illustrative_curves": pd.DataFrame(curves), "treatment_gap": _treatment_gap(pred),
               "pooled": pooled, "ridge": ridge, "classes_source": cls.source, "classes_stats": cls.stats()}
     if write:
         _write(out_dir, result, seed=seed, S=S, inner=inner, items=items, fit=fit)
@@ -256,6 +277,24 @@ def _population(pred: pd.DataFrame, sims: dict, rng: np.random.Generator) -> pd.
     return pd.DataFrame(rows)
 
 
+MATERIAL_GAP = 0.10
+
+
+def _treatment_gap(pred: pd.DataFrame) -> pd.DataFrame:
+    """Diffuse vs concentrated residual treatments: |difference| in predicted plurality per item x config; gaps above
+    MATERIAL_GAP are flagged and reported as uncertainty (the correct class is not declared modal)."""
+    rows = []
+    for base in ("beta_full", "glm_full", "shallow"):
+        d = pred[pred.model == f"{base}_diffuse"].set_index(["item_id", "config_id"]).pred_plurality
+        c = pred[pred.model == f"{base}_concentrated"].set_index(["item_id", "config_id"]).pred_plurality
+        j = pd.concat({"diffuse": d, "concentrated": c}, axis=1).dropna().reset_index()
+        j["base"] = base
+        j["gap"] = (j.diffuse - j.concentrated).abs()
+        j["material"] = j.gap > MATERIAL_GAP
+        rows.append(j)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+
 def _illustrative(cross: pd.DataFrame) -> pd.DataFrame:
     """Frozen rule: per benchmark, the item with the largest predicted |crossover| (beta_full_diffuse, any k)."""
     c = cross[cross.model == "beta_full_diffuse"].copy()
@@ -271,6 +310,8 @@ def _write(out_dir: Path, res: dict, *, seed: int, S: int, inner: int, items: li
     res["crossover"].to_parquet(out_dir / "crossover.parquet", index=False)
     res["population"].to_parquet(out_dir / "population.parquet", index=False)
     res["illustrative"].to_parquet(out_dir / "illustrative.parquet", index=False)
+    res["illustrative_curves"].to_parquet(out_dir / "illustrative_curves.parquet", index=False)
+    res["treatment_gap"].to_parquet(out_dir / "treatment_gap.parquet", index=False)
     pooled = res["pooled"]
     (out_dir / "models" / "pooled_glm.json").write_text(json.dumps(
         {"fit": pooled.fit.to_dict(), "monotone": pooled.monotone, "ridge": pooled.ridge, "cv": pooled.cv},
@@ -406,3 +447,20 @@ def _ranking_accuracy(g: pd.DataFrame) -> float:
                 elif (oi > oj) == (pi_ > pj):
                     hits += 1
     return hits / tot if tot else float("nan")
+
+
+def main(argv: list[str] | None = None) -> int:  # pragma: no cover - thin CLI for the conductor
+    import argparse
+    ap = argparse.ArgumentParser(prog="python -m agent_allocation.passk.models.e2")
+    ap.add_argument("stage", choices=["fit", "score"])
+    ap.add_argument("--run-root", required=True)
+    args = ap.parse_args(argv)
+    if args.stage == "fit":
+        fit_and_predict(args.run_root)
+    else:
+        score(args.run_root)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

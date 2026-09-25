@@ -116,3 +116,18 @@ def test_e2_guard_refuses_fenced_rows():
     fit = draws[draws.partition == "v48_bank"]
     with pytest.raises(RuntimeError):
         e2._guard(fit)
+
+
+def test_modal_margin_sign_and_outputs(tmp_path):
+    from agent_allocation.passk.models.answers import modal_margin
+    rng = np.random.default_rng(3)
+    strong_wrong = _ic(correct=(2,), wrong=(14,))
+    assert modal_margin(np.full(500, 0.1), strong_wrong, rng).mean() < 0
+    assert modal_margin(np.full(500, 0.9), strong_wrong, rng).mean() > 0
+    draws, items = synth_draws(n_per_bench=2, seed=4)
+    res = e2.fit_and_predict(draws=draws, c48=items, out_dir=tmp_path / "v48", S=60, inner=8)
+    cur = res["illustrative_curves"]
+    assert set(cur.item_id) == set(res["illustrative"].item_id) and set(cur.a) == set(DEPTHS)
+    assert {"h_over_a_median", "margin_concentrated_mean", "p_correct_modal_diffuse"} <= set(cur.columns)
+    gap = res["treatment_gap"]
+    assert gap.gap.between(0, 1).all() and (tmp_path / "v48" / "treatment_gap.parquet").exists()

@@ -369,3 +369,20 @@ def validate_split(draws: pd.DataFrame, items: list[str], *, classes=None, pools
         columns={"plurality": "delivered"})
     sc = score_frames(res["predictions"], obs, min_known=min_known)
     return {**res, "score": sc, "observed": obs, "train": train, "test": test}
+
+
+def main(argv: list[str] | None = None) -> int:  # pragma: no cover - thin CLI for the conductor
+    import argparse
+    ap = argparse.ArgumentParser(prog="python -m agent_allocation.passk.models.e5")
+    ap.add_argument("stage", choices=["fit", "score"])
+    ap.add_argument("--run-root", required=True)
+    args = ap.parse_args(argv)
+    if args.stage == "fit":
+        fit_and_predict(args.run_root)
+    else:
+        score(args.run_root)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

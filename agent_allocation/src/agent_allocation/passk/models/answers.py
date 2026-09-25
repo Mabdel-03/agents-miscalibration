@@ -113,3 +113,22 @@ def simulate_pools(P_a: np.ndarray, ic: ItemClasses, n: int, rng: np.random.Gene
     plur = np.where(denom > 0, tied_c / np.maximum(denom, 1), 0.0)
     cov = 1.0 - (1.0 - pa) ** n
     return plur.mean(0), cov
+
+
+def modal_margin(P_a: np.ndarray, ic: ItemClasses, rng: np.random.Generator, *, treatment: str = "diffuse"
+                 ) -> np.ndarray:
+    """Per posterior draw: expected share of the (largest) correct class minus the largest wrong voting class share.
+
+    Under ``concentrated`` the unseen residual counts as one wrong class; under ``diffuse`` it has no mass on any
+    single class. Positive = the correct class is modal in expectation (a label-informed quantity: E2 only).
+    """
+    S = len(P_a)
+    corr_alpha = ic.correct_counts if len(ic.correct_counts) else np.ones(1)
+    cshare = rng.dirichlet(corr_alpha, size=S) if len(corr_alpha) > 1 else np.ones((S, 1))
+    v = rng.beta(0.5 + ic.n_novote, 0.5 + ic.n_wrong_voters, size=S)
+    walpha = np.concatenate([ic.wrong_counts, [ALPHA_RES]])
+    wshare = rng.dirichlet(walpha, size=S) if len(walpha) > 1 else np.ones((S, 1))
+    if treatment == "diffuse":
+        wshare = wshare[:, :-1] if wshare.shape[1] > 1 else np.zeros((S, 1))
+    wrong_top = ((1 - P_a) * (1 - v)) * wshare.max(1, initial=0.0)
+    return P_a * cshare.max(1) - wrong_top
