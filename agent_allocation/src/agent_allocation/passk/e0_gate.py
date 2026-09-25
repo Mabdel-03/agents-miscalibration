@@ -3,7 +3,8 @@
 Checks (plan, "E0 -- Gate subset"):
 
 1. ``generation_ids_unique`` -- every THINK and ANSWER generation id of every accepted legacy result (``parsed/``
-   results, THINK id from the result's own raw payload) is unique across both shards.
+   results, THINK id from the result's own raw payload) is unique across both shards (a natural calibration
+   exchange is one call, so its THINK and ANSWER ids coincide and count once).
 2. ``request_body_collisions`` -- THINK request bodies (canonical JSON, ``max_tokens`` included) hashed over every
    raw exchange; a hash shared by distinct nodes is expected only within one item's context-free bank (ROOT/DEEP
    nodes without parents: no seed is sent, so replicas are byte-identical by design). Any other shared hash must be
@@ -142,7 +143,8 @@ def scan_legacy(legacy_root: str | Path, *, threads: int = 32) -> dict[str, Any]
                     answer_id = answer_id or raw_answer
                 if think_id is None:
                     missing_think.append(result.get("node_id"))
-                gen_ids.extend(g for g in (think_id, answer_id) if g)
+                # a NATURAL (unforced calibration) exchange is one call: its THINK and ANSWER ids coincide
+                gen_ids.extend(sorted({g for g in (think_id, answer_id) if g}))
     return {"gen_ids": gen_ids, "missing_think": missing_think, "model_bad": model_bad, "provider_bad": provider_bad,
             "body_nodes": body_nodes, "specs": specs_all, "parsed": parsed_count, "raw_think_bodies": raw_count}
 
