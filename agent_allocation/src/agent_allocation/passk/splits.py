@@ -860,6 +860,23 @@ def write_artifacts(cfg: Mapping[str, Any], run_root: Path = PASSK_RUN_ROOT, leg
     return record
 
 
+def load_splits(run_root: Path = PASSK_RUN_ROOT, *, require_gate: bool = True) -> dict[str, Any]:
+    """The frozen ``splits.json`` for downstream work packages. With ``require_gate`` (the default) the file's sha256
+    must equal the one Gate S recorded and Gate S must have passed; anything else refuses."""
+    run_root = Path(run_root)
+    data = (run_root / "artifacts" / "manifests" / "splits.json").read_bytes()
+    if require_gate:
+        gate_path = run_root / "gates" / "gate_s.json"
+        if not gate_path.is_file():
+            raise SplitsRefused(f"{gate_path} is missing: Gate S has not run")
+        gate = json.loads(gate_path.read_text())
+        if gate.get("passed") is not True:
+            raise SplitsRefused("Gate S did not pass")
+        if gate.get("splits_sha256") != sha256_bytes(data):
+            raise SplitsRefused("splits.json changed after Gate S")
+    return json.loads(data)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m agent_allocation.passk.splits")
     parser.add_argument("--config", required=True)

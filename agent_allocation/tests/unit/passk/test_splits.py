@@ -305,3 +305,19 @@ def test_real_write_once_refuses_changed_artifact(written):
             S.write_artifacts(cfg, run_root, S.LEGACY_RUN_ROOT, repo=ROOT.parent, local_state=run_root / "ls")
     finally:
         target.write_bytes(original)
+
+
+@needs_real
+def test_load_splits_checks_gate(written, tmp_path):
+    _cfg, run_root, record = written
+    splits = S.load_splits(run_root)
+    assert S.sha256_bytes(S.json_bytes(splits)) == record["splits_sha256"]
+    with pytest.raises(S.SplitsRefused, match="Gate S has not run"):
+        (tmp_path / "artifacts" / "manifests").mkdir(parents=True)
+        (tmp_path / "artifacts" / "manifests" / "splits.json").write_bytes(S.json_bytes(splits))
+        S.load_splits(tmp_path)
+    (tmp_path / "gates").mkdir()
+    (tmp_path / "gates" / "gate_s.json").write_text(json.dumps({**record, "splits_sha256": "0" * 64}))
+    with pytest.raises(S.SplitsRefused, match="changed after Gate S"):
+        S.load_splits(tmp_path)
+    assert S.load_splits(tmp_path, require_gate=False) == splits
