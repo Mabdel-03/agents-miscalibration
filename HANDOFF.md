@@ -18,6 +18,15 @@ read-only legacy files only). Operator commands: `agent_allocation/docs/passk_co
 | Gate 0 evaluator + record (`python -m agent_allocation.passk.gates gate0 --check-key --run-tests --run-e0`) | `passk/gates.py` | `test_gate0.py` |
 | P8 ops: `slurm/passk_cont.sbatch` (VERBs shard-plan, gate0, canary, canary-eval, smoke, run, grade, grade-follow, checkpoint, analyze; `--signal=B:TERM@900` + trap → `control/DRAIN`, python waited twice, no exec; `+`-joined PARTITIONS; `--account-auto-reload` on paid verbs), `slurm/passk_conductor.sh` + `.sbatch` (flock, squeue duplicate refusal, STATUS.md + conductor.state each transition, `--mail-type=FAIL,END`), in-run gates | `slurm/`, `passk/checkpoints.py` | e2e (gates), `test_checkpoints.py`; shell: `bash -n` only |
 
+### Launch guards added after the first pass
+
+- A PAID `passk-run` refuses unless `gates/gate0.json` exists, `passed` and `complete` (key + tests evaluated) and
+  froze every requested partition of the shard (`run.require_gate0`); every run asserts the jobs sha.
+- `passk-run` never rewrites an identical jobs file, and the grader computes blocked and gradeable ids from ONE read
+  of the manifests, so a manifest caught mid-write can never leak a fenced id (test in `test_grade_scope.py`).
+- Seal acceptance equals WP-A's (`code_commit` required).
+- Conductor `job_rc` reports 99 for TIMEOUT/CANCELLED/NODE_FAIL (sacct ExitCode can read 0 there).
+
 ## Validated against the lead's REAL manifests (scratch copy, 14:58 EDT; nothing written to the run root)
 
 Copied `passk_cont_v1/artifacts/{manifests,locks}` + `gates/gate_s.json` (no private/) to the scratchpad, then:
