@@ -70,6 +70,10 @@ as "Mancer", not the real lock's "Mancer 2" — the pin guard working, not a def
 
 ## Known issues
 
+- Final run at 15:06 EDT (HEAD): `pytest tests/unit/passk tests/unit/test_shards.py tests/unit/code/test_worker.py
+  tests/integration/test_passk_wpg_e2e.py tests/integration/test_passk_conductor_dryrun.py
+  tests/integration/test_forced_wp3_mocked.py` -> **68 passed**.
+
 - Suite at 15:01 EDT: `pytest tests/unit tests/integration/test_forced_wp3_mocked.py
   tests/integration/test_passk_wpg_e2e.py` -> **1005 passed, 1 failed**; the failure
   (`tests/unit/runtime/test_status_control.py::test_status_json_is_written_live_and_at_the_end`, and in an earlier
