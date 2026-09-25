@@ -30,7 +30,7 @@ def write_node(shard_dir: Path, partition: str, task: dict, budget: int, r: int,
     parsed.parent.mkdir(parents=True, exist_ok=True)
     candidate = {"__record__": "Candidate", "candidate_id": nid, "final_answer": final, "finish_reason": "stop",
                  "item_id": task["item_id"], "node_id": nid, "output_kind": task["output_kind"],
-                 "parse_status": "valid" if final is not None else "invalid", "rationale": "x",
+                 "parse_status": "valid" if final is not None else "missing_final", "rationale": "x",
                  "visible_content": f"<final>{final}</final>"}
     result = {"generation_id": f"gen-{nid[:8]}", "latency_seconds": 1.0, "observed_model": "qwen/qwen3.8-27b",
               "observed_provider": "Mancer 2", "raw_response_path": None,
@@ -44,9 +44,10 @@ def write_node(shard_dir: Path, partition: str, task: dict, budget: int, r: int,
         grade.parent.mkdir(parents=True, exist_ok=True)
         grade.write_text(json.dumps({
             "__record__": "GradeResult", "candidate_id": nid, "cpu_seconds": 0.0, "detail_code": "x",
-            "environment_digest": "e", "grader_version": "g", "operational_success": True,
-            "private_eval_hash": "h", "semantic_correct": correct,
-            "status": "graded" if final is not None else "invalid_output"}))
+            "environment_digest": "e", "grader_version": "g", "operational_success": final is not None,
+            "private_eval_hash": "h", "semantic_correct": correct if final is not None else None,
+            "status": ("invalid_output" if final is None else "graded" if correct is not None
+                       else "evaluator_error")}))
     return nid
 
 
