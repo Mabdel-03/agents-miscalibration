@@ -65,6 +65,9 @@ if [ "$1" = "-m" ]; then
     "agent_allocation.passk.gates gate0") exit ${STUB_GATE0_RC:-0} ;;
     "agent_allocation.passk.checkpoints gate2") exit 4 ;;
     "agent_allocation.passk.checkpoints sample") exit 4 ;;
+    "agent_allocation.passk.checkpoints gate4")
+      [ -n "${STUB_GATE4_FAIL_SPLIT:-}" ] && echo "$*" | grep -q -- "--split $STUB_GATE4_FAIL_SPLIT" && exit 3
+      exit 0 ;;
     *) exit 0 ;;
   esac
 fi
@@ -208,3 +211,14 @@ def test_conductor_rejects_unknown_start_at(tmp_path):
     proc = _run(code, env, START_AT="bogus")
     assert proc.returncode == 2
     assert not (stubs / "submitted").exists()
+
+
+def test_gate4_failure_of_one_split_releases_the_other(tmp_path):
+    code, study, stubs, env = _setup(tmp_path)
+    proc = _run(code, env, START_AT="gate4", STUB_GATE4_FAIL_SPLIT="v48")
+    assert proc.returncode == 3, proc.stdout[-3000:]
+    assert (study / "conductor.state").read_text().startswith("stopped:gate4")
+    exports = [line.split()[1:] for line in (stubs / "exports").read_text().splitlines()]
+    assert [e[0] for e in exports if e[0] in ("release", "pairs", "extract", "score", "report")] == \
+        ["release", "pairs", "extract", "score", "report"]
+    assert [e[2] for e in exports if e[0] == "release"] == ["release=t200"]

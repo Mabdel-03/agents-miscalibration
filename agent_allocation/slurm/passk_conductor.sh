@@ -257,6 +257,9 @@ run_analysis(){  # $1 first step token ("" = from the start), then the step spec
     IFS='|' read -r tok st flags rel <<< "$spec"
     [ -z "$started" ] && [ "$tok" = "$from" ] && started=1
     [ -n "$started" ] || continue
+    local sk skip=""
+    for sk in ${SKIP_SPLITS:-}; do [[ "$tok" == *-"$sk" ]] && skip=1; done
+    [ -n "$skip" ] && { say "skip $tok: Gate 4 failed for its split"; continue; }
     note "analysis:$tok" "passk-analyze --stage $st ${flags} ${rel:+--release $rel}"
     local ex=("STAGE=$st")
     [ -n "$flags" ] && ex+=("FLAGS=$flags")
@@ -374,11 +377,16 @@ fi
 # ====================================================================================================================
 if [ "$START_AT" = gate4 ]; then
   for s in "${SHARDS[@]}"; do ensure_grade_follow "$s" || stop gate4 "grade-follow $s not submitted" 1; done
-  for s in "${SHARDS[@]}"; do
-    note gate4 "completion checks on $s"
-    checkpoint gate4 "$s"; rc=$?
-    [ $rc -eq 0 ] || stop gate4 "Gate 4 failed on $s (gates/gate4_$s.json)"
+  # Gate 4 per held-out split: V48 is released once v48_bank passes on both shards, T200 once t200_bank does
+  SKIP_SPLITS=""
+  for split in v48 t200; do
+    for s in "${SHARDS[@]}"; do
+      note gate4 "completion checks on $s for $split"
+      checkpoint gate4 "$s" --split "$split"; rc=$?
+      if [ $rc -ne 0 ]; then SKIP_SPLITS="$SKIP_SPLITS $split"; say "Gate 4 failed on $s for $split (rc=$rc)"; break; fi
+    done
   done
+  [ "$(echo $SKIP_SPLITS)" = "v48 t200" ] && stop gate4 "Gate 4 failed for both splits (gates/gate4_<shard>_<split>.json)"
   # the seal exists (ANALYSIS_PRE ends with `seal`): the grade --follow jobs now grade the held-out partitions; wait
   # (max ~4 h) until every candidate of both shards is graded before releasing labels
   for i in $(seq 1 48); do
@@ -395,6 +403,8 @@ if step_tokens "${ANALYSIS_POST[@]}" | grep -qx "$START_AT"; then
   rm -f "$FAILED_MARK"
   run_analysis "$START_AT" "${ANALYSIS_POST[@]}"
   for s in "${SHARDS[@]}"; do touch "$RUN/shards/$s/control/STOP"; done      # ends the grade --follow jobs
+  [ -n "${SKIP_SPLITS:-}" ] && stop gate4 "report built for the released split only; Gate 4 failed for:$SKIP_SPLITS \
+(gates/gate4_<shard>_<split>.json; resume with START_AT=release-<split> after an owner decision)"
   note done "chain complete: report built"
   say "CONDUCTOR FINISHED"
   exit 0

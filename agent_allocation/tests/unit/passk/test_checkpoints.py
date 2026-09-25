@@ -91,3 +91,25 @@ def test_sample_cli_inconclusive_returns_4_and_retries_pending(tmp_path, monkeyp
     monkeypatch.setattr(live, "fetch_metadata", fetch_one)
     assert cp.main(argv) == 0
     assert seen[-1][:2] == ["gen-0", "gen-1"]                  # the pending ids are retried first
+
+
+def test_gate4_per_split(tmp_path, monkeypatch):
+    """integration_spec review: V48 is released once v48_bank passes Gate 4, T200 once t200_bank passes."""
+    cfg = shard_config(load_config(PROJECT / "configs" / "passk_cont_v1.json"), "mancer")
+    paths = RunPaths.for_run(tmp_path / "shards" / "mancer", local_state_dir=tmp_path / "l")
+
+    def rows(ok_t200: bool):
+        out = []
+        for part in cp.MAIN_PARTITIONS:
+            for i in range(100):
+                good = ok_t200 or part != "t200_bank" or i < 90
+                out.append({"node_id": f"{part}-{i}", "partition": part, "parsed": True, "succeeded": good,
+                            "has_candidate": False})
+        return out
+
+    monkeypatch.setattr(cp, "node_rows", lambda _paths, _parts: rows(False))
+    g4 = cp.gate4(cfg, paths, check_duplicates=False)
+    assert not g4["passed"] and g4["splits"]["v48"]["passed"] and not g4["splits"]["t200"]["passed"]
+    monkeypatch.setattr(cp, "node_rows", lambda _paths, _parts: rows(True))
+    g4 = cp.gate4(cfg, paths, check_duplicates=False)
+    assert g4["passed"] and g4["splits"]["v48"]["passed"] and g4["splits"]["t200"]["passed"]

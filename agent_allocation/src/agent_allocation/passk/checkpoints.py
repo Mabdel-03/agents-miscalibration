@@ -316,8 +316,17 @@ def gate4(cfg: Mapping[str, Any], paths, *, legacy_root: str | Path | None = Non
         shas = think_text_shas(roots)
         dupes = [s for s, n in Counter(shas).items() if n > 1]
         crit["unique_think_texts"] = {"passed": not dupes, "texts": len(shas), "duplicates": len(dupes)}
+    # per held-out split: its own partitions complete + every shared criterion (the non-held-out partitions complete,
+    # dev grades, unique THINK texts). V48 is released once v48_bank passes, T200 once t200_bank passes.
+    shared_ok = all(c["passed"] for k, c in crit.items() if k != "completion") and all(
+        v["passed"] for p, v in per_partition.items() if p not in heldout)
+    splits = {}
+    for split, parts in heldout_splits(cfg).items():
+        mine = [per_partition[p] for p in parts if p in per_partition]
+        splits[split] = {"passed": bool(per_partition) and shared_ok and all(v["passed"] for v in mine),
+                         "partitions": [p for p in parts if p in per_partition]}
     return {"gate": "gate4", "passed": all(c["passed"] for c in crit.values()), "criteria": crit,
-            "evaluated_at": _utc()}
+            "splits": splits, "evaluated_at": _utc()}
 
 
 def graded(cfg: Mapping[str, Any], paths) -> dict[str, Any]:
@@ -394,6 +403,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shard", required=True)
     parser.add_argument("--fetch-metadata", action="store_true", help="gate1-smoke: read /generation ($0, live)")
     parser.add_argument("--force", action="store_true", help="gate2: evaluate even if not due")
+    parser.add_argument("--split", choices=("v48", "t200"), default=None,
+                        help="gate4: pass/fail on this held-out split only (its partitions + the shared criteria)")
     args = parser.parse_args(argv)
     from agent_allocation.config import load_config
     from agent_allocation.shards import shard_config
@@ -445,7 +456,12 @@ def main(argv: list[str] | None = None) -> int:
         name, code = f"gate3_{args.shard}", (0 if result["passed"] else 3)
     else:
         result = gate4(cfg, paths, legacy_root=cfg["passk"]["legacy_run_root"])
-        name, code = f"gate4_{args.shard}", (0 if result["passed"] else 3)
+        if args.split:
+            ok = bool((result["splits"].get(args.split) or {}).get("passed"))
+            result = {**result, "split": args.split, "passed": ok}
+            name, code = f"gate4_{args.shard}_{args.split}", (0 if ok else 3)
+        else:
+            name, code = f"gate4_{args.shard}", (0 if result["passed"] else 3)
     target = _write(study, name, result)
     print(json.dumps({"gate": name, "record": str(target), "passed": result.get("passed")}, indent=1))
     return code
