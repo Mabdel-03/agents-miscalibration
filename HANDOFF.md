@@ -3,15 +3,16 @@
 Worktree `/orcd/data/tpoggio/001/mabdel03/agents_scaling_passk_wpA`, package `agent_allocation/src/agent_allocation/passk/`.
 Tests: `cd agent_allocation && .venv/bin/python -m pytest -q tests/unit/passk` (40 pass, 1 skipped where ptrace is
 blocked; includes `test_integration_legacy.py`: real L96 + synthetic e1_fill/v48 through extract, E1 lock, seal
-refusing an injected fenced read, and release). The rest of the unit suite (`tests/unit --ignore=tests/unit/passk`) is green: 971 passed. With the scratch legacy cache the four real-data tests run in ~30 s; without a filled pair cache the three
-plurality tests on real data skip (see "Exact next commands").
+refusing an injected fenced read, and release). The rest of the unit suite (`tests/unit --ignore=tests/unit/passk`)
+is green: 971 passed. Without a filled pair cache the five cache-dependent real-data tests skip (35 pass, 6 skip);
+point `PASSK_PAIR_CACHE` at a cache (e.g. the copy named below) to run them (~25 s).
 
 ## Done (all committed)
 
 | priority | module | what |
 |---|---|---|
 | P1 | `passk/pairs.py` | Append-only gold-free pair cache `catalog/pair_verdicts.parquet` (contract §5.2 columns). `PairCache.lookup` (order-invariant, raises `MissingPair`), `.equivalence(item)`, `.fill(pairs, workers)` (spawn ProcessPool, one pair per task, `math_equivalent` on the worker main thread so SIGALRM 5 s works in-process; chunked atomic flush under flock; a stored None is final and never recomputed). `enumerate_pairs` (only texts whose exact keys differ, MATH only), `math_votes_from_frame`. |
-| P2 | `passk/extract.py` | The single reader. Legacy L96 (main root@A slots 0-24 + deep 2/4/8/16/25A) and D32 (pilot root@A), plus new-run `artifacts/shards/<shard>/manifests/jobs/<partition>.jsonl`. Pre-seal allow-list smoke/e1_fill/c48_extra/t200_diag (t200_diag without `correct`/`grade_state`); `v48_bank`/`t200_bank` never opened pre-seal; `release=["v48"|"t200"]` needs a verifying seal (else `PermissionError`). Writes `analysis_inputs/{draws,pools,classes,readouts,dev_training_readouts}.parquet` + `manifest.json` (sha256 of each, partitions read, allow-list, code commit, `classes_pending_pools`). `load_draws` verifies the sha. Extra columns beyond §5.3: `pending`, `graded`, `absent`, `draw_role`, raw path/sha, THINK body sha (without `max_tokens`), `provider_only`, spec hashes. |
+| P2 | `passk/extract.py` | The single reader. Legacy L96 (main root@A slots 0-24 + deep 2/4/8/16/25A) and D32 (pilot root@A), plus new-run `artifacts/shards/<shard>/manifests/jobs/<partition>.jsonl`. Pre-seal allow-list smoke/e1_fill/c48_extra/t200_diag (t200_diag without `correct`/`grade_state`); `v48_bank`/`t200_bank` never opened pre-seal; `release=["v48"|"t200"]` needs a verifying seal (else `PermissionError`). Writes `analysis_inputs/{draws,pools,classes,readouts,dev_training_readouts}.parquet` + `manifest.json` (sha256 of each, partitions read, allow-list, code commit, `classes_pending_pools`). `load_draws` verifies the sha. Extra columns beyond §5.3: `pending`, `graded`, `absent`, `draw_role`, raw path/sha, THINK body sha (without `max_tokens`), THINK text sha, THINK/ANSWER served model, THINK provider, answer failures, `provider_only`, spec hashes. `think_latency_s` comes from the raw record. |
 | P3 | `passk/pools.py` | All §5.4 config ids incl. training rows and `diag5`, prefix rule, B16/B8 menus, `WITHHELD`, `DEV_TRAINING`, `LEGACY_CONFIGS` (25x1, 1x25 for E0), `c48_fit_scopes` (one class scope per C48 item over fitting draws only). |
 | P3 | `passk/readout.py` | Classes via `build_classes` in frozen member order with cache-served equivalence; `mode="passk"` tie = min sha256(json(["passk_cont_v1/tie", 20260925, pool_id, class_id])); `mode="legacy"` = `class_tie_key(20260917, item, class)`; single-member and absent rules (07-R12); analytic tie-averaged (lo, hi); `readout_pools`, `class_rows`. |
 | P3 | `passk/metrics.py` | H/S/S_tie bounds, entropy, top-wrong mass, `decomposition` (exact three-term), finite-bank pass@k (raises k > m), `mixed_coverage` (exact G_x), `bank_counts` (m_A = 20), `item_mixed_coverage`, macro/mixture/micro `config_summary`; all-absent pool = missing in primary, failure in `S_operational`. |
@@ -59,11 +60,11 @@ plurality tests on real data skip (see "Exact next commands").
    still verifies (and restores the fence if it stops verifying).
 5. `splits.json` (lead) drives `panel_roles` (C48/V48/T200 membership). Without it C48 pools and fit scopes are empty;
    T200/V48 pools fall back to partition membership. Re-run extract once `manifests/splits.json` exists.
-6. `score` covers the primary family only; E2/E5 secondary scoring is WP-M's `score(run_root)` hook. Menus on V48 use
-   the passk tie rule; L96 descriptive menus with simultaneous intervals are not yet computed (`stats.level` exists).
-7. E0 not done: the `/generation` backfill of 500 ids (network; out of scope here), THINK-text duplicate check
-   (needs reading THINK text from raw; `think_body_sha` is the request body and is one per item by design),
-   request-body collision check (WP-G `e0_gate.py`). 
+6. `score` covers the primary family, menus (L96/V48/T200, passk tie rule) with simultaneous intervals, and finite-bank
+   coverage; E2/E5 secondary scoring is WP-M's `score(run_root)` hook. WP-M fits must drop or wait on `pending` rows
+   (`analysis_inputs/draws.parquet`), exactly as `e1-lock` does.
+7. E0 not done: the `/generation` backfill of 500 ids (network; out of scope here) and the request-body collision
+   check (WP-G `e0_gate.py`). THINK-text duplicates are audited (0 of 2,976).
 8. Report: F2/F6 figures (WP-M outputs), prose beyond the skeleton, `latexmk` not tested here.
 
 ## Known issues
