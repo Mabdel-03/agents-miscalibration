@@ -126,9 +126,11 @@ def _reuse_manifest(draws: pd.DataFrame) -> dict:
                         "prompt_version": r.prompt_version, "decoding_config_hash": r.decoding_config_hash,
                         "allowance_a": int(r.allowance_a), "headroom": r.completion_headroom,
                         "stopping": "forced_think_exact", "parser_grader": r.grader_version,
-                        "split_role": ",".join(list(r.panel_roles or [])), "partition": r.partition,
-                        "reusable_as": ("L96 A slot r%d" % r.replicate if r.kind == "root" and r.partition
-                                        == "legacy_main" else f"{r.partition} {r.kind} {r.allowance_a}A r{r.replicate}")})
+                        "split_role": ",".join([] if r.panel_roles is None else list(r.panel_roles)),
+                        "partition": r.partition,
+                        "reusable_as": (f"L96 A slot r{r.replicate}"
+                                        if r.kind == "root" and r.partition == "legacy_main"
+                                        else f"{r.partition} {r.kind} {r.allowance_a}A r{r.replicate}")})
     return {"version": "passk-reuse-v1", "key_fields": keys, "not_keyed_on": ["endpoint_lock_hash"],
             "n": len(entries), "entries": entries}
 
@@ -158,12 +160,14 @@ def _plots(metrics: pd.DataFrame, out_dir: Path) -> list[str]:
         ax.legend(fontsize=7, loc="lower right")
 
     fig, ax = plt.subplots(figsize=(7, 3.5))
-    stacked(ax, known, ["1x1", "2x1", "4x1", "8x1", "16x1", "25x1"], "L96 sample/k: generation vs selection (known-outcome items, macro)")
+    stacked(ax, known, ["1x1", "2x1", "4x1", "8x1", "16x1", "25x1"],
+            "L96 sample/k: generation vs selection (known-outcome items, macro)")
     path = out_dir / "decomposition_sample_k.png"
     fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig); written.append(path.name)
 
     fig, ax = plt.subplots(figsize=(7, 3.5))
-    stacked(ax, known, ["1x1", "1x2", "1x4", "1x8", "1x16", "1x25"], "L96 deep/m: single-call depth (known-outcome items, macro)")
+    stacked(ax, known, ["1x1", "1x2", "1x4", "1x8", "1x16", "1x25"],
+            "L96 deep/m: single-call depth (known-outcome items, macro)")
     path = out_dir / "decomposition_deep_m.png"
     fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig); written.append(path.name)
 
@@ -262,7 +266,8 @@ def run_e0(run_root: Path, *, legacy_root: Path = LEGACY_ROOT, draws: pd.DataFra
                    "drift_mismatches": int((~rep["match"] & rep["drift_eligible"]).sum()),
                    "gate_100pct_clean": bool(len(clean) and clean["match"].all())},
         "pair_cache_rows": len(cache), "pair_cache_path": str(cache.path), "plots": plots,
-        "legacy_bank_cost_usd": float(ledger["cost_usd"].sum()), "legacy_bank_requests": int(len(ledger)), "mixture_weights": MIXTURE_WEIGHTS,
+        "legacy_bank_cost_usd": float(ledger["cost_usd"].sum()), "legacy_bank_requests": int(len(ledger)),
+        "mixture_weights": MIXTURE_WEIGHTS,
     }
     (out / "audit.json").write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
     return audit

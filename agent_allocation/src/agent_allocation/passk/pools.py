@@ -21,7 +21,8 @@ from typing import Iterable
 
 import pandas as pd
 
-__all__ = ["B16_MENU", "B8_MENU", "CONFIGS", "DEV_TRAINING", "LEGACY_CONFIGS", "POOL_COLUMNS", "WITHHELD", "build_pools", "c48_fit_scopes", "config",
+__all__ = ["B16_MENU", "B8_MENU", "CONFIGS", "DEV_TRAINING", "LEGACY_CONFIGS", "POOL_COLUMNS", "WITHHELD",
+           "build_pools", "c48_fit_scopes", "config",
            "pool_id"]
 
 PASSK_SEED = 20260925
