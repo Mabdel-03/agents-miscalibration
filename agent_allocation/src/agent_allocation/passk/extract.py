@@ -62,6 +62,7 @@ DRAW_COLUMNS = [
     # provenance extras (E0 / reuse manifest; not labels)
     "raw_response_path", "raw_response_sha256", "think_body_sha", "answer_body_sha", "provider_only",
     "decoding_config_hash", "prompt_version", "completion_headroom", "endpoint_lock_hash", "grader_version",
+    "think_model", "think_provider", "answer_model", "answer_failures", "think_text_sha",
 ]
 
 
@@ -129,7 +130,20 @@ def _raw_facts(shard_dir: Path, raw_path: str | None) -> dict:
     request = record.get("request_body") or {}
     think_req = request.get("think") if isinstance(request, dict) else None
     only = ((think_req or {}).get("provider") or {}).get("only")
+    answer = body.get("answer") if isinstance(body, dict) else None
+    choices = (think or {}).get("choices") if isinstance(think, dict) else None
+    text = None
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        text = choices[0].get("text")
+        if text is None and isinstance(choices[0].get("message"), dict):
+            text = choices[0]["message"].get("reasoning") or choices[0]["message"].get("content")
     return {"generation_id_think": think.get("id") if isinstance(think, dict) else None,
+            "think_latency_s": body.get("think_latency_seconds") if isinstance(body, dict) else None,
+            "think_model": think.get("model") if isinstance(think, dict) else None,
+            "think_provider": think.get("provider") if isinstance(think, dict) else None,
+            "answer_model": answer.get("model") if isinstance(answer, dict) else None,
+            "answer_failures": len(body.get("answer_failures") or []) if isinstance(body, dict) else None,
+            "think_text_sha": None if not isinstance(text, str) else hashlib.sha256(text.encode("utf-8")).hexdigest(),
             "think_body_sha": _body_sha(think_req, drop=("max_tokens",)),
             "answer_body_sha": _body_sha(request.get("answer") if isinstance(request, dict) else None),
             "provider_only": None if only is None else ",".join(only)}

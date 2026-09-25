@@ -31,6 +31,10 @@ LEGACY_CONFIGS = ("1x1", "2x1", "4x1", "8x1", "16x1", "25x1", "1x2", "1x4", "1x8
 HEADLINES = {"deep/16 (79.2 / 78.5)": "1x16", "vote@25 (42.7 / 43.3)": "25x1", "sample/16 vote (41.7)": "16x1"}
 
 
+def _col(frame: pd.DataFrame, name: str) -> pd.Series:
+    return frame[name] if name in frame else pd.Series([None] * len(frame), index=frame.index, dtype=object)
+
+
 def cohorts(legacy_root: Path, draws: pd.DataFrame) -> pd.DataFrame:
     """96 = all L96; 94 = drop items with an unknown grade in the root/deep bank; 93 = drop any unknown grade in
     the legacy main partition (all families, from ``merged/tables/candidates``)."""
@@ -252,6 +256,10 @@ def run_e0(run_root: Path, *, legacy_root: Path = LEGACY_ROOT, draws: pd.DataFra
         "provider_only_matches_shard_pin": bool(provider_ok),
         "generation_ids_unique": bool(gen_ids.is_unique), "n_generation_ids": int(len(gen_ids)),
         "think_body_sha_distinct_nodes": int(present["think_body_sha"].nunique()),
+        "think_text_sha_n": int(_col(present, "think_text_sha").notna().sum()),
+        "think_text_duplicates": int(_col(present, "think_text_sha").dropna().duplicated().sum()),
+        "think_served_models": sorted(_col(present, "think_model").dropna().unique().tolist()),
+        "answer_served_models": sorted(_col(present, "answer_model").dropna().unique().tolist()),
         "think_tokens_exact": bool((present["think_out"] == present["allowance_a"] * 1024).all()),
         "cohorts": {"96": int(cohort["in_96"].sum()), "94": int(cohort["in_94"].sum()),
                     "93": int(cohort["in_93"].sum())},
