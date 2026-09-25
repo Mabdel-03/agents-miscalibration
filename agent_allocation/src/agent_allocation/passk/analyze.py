@@ -22,6 +22,10 @@ E1_CANDIDATES = ("8x2", "4x4", "2x8")                  # ties -> fewer calls, i.
 EXIT_OK, EXIT_FAIL, EXIT_BLOCKED = 0, 1, 2
 
 
+class NotReady(RuntimeError):
+    """A stage's inputs are not complete yet (exit 2, blocked; the conductor retries later)."""
+
+
 def _write_once_json(path: Path, payload: dict, *, compare_keys: tuple[str, ...]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
@@ -51,7 +55,7 @@ def e1_lock(run_root: Path, *, draws=None, cache=None) -> dict:
     n_items = draws.loc[draws["partition"] == "legacy_main", "item_id"].nunique()
     incomplete = {c: counts.get(c, 0) for c in E1_CANDIDATES if counts.get(c, 0) != n_items}
     if incomplete:
-        raise RuntimeError(f"E1 lock needs every L96 item in each candidate allocation; incomplete: {incomplete}")
+        raise NotReady(f"E1 lock needs every L96 item in each candidate allocation; incomplete: {incomplete}")
     metrics = pool_metrics(readout_pools(pools, draws, cache=cache, mode="passk"), draws)
     table = {}
     for config_id, sub in metrics.groupby("config_id"):
@@ -150,7 +154,11 @@ def cmd_passk_analyze(argv: list[str]) -> int:
     if args.stage == "pairs":
         return _stage_pairs(run_root, args)
     if args.stage == "e1-lock":
-        payload = e1_lock(run_root)
+        try:
+            payload = e1_lock(run_root)
+        except NotReady as exc:
+            print(f"blocked: {exc}", file=sys.stderr)
+            return EXIT_BLOCKED
         print(json.dumps({"selected": payload["selected"]}))
         return EXIT_OK
     if args.stage in ("e2-fit", "e5-fit"):
@@ -177,6 +185,11 @@ def cmd_passk_analyze(argv: list[str]) -> int:
         primary = score(run_root)
         print(json.dumps({"locked": primary["locked"], "holm": primary["holm"]}, default=str))
         return EXIT_OK
+    if args.stage == "report":
+        import subprocess
+        build = Path(__file__).resolve().parents[3] / "docs" / "passk_cont_report" / "build.sh"
+        env = dict(os.environ, RUN=str(run_root), PY=sys.executable)
+        return subprocess.run(["bash", str(build)], env=env, check=False).returncode
     if args.stage == "e0":
         from agent_allocation.passk.e0.run import run_e0
         run_e0(run_root, legacy_root=Path(args.legacy_root))

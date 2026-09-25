@@ -87,8 +87,12 @@ def check_strace(log: Path, run_root: Path, *, legacy_root: str = LEGACY_ROOT, h
                  legacy_root]
     opened = bad = 0
     examples: list[str] = []
+    mode = "strace"
     with Path(log).open(encoding="utf-8", errors="replace") as handle:
         for line in handle:
+            if line.startswith("# mode=audithook"):
+                mode = "audithook"
+                continue
             match = _OPEN.search(line)
             if not match:
                 continue
@@ -99,7 +103,8 @@ def check_strace(log: Path, run_root: Path, *, legacy_root: str = LEGACY_ROOT, h
                 bad += 1
                 if len(examples) < 10:
                     examples.append(path)
-    return {"opens": opened, "forbidden_opens": bad, "examples": examples, "ok": opened > 0 and bad == 0}
+    return {"opens": opened, "forbidden_opens": bad, "examples": examples, "mode": mode,
+            "ok": opened > 0 and bad == 0}
 
 
 def _git(args: list[str]) -> str:

@@ -1,0 +1,38 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs,graphicx,hyperref}
+\title{Depth versus width under forced budgets: passk\_cont\_v1}
+\author{openrouter\_passk\_cont\_v1}
+\begin{document}
+\maketitle
+
+\section{Audit of the legacy banks (E0)}
+The legacy L96 banks hold {{e0.n_candidates|d}} candidates. The served model was pinned on every call
+({{e0.model_pinned|s}}). deep/16 scores {{e0.headlines.deep/16.macro_96|%}} over 96 items and
+{{e0.headlines.deep/16.macro_94|%}} over the 94 bank-known items; the 25-sample vote scores
+{{e0.headlines.vote@25.macro_96|%}} and {{e0.headlines.vote@25.macro_94|%}}. The legacy plurality replay matches
+{{e0.replay.clean_match_rate|%}} of {{e0.replay.clean_checkpoints|d}} checkpoints without unknown equivalences.
+
+% T1: audit and cohorts
+\begin{table}[h]\centering\input{tables/t1_cohorts.tex}\caption{T1. Cohorts.}\end{table}
+
+% F3: bottleneck decomposition
+\begin{figure}[h]\centering
+\includegraphics[width=.48\linewidth]{figures/decomposition_sample_k.png}
+\includegraphics[width=.48\linewidth]{figures/decomposition_deep_m.png}
+\caption{F3. Generation versus selection failure on the legacy banks.}\end{figure}
+
+\section{Mixed depth and width (E1)}
+The allocation locked on L96 before any T200 label was released is \texttt{ {{e1.locked|s}} }.
+% F1: allocation frontier
+\begin{figure}[h]\centering\includegraphics[width=\linewidth]{figures/f1_frontier.pdf}
+\caption{F1. Coverage and delivered accuracy for the B = 16A and B = 8A menus.}\end{figure}
+
+\section{Primary tests}
+% T3: primary tests
+\begin{table}[h]\centering\input{tables/t3_primary.tex}\caption{T3. Primary family (Holm, two tests).}\end{table}
+
+% F2 (E2 predictive depth response) and F6 (E5 prospective prediction): WP-M figures go here.
+% T2 (costs): physical and logical ledgers from passk.costs.
+
+\end{document}
