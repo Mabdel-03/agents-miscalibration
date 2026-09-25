@@ -135,3 +135,30 @@ def config_summary(metrics: pd.DataFrame, *, items: Iterable[str] | None = None,
         row["reliability_macro"] = s / h if h else float("nan")
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def bank_counts(draws: pd.DataFrame, partitions: Iterable[str], *, a_bank_slots: int = 20) -> pd.DataFrame:
+    """Per (item, allowance): bank size m and correct count bounds (c_lo, c_hi) over the panel's partitions.
+
+    The A bank on legacy L96/C48 is slots 0 … a_bank_slots−1 (m_A = 20; slots 20–24 are diagnostics)."""
+    frame = draws[draws["partition"].isin(set(partitions)) & ~draws["partition"].eq("t200_diag")]
+    legacy_a = (frame["partition"] == "legacy_main") & (frame["allowance_a"] == 1)
+    frame = frame[~legacy_a | (frame["replicate"] < a_bank_slots)]
+    corr = frame["correct"].map(_tri)
+    out = frame.assign(_c=corr.map(lambda v: v is True), _u=corr.map(lambda v: v is None))
+    g = out.groupby(["item_id", "benchmark", "allowance_a"])
+    return pd.DataFrame({"m": g.size(), "c_lo": g["_c"].sum(), "c_hi": g["_c"].sum() + g["_u"].sum()}).reset_index()
+
+
+def item_mixed_coverage(banks: pd.DataFrame, allocation: Mapping[int, int]) -> pd.DataFrame:
+    """G_x per item for an allocation ``{a: k_a}`` (lo/hi bounds); items whose bank is smaller than k are dropped."""
+    rows = []
+    for (item, bench), sub in banks.groupby(["item_id", "benchmark"]):
+        by = sub.set_index("allowance_a")
+        if any(a not in by.index or by.loc[a, "m"] < k for a, k in allocation.items() if k):
+            continue
+        m = {a: int(by.loc[a, "m"]) for a in allocation}
+        lo = mixed_coverage(m, {a: int(by.loc[a, "c_lo"]) for a in allocation}, allocation)
+        hi = mixed_coverage(m, {a: int(by.loc[a, "c_hi"]) for a in allocation}, allocation)
+        rows.append({"item_id": item, "benchmark": bench, "G_lo": float(lo), "G_hi": float(hi)})
+    return pd.DataFrame(rows)
