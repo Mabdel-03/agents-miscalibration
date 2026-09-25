@@ -277,15 +277,57 @@ def filter_graph_waves(waves: Sequence[Sequence[Any]], allowed: set[str] | None)
 # Materialization
 # ------------------------------------------------------------------------------------------------------------------
 
+def with_shares(cfg: Mapping[str, Any], shares: Mapping[str, Any]) -> dict[str, Any]:
+    """The base config with every shard's ``share`` replaced by ``shares[id]`` (a per-panel override)."""
+    out = copy.deepcopy(base_config(cfg))
+    unknown = sorted(set(shares) - {e["id"] for e in shard_entries(out)})
+    if unknown:
+        raise ShardError(f"share override names unknown shards {unknown}")
+    out["shards"] = [{**e, "share": shares.get(e["id"], e["share"])} for e in shard_entries(out)]
+    return out
+
+
+def reserve_override(cfg: Mapping[str, Any], root_paths: RunPaths, pairs: Sequence[tuple[str, str]]
+                     ) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+    """passk_cont_v1: the reserve panel (T200) takes its own 1:1 assignment. The explicit
+    ``manifests/splits.json`` ``assignment_t200`` wins when it covers every reserve item; otherwise the seeded
+    benchmark-balanced hash runs with ``passk.t200_shard_shares``. ``(None, None)`` for any other config (legacy)."""
+    passk = (base_config(cfg).get("passk") or {})
+    shares = passk.get("t200_shard_shares")
+    if not shares:
+        return None, None
+    splits = root_paths.manifests_dir / "splits.json"
+    if splits.is_file():
+        explicit = json.loads(splits.read_text()).get("assignment_t200") or {}
+        items = {i for i, _ in pairs}
+        if explicit and items <= set(explicit):
+            known = set(shard_ids(cfg))
+            bad = sorted({s for s in explicit.values() if s not in known})
+            if bad:
+                raise ShardError(f"splits.json assignment_t200 names unknown shards {bad}")
+            return ({i: explicit[i] for i in sorted(items)},
+                    {"source": "splits.json:assignment_t200", "sha256": sha256(splits.read_bytes()).hexdigest()})
+    return shard_assignment(with_shares(cfg, shares), pairs), {"source": "passk.t200_shard_shares",
+                                                               "shares": dict(shares)}
+
+
 def root_assignment(cfg: Mapping[str, Any], root_paths: RunPaths) -> dict[str, Any]:
-    """Assignment over every panel item of the prepared run root, each panel (dev, main, reserve) balanced alone."""
+    """Assignment over every panel item of the prepared run root, each panel (dev, main, reserve) balanced alone.
+    A passk config gives the reserve panel its own shares (:func:`reserve_override`); dev and main keep the
+    config's seed and shares, so the legacy assignment is reproduced for them."""
     from agent_allocation.manifest import load_panels
     panels = load_panels(root_paths)
     assignment: dict[str, str] = {}
     counts: dict[str, dict[str, dict[str, int]]] = {}
+    overrides: dict[str, Any] = {}
     for panel in ("dev_item_ids", "main_item_ids", "reserve_item_ids"):
         pairs = [(i, b) for b, draw in panels.items() for i in getattr(draw, panel)]
-        part = shard_assignment(cfg, pairs)
+        part, override = (reserve_override(cfg, root_paths, pairs) if panel == "reserve_item_ids"
+                          else (None, None))
+        if part is None:
+            part = shard_assignment(cfg, pairs)
+        else:
+            overrides[panel.replace("_item_ids", "")] = override
         assignment.update(part)
         by_bench = dict(pairs)
         table: dict[str, dict[str, int]] = {}
@@ -293,8 +335,11 @@ def root_assignment(cfg: Mapping[str, Any], root_paths: RunPaths) -> dict[str, A
             table.setdefault(shard, {}).setdefault(by_bench[item], 0)
             table[shard][by_bench[item]] += 1
         counts[panel.replace("_item_ids", "")] = {s: dict(sorted(v.items())) for s, v in sorted(table.items())}
-    return {"version": ASSIGNMENT_VERSION, "seed": cfg.get("seed"), "config_sha256": config_hash(base_config(cfg)),
-            "shards": shard_entries(cfg), "counts": counts, "assignment": dict(sorted(assignment.items()))}
+    out = {"version": ASSIGNMENT_VERSION, "seed": cfg.get("seed"), "config_sha256": config_hash(base_config(cfg)),
+           "shards": shard_entries(cfg), "counts": counts, "assignment": dict(sorted(assignment.items()))}
+    if overrides:
+        out["panel_overrides"] = overrides
+    return out
 
 
 def _filter_jsonl(source: Path, target: Path, keep: set[str], *, mode: int | None = None) -> int:
