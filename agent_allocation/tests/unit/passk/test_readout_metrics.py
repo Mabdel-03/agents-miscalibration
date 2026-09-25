@@ -136,3 +136,13 @@ def test_dev_training_table_has_no_withheld_configs(tmp_path):
     assert {"16x1", "8x2", "2x8", "1x16", "1x8"} <= set(dev.config_id)
     classes = pd.read_parquet(out / "classes.parquet")
     assert set(classes.pool_id) <= set(pd.read_parquet(out / "pools.parquet").pool_id)
+
+
+def test_all_absent_pool_is_missing_in_primary_and_failure_operationally():
+    answers = {(1, 0): None, (1, 1): None, (1, 2): "5", (1, 3): "5"}
+    draws = _draws(answers=answers, correct={(1, 2): True, (1, 3): True})
+    pools = build_pools(draws, panels=("L96",), configs=("2x1", "4x1", "1x1"))
+    m = pool_metrics(readout_pools(pools, draws), draws).set_index("config_id")
+    assert np.isnan(m.loc["2x1", "S_known"]) and m.loc["2x1", "S_operational"] == 0.0
+    assert m.loc["4x1", "S_known"] == 1.0 and m.loc["4x1", "n_absent"] == 2
+    assert np.isnan(m.loc["1x1", "S_known"])

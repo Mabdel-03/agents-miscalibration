@@ -79,6 +79,11 @@ def pool_metrics(readouts: pd.DataFrame, draws: pd.DataFrame) -> pd.DataFrame:
         wrong = [size for size, first in zip(row.class_sizes, row.class_first_ids) if correct.get(first) is False]
         return max(wrong, default=0) / votes
     out["top_wrong_mass"] = [top_wrong(r) for r in out.itertuples(index=False)]
+    # PREREG: an all-absent pool is a failure operationally (S_operational) and missing in the primary analysis
+    all_absent = out["n_absent"] >= n if "n_absent" in out else pd.Series(False, index=out.index)
+    out["S_operational"] = out["S_lo"]
+    out.loc[all_absent, ["S_known", "S_tie", "H_known"]] = np.nan
+    out["all_absent"] = all_absent
     out["gen_fail"] = 1.0 - out["H_known"]
     out["avail_loss"] = 0.0
     out["sel_fail"] = out["H_known"] - out["S_known"]

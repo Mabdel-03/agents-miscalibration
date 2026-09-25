@@ -151,6 +151,7 @@ def readout_pools(pools: pd.DataFrame, draws: pd.DataFrame, *, cache=None, mode:
             "tie_avg_lo": lo, "tie_avg_hi": hi,
             "n_member_correct": sum(v is True for v in member_correct),
             "n_member_unknown": sum(v is None for v in member_correct),
+            "n_absent": sum(c not in present for c in members),
         })
     return pd.DataFrame(rows)
 
