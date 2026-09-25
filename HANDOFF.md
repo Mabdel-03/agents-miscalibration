@@ -1,8 +1,9 @@
 # WP-A handoff: passk_cont_v1 analysis core + E0 (branch `passk-wpa`)
 
 Worktree `/orcd/data/tpoggio/001/mabdel03/agents_scaling_passk_wpA`, package `agent_allocation/src/agent_allocation/passk/`.
-Tests: `cd agent_allocation && .venv/bin/python -m pytest -q tests/unit/passk` (39 pass, 1 skipped where ptrace is
-blocked). The rest of the unit suite (`tests/unit --ignore=tests/unit/passk`) is green: 971 passed. With the scratch legacy cache the four real-data tests run in ~30 s; without a filled pair cache the three
+Tests: `cd agent_allocation && .venv/bin/python -m pytest -q tests/unit/passk` (40 pass, 1 skipped where ptrace is
+blocked; includes `test_integration_legacy.py`: real L96 + synthetic e1_fill/v48 through extract, E1 lock, seal
+refusing an injected fenced read, and release). The rest of the unit suite (`tests/unit --ignore=tests/unit/passk`) is green: 971 passed. With the scratch legacy cache the four real-data tests run in ~30 s; without a filled pair cache the three
 plurality tests on real data skip (see "Exact next commands").
 
 ## Done (all committed)
@@ -24,6 +25,17 @@ plurality tests on real data skip (see "Exact next commands").
 | P6 | `passk/costs.py`, `passk/records.py` | Physical (each request once) and logical (every member charged, nominal C = n·R·a·A) ledgers; `records/run_manifest.json` + candidates/pools/selections parquet. |
 | P6 | `docs/passk_cont_report/` | `render.py` (copied), `build.sh`, `analysis.py` (numbers.json, F1 frontier, F3 copies, T1/T2/T3 tables), `report.tmpl.tex` with F1/F3/T1/T2/T3 slots (F2/F6 left as a comment for WP-M). Placeholders fail loudly until their inputs exist. |
 | ops | `slurm/passk_analyze.sbatch` | One stage per job (`STAGE=...`, `RELEASE=...`, `FLAGS=--strace` split on `+`), 64 CPUs default. **Not submitted.** |
+
+## Produced in the real run root (this session, $0)
+
+- `passk_cont_v1/e0/*` -- the full E0 output set (audit.json: cohorts 96/94/93, replay 2,976/2,976 match,
+  deep/16 .7917/.7853, vote@25 .4271/.4330, sample/16 .4167; model pinned; generation ids unique; exact THINK
+  budgets). It was computed with the scratch legacy pair cache, copied for provenance to
+  `passk_cont_v1/catalog_scratch_wpa/pair_verdicts_legacy_4cpu.parquet` (audit.json `pair_cache_path` names it).
+  Re-run `--stage e0` after the real P0 cache exists; it overwrites `e0/`.
+- Nothing was written to `catalog/`, `analysis_inputs/`, `sealed/`, `gates/` or `artifacts/`.
+- Validated (in scratch) that extract with the lead's real `manifests/splits.json` builds 48 C48 pools per config and
+  48 `c48fit` scopes with zero pending pairs.
 
 ## Remaining (priority order)
 
