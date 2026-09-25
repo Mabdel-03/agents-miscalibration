@@ -99,7 +99,7 @@ def _stage_pairs(run_root: Path, args) -> int:
     pairs = enumerate_pairs(math_votes_from_frame(draws))
     cache = PairCache(run_root / "catalog" / "pair_verdicts.parquet")
     workers = args.workers or int(os.environ.get("SLURM_CPUS_PER_TASK") or len(os.sched_getaffinity(0)) or 1)
-    summary = cache.fill(pairs, workers=workers,
+    summary = cache.fill(pairs, workers=workers, isolate=args.isolate_pairs,
                          progress=lambda i, n: print(f"pairs {i}/{n}", flush=True) if i % 1000 == 0 else None)
     summary["pairs_needed"] = len(pairs)
     print(json.dumps(summary, sort_keys=True))
@@ -144,6 +144,8 @@ def cmd_passk_analyze(argv: list[str]) -> int:
     parser.add_argument("--stage", required=True, choices=STAGES)
     parser.add_argument("--release", action="append", default=[], choices=("v48", "t200"))
     parser.add_argument("--workers", type=int, default=0)
+    parser.add_argument("--isolate-pairs", action="store_true",
+                        help="pairs: evaluate each pair in a hard-killable child (a C-level stall cannot hang the fill)")
     parser.add_argument("--no-raw", action="store_true", help="extract: skip the THINK generation id (raw gz)")
     parser.add_argument("--strace", action="store_true",
                         help="e2-fit/e5-fit: re-run this stage under strace into logs/strace/<stage>.log (Gate P)")

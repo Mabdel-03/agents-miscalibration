@@ -109,6 +109,23 @@ def _evaluate(task: tuple[str, str, str, float]) -> tuple[str, str, str, bool | 
     return item_id, a, b, verdict, time.monotonic() - started
 
 
+def _evaluate_isolated(task: tuple[str, str, str, float]) -> tuple[str, str, str, bool | None, float]:
+    """Worker body with a hard kill: the pair runs in the worker's persistent isolated child (``_isolated``), which
+    is killed at ``timeout_s + grace`` even inside C code a signal cannot interrupt (a stall = None, unknown)."""
+    item_id, a, b, timeout_s = task
+    from agent_allocation.grading.text._isolated import shared_evaluator
+    started = time.monotonic()
+    try:
+        value = shared_evaluator().call("math_equivalent", (a, b), {"timeout_s": timeout_s}, timeout_s)
+    except BaseException as exc:  # noqa: BLE001 - timeout, outage or start failure: unknown
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        value = None
+    if value is not None and not isinstance(value, bool):
+        value = None
+    return item_id, a, b, value, time.monotonic() - started
+
+
 def _warm() -> None:
     from agent_allocation.grading.text.math_equiv import _math_verify
     _math_verify()
@@ -215,11 +232,15 @@ class PairCache:
         self.reload()
 
     def fill(self, pairs: Iterable[Pair], workers: int = 1, *, timeout_s: float = TIMEOUT_S,
-             flush_every: int = _FLUSH_EVERY, progress: Callable[[int, int], None] | None = None) -> dict:
-        """Compute and append every pair not already cached (a stored None is final). Returns a summary."""
+             flush_every: int = _FLUSH_EVERY, progress: Callable[[int, int], None] | None = None,
+             isolate: bool = False) -> dict:
+        """Compute and append every pair not already cached (a stored None is final). Returns a summary.
+
+        ``isolate=True`` runs each pair in a hard-killable child of its worker (``_evaluate_isolated``): slower, but
+        a stall inside C code cannot hang the fill."""
         todo = self.missing(pairs)
         version = math_verify_version()
-        evaluator = self._evaluator or _evaluate
+        evaluator = self._evaluator or (_evaluate_isolated if isolate else _evaluate)
         started = time.monotonic()
         buffer: list[dict] = []
         counts = {"requested_new": len(todo), "true": 0, "false": 0, "none": 0}

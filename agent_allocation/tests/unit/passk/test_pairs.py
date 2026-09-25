@@ -81,3 +81,12 @@ def test_real_math_verify_in_spawned_workers(tmp_path):
     assert summary["requested_new"] == 2
     assert cache.lookup("m/1", "0.5", "\\frac{1}{2}") is True
     assert cache.lookup("m/1", "3", "2") is False
+
+
+def test_isolated_mode_in_spawned_workers(tmp_path):
+    pytest.importorskip("math_verify")
+    cache = PairCache(tmp_path / "c.parquet")
+    summary = cache.fill([canonical_pair("m/1", "\\frac{1}{2}", "0.5"), canonical_pair("m/1", "2", "3")], workers=2,
+                         isolate=True)
+    assert summary["requested_new"] == 2
+    assert cache.lookup("m/1", "0.5", "\\frac{1}{2}") is True and cache.lookup("m/1", "2", "3") is False

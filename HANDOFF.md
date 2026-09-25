@@ -69,6 +69,11 @@ point `PASSK_PAIR_CACHE` at a cache (e.g. the copy named below) to run them (~25
 
 ## Known issues
 
+- Pair fills run Math-Verify in-process on each worker's main thread (SIGALRM 5 s). A stall inside C code that ignores
+  SIGALRM would hang that worker; the scratch legacy fill (15,158 pairs) never hit one. `--isolate-pairs` evaluates
+  each pair in a hard-killable child (the grader's `_isolated` evaluator; a stall becomes a stored None) -- use it if
+  a fill job ever stops making progress.
+
 - `extract` reads parsed/grades for every planned node; a node without a parsed file is `pending=True` and treated as
   absent by pools/readout. Only `e1-lock` refuses pending/ungraded rows; `score` does not check Gate 4 itself.
 - The pairs stage reads `analysis_inputs/draws.parquet` when present, else the legacy root directly
