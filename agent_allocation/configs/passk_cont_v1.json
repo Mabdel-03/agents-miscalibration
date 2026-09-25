@@ -1,0 +1,299 @@
+{
+  "spec_version": "1.0",
+  "study_id": "openrouter_passk_cont_v1",
+  "seed": 20260917,
+  "primary_model": "qwen/qwen3.8-27b",
+  "replication_model": null,
+  "endpoint_lock_file": "artifacts/locks/openrouter_endpoints.json",
+  "dataset_lock_file": "artifacts/locks/datasets.json",
+  "reasoning": {
+    "main_a": 1024,
+    "high_a": null,
+    "pilot_a": [
+      1024
+    ],
+    "text_completion_headroom": 4096,
+    "code_completion_headroom": 4096,
+    "requested_reasoning_max": 25600,
+    "budget_semantics": "forced_exact"
+  },
+  "sampling": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "api_seed_enabled": false,
+    "response_cache": false,
+    "n_per_request": 1
+  },
+  "provider": {
+    "allow_fallbacks": false,
+    "require_parameters": true,
+    "service_tier": "standard",
+    "resolve_exact_endpoint_in_preflight": true,
+    "auto_provider_switch": false,
+    "endpoint_tag": null
+  },
+  "protocols": {
+    "root_bank_size": 25,
+    "private_total_cycles": 25,
+    "team_sizes": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "peer_update_rounds": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "private_team_update_rounds": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "deep_main_multipliers": [
+      2,
+      4,
+      8,
+      16,
+      25
+    ],
+    "deep_high_multipliers": [],
+    "communication_mode": "synchronous",
+    "context_policy": "latest_visible_solution",
+    "cp_team_size": 4,
+    "cp_peer_rounds": 1,
+    "cp_private_rounds": 3,
+    "pooled_synthesis_team_size": 4,
+    "tools_during_generation": false
+  },
+  "benchmarks": [
+    {
+      "id": "aime",
+      "source": "MathArena/aime_2025+MathArena/aime_2026",
+      "grader": "math_verify",
+      "selector": "plurality",
+      "split": "train",
+      "report_label": "AIME 2025 + 2026"
+    },
+    {
+      "id": "hmmt",
+      "source": "MathArena/hmmt_feb_2025+MathArena/hmmt_feb_2026",
+      "grader": "math_verify",
+      "selector": "plurality",
+      "split": "train",
+      "report_label": "HMMT February 2025 + 2026"
+    },
+    {
+      "id": "omni_math_hard",
+      "source": "KbsdJames/Omni-MATH",
+      "grader": "math_verify",
+      "selector": "plurality",
+      "split": "test",
+      "min_difficulty": 7.0,
+      "report_label": "Omni-MATH, difficulty >= 7"
+    },
+    {
+      "id": "gpqa_diamond",
+      "source": "Idavidrein/gpqa",
+      "grader": "option_exact",
+      "selector": "plurality",
+      "split": "train",
+      "report_label": "GPQA-Diamond (seeded option shuffle)"
+    }
+  ],
+  "scheduler": {
+    "concurrency_start": 16,
+    "concurrency_max": 96,
+    "requests_per_second_start": 2,
+    "requests_per_second_max": 12,
+    "aimd_window_seconds": 60,
+    "increase_concurrency_by": 8,
+    "increase_rps_by": 1,
+    "decrease_factor": 0.5,
+    "max_transport_attempts": 3,
+    "connect_timeout_seconds": 15,
+    "read_timeout_seconds": 900,
+    "lease_heartbeat_seconds": 15,
+    "lease_stale_seconds": 900,
+    "max_active_waves": 6,
+    "wave_items": 16,
+    "max_calls_per_item_in_flight": 32,
+    "single_paid_dispatcher": true,
+    "checkpoint_after_every_response": true,
+    "api_sdk_automatic_retries": false
+  },
+  "grading": {
+    "offline_workers_max": 8,
+    "untrusted_code_network": false,
+    "cpu_quota_per_sandbox": 1,
+    "memory_mib_per_sandbox": 512,
+    "pids_limit": 64,
+    "stdout_limit_bytes": 65536,
+    "public_case_wall_seconds": 3,
+    "full_suite_wall_seconds": 60,
+    "official_evalplus_timeout_rules": true,
+    "grade_cache_by_code_hash": true,
+    "expose_private_tests_to_generation": false
+  },
+  "statistics": {
+    "bootstrap_replicates": 10000,
+    "cluster_unit": "benchmark_and_item",
+    "macro_weight_benchmarks_equally": true,
+    "bbh_macro_weight_subtasks_equally": true,
+    "test_grid_frontier_is_descriptive": true,
+    "no_outcome_based_main_sampling": true
+  },
+  "planning_prices": {
+    "verified_on": "2026-09-18",
+    "primary": {
+      "input_price": "0.24",
+      "output_price": "2.50"
+    },
+    "replication": null
+  },
+  "preset": "passk_cont_v1",
+  "panels": {
+    "pilot_items": 32,
+    "main_items": 96,
+    "high_items": 0,
+    "extension_items": 96,
+    "replication_items": 0
+  },
+  "budget": {
+    "cash_target_usd": 150,
+    "credit_ceiling_usd": 150,
+    "pilot_allowance_usd": 3,
+    "contingency_usd": 10,
+    "soft_admission_ceiling_usd": 142,
+    "reservation_multiplier": 1.1,
+    "max_unresolved_spend_usd": 2,
+    "optional_requires_core_completion": true
+  },
+  "execution": {
+    "default_mode": "dry_run",
+    "require_allow_paid_flag": true,
+    "main_requires_passed_pilot_and_frozen_locks": true
+  },
+  "forced": {
+    "enabled": true,
+    "endpoint": "completions",
+    "template": "qwen3.8-27b",
+    "template_file": "src/agent_allocation/api/templates/qwen3.8-27b.chat_template.jinja",
+    "ban_token_ids": [
+      248069,
+      248046,
+      248044
+    ],
+    "ban_bias": -100,
+    "bias_probe_token_id": 41674,
+    "think_close_text": "\n</think>\n\n",
+    "answer_attempts": 3,
+    "note": "THINK: raw prompt ending '<think>\\n', logit_bias ban, max_tokens=reasoning_budget; realized must equal budget with finish_reason=length. ANSWER: prompt+reasoning+think_close_text, max_tokens=headroom."
+  },
+  "calibration": {
+    "dev_items_per_benchmark": 8,
+    "forced_pass_at_1_min": 0.15,
+    "forced_pass_at_1_max": 0.85,
+    "fallback_easier": {
+      "hmmt": "omni_math_mid",
+      "aime": "math_level5"
+    },
+    "note": "pre-registered benchmark-level gate; no per-item selection"
+  },
+  "replication_grid": {
+    "root_bank_size": 16,
+    "private_total_cycles": 16,
+    "team_sizes": [
+      3,
+      5
+    ],
+    "peer_update_rounds": [
+      1,
+      2
+    ],
+    "private_team_update_rounds": [
+      1,
+      2
+    ],
+    "deep_multipliers": [
+      4,
+      16
+    ],
+    "optional": true,
+    "enabled": false
+  },
+  "shards": [
+    {
+      "id": "mancer",
+      "endpoint_tag": "mancer/fp8",
+      "share": 3
+    },
+    {
+      "id": "parasail",
+      "endpoint_tag": "parasail/fp8",
+      "share": 2
+    }
+  ],
+  "shards_note": "2026-09-18 screen: Mancer 2.8k tok/s @64 in flight, no 429s; Parasail 1.8k @64 with 27/64 429s (~40 in flight); DekaLLM refuses top_k; Cloudflare slow/expensive. Items assigned by a seeded benchmark-balanced hash; each shard gets share/sum(share) of the budget ceilings. passk_cont_v1 keeps seed 20260917 and 3:2 shares so shard-plan reproduces the legacy L96/D32 assignment; T200 (reserve panel) uses a 1:1 per-panel override.",
+  "scheduler_by_shard": {
+    "mancer": {
+      "concurrency_start": 48,
+      "requests_per_second_start": 6
+    },
+    "parasail": {
+      "concurrency_max": 40,
+      "requests_per_second_max": 8
+    }
+  },
+  "budget_by_shard": {
+    "mancer": {
+      "credit_ceiling_usd": 87,
+      "soft_admission_ceiling_usd": 82
+    },
+    "parasail": {
+      "credit_ceiling_usd": 63,
+      "soft_admission_ceiling_usd": 60
+    }
+  },
+  "budget_by_shard_note": "2026-09-25 passk_cont_v1 ($150 owner cap): forecast Mancer ~$56.4, Parasail ~$40.8 at forced_v2 per-shard unit costs; slices sum to 150/142. If key limit_remaining - 3 < 150 at launch, the conductor rescales to E=min(150, remaining-3) split 58:42.",
+  "passk": {
+    "spec": "expermt_agent_specs/Pass@K-Frontier-Cont/remaining_experiments_spec.md",
+    "plan": "/home/mabdel03/.claude/plans/i-want-to-run-sharded-swan.md",
+    "passk_seed": 20260925,
+    "legacy_run_root": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts",
+    "legacy_prompt_version": "prompts-v1-e998b556294c",
+    "expected_permaslug": "qwen/qwen3.8-27b-20260814",
+    "heldout": {
+      "v48": [
+        "v48_bank"
+      ],
+      "t200": [
+        "t200_bank",
+        "t200_diag"
+      ]
+    },
+    "t200_quota": {
+      "aime": 20,
+      "hmmt": 20,
+      "omni_math_hard": 100,
+      "gpqa_diamond": 60
+    },
+    "t200_shard_shares": {
+      "mancer": 1,
+      "parasail": 1
+    },
+    "c48_per_benchmark": 12,
+    "mixture_weights": {
+      "aime": 0.1,
+      "hmmt": 0.1,
+      "omni_math_hard": 0.5,
+      "gpqa_diamond": 0.3
+    },
+    "bootstrap_replicates": 10000,
+    "forecast_max_usd": 115
+  }
+}
