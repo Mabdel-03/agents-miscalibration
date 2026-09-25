@@ -71,7 +71,12 @@ submit(){  # $1 verb, $2 shard (or ""), extra NAME=VALUE pairs (no commas in val
   sbatch --parsable --job-name="passk-$verb${shard:+-$shard}" --export="$exports" "$SB" 2>>"$STUDY/logs/conductor_sbatch.err" | cut -d';' -f1
 }
 job_state(){ sacct -j "$1" -n -X -o State 2>/dev/null | head -1 | tr -d ' '; }
-job_rc(){ sacct -j "$1" -n -X -o ExitCode 2>/dev/null | head -1 | tr -d ' ' | cut -d: -f1; }
+job_rc(){  # the script's exit code for COMPLETED/FAILED; 99 for TIMEOUT/CANCELLED/NODE_FAIL/... (never "0" by accident)
+  case "$(job_state "$1")" in
+    COMPLETED|FAILED) sacct -j "$1" -n -X -o ExitCode 2>/dev/null | head -1 | tr -d ' ' | cut -d: -f1 ;;
+    *) echo 99 ;;
+  esac
+}
 job_done(){ case "$(job_state "$1")" in COMPLETED|FAILED|CANCELLED*|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY|PREEMPTED) return 0;; *) return 1;; esac; }
 wait_jobs(){  # wait until every job id given has ended
   local j
