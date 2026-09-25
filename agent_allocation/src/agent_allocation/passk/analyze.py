@@ -172,6 +172,11 @@ def cmd_passk_analyze(argv: list[str]) -> int:
     if args.stage == "seal":
         from agent_allocation.passk.seal import run_seal
         return run_seal(run_root)
+    if args.stage == "score":
+        from agent_allocation.passk.score import score
+        primary = score(run_root)
+        print(json.dumps({"locked": primary["locked"], "holm": primary["holm"]}, default=str))
+        return EXIT_OK
     if args.stage == "e0":
         from agent_allocation.passk.e0.run import run_e0
         run_e0(run_root, legacy_root=Path(args.legacy_root))
