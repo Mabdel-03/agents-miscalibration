@@ -8,7 +8,8 @@ malformed or whose artifacts changed never verifies, so the fence cannot lift by
 ``manifests/jobs/<partition>.jsonl`` of that shard while no verifying seal exists.
 
 ``join_labels`` follows the nextdyn pattern (``agents_scaling/src/agents_scaling/nextdyn/analysis.py``
-``write_held_out_predictions``/``join_labels``, vendored as ``_vendor/seal_join.py``): predictions are written and
+``write_held_out_predictions``/``join_labels``, vendored as ``_vendor/seal_join.py``; WP-M writes held-out
+predictions with ``write_held_out_predictions``, which refuses label-like columns): predictions are written and
 hashed first; labels are joined only against a verifying seal whose recorded prediction hash matches the file on
 disk.
 """
@@ -21,14 +22,16 @@ from typing import Any
 
 import pandas as pd
 
-__all__ = ["HELD_OUT_PARTITIONS", "SEAL_NAME", "SealError", "blocked_node_ids", "join_labels", "run_root_of",
-           "seal_path", "verify_seal"]
+from agent_allocation._vendor.seal_join import LabelJoinRefused, join_sealed, write_held_out_predictions
+
+__all__ = ["HELD_OUT_PARTITIONS", "SEAL_NAME", "LabelJoinRefused", "SealError", "blocked_node_ids", "join_labels",
+           "run_root_of", "seal_path", "verify_seal", "write_held_out_predictions"]
 
 HELD_OUT_PARTITIONS = ("v48_bank", "t200_bank", "t200_diag")
 SEAL_NAME = "SEAL_predictions.json"
 
 
-class SealError(RuntimeError):
+class SealError(LabelJoinRefused):
     """A label join was attempted without a verifying seal, or against changed predictions."""
 
 
@@ -90,10 +93,6 @@ def join_labels(run_root: str | Path, predictions_rel: str, labels: pd.DataFrame
     if seal is None:
         raise SealError(f"{run_root}: no verifying {SEAL_NAME}; labels stay fenced")
     recorded = seal["artifacts"].get(predictions_rel)
-    target = Path(run_root) / predictions_rel
     if recorded is None:
         raise SealError(f"{predictions_rel} is not in the seal")
-    if _sha256(target) != recorded:
-        raise SealError(f"{predictions_rel} changed after the seal")
-    predictions = pd.read_parquet(target)
-    return predictions.merge(labels, on=list(on), how="left", validate="many_to_one")
+    return join_sealed(Path(run_root) / predictions_rel, recorded, labels, on=on)

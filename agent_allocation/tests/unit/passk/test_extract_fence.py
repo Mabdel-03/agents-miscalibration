@@ -81,3 +81,11 @@ def test_tampered_draws_detected(tmp_path):
     frame.iloc[:1].to_parquet(path)
     with pytest.raises(ValueError):
         load_draws(tmp_path)
+
+
+def test_held_out_predictions_refuse_label_columns(tmp_path):
+    from agent_allocation.passk.labels import LabelJoinRefused, write_held_out_predictions
+    with pytest.raises(LabelJoinRefused):
+        write_held_out_predictions(tmp_path / "p.parquet", pd.DataFrame({"item_id": ["a"], "correct": [True]}))
+    digest = write_held_out_predictions(tmp_path / "p.parquet", pd.DataFrame({"item_id": ["a"], "p": [0.5]}))
+    assert digest == hashlib.sha256((tmp_path / "p.parquet").read_bytes()).hexdigest()
