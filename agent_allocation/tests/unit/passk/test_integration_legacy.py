@@ -79,9 +79,14 @@ def test_pipeline_on_real_legacy(tmp_path, legacy_root, cache_path):
 
     payload = e1_lock(run_root)
     assert payload["selected"] in ("8x2", "4x4", "2x8")
-    assert payload["table"]["1x16"]["macro"] == pytest.approx(0.7917, abs=5e-5)
-    # 8x2 over copies of the deep r0 answer delivers deep/2's answer; same for 4x4 and 2x8
-    legacy_deep = legacy[(legacy.kind == "deep")].groupby(["allowance_a", "benchmark"]).correct.mean()
+    # the lock compares on one common known cohort: the two legacy deep unknowns (hmmt/2025/18 @4A,
+    # omni_math_hard/473 @2A) drop out, leaving the 94-item cohort whose deep/16 macro is 0.7853
+    assert payload["cohort"]["excluded_unknown"] == ["hmmt/2025/18", "omni_math_hard/473"]
+    assert payload["cohort"]["n_common"] == 94
+    assert payload["table"]["1x16"]["macro"] == pytest.approx(0.7853, abs=5e-5)
+    # 8x2 over copies of the deep r0 answer delivers deep/2's answer; same for 4x4 and 2x8 (on the common cohort)
+    common = legacy[~legacy.item_id.isin(payload["cohort"]["excluded_unknown"])]
+    legacy_deep = common[(common.kind == "deep")].groupby(["allowance_a", "benchmark"]).correct.mean()
     for config_id, a in (("8x2", 2), ("4x4", 4), ("2x8", 8)):
         assert payload["table"][config_id]["macro"] == pytest.approx(legacy_deep.loc[a].mean(), abs=1e-9)
 

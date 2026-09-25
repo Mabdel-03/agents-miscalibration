@@ -64,6 +64,13 @@ def e1_lock(run_root: Path, *, draws=None, cache=None) -> dict:
     if incomplete:
         raise NotReady(f"E1 lock needs every L96 item in each candidate allocation; incomplete: {incomplete}")
     metrics = pool_metrics(readout_pools(pools, draws, cache=cache, mode="passk"), draws)
+    # One common cohort for the comparison: items whose tie-averaged outcome is known in all three candidates (an
+    # unknown grade in one allocation must not silently change the item set another allocation is averaged over).
+    known = metrics[metrics["config_id"].isin(E1_CANDIDATES)].pivot_table(
+        index="item_id", columns="config_id", values="S_tie", aggfunc="first")
+    common = sorted(known.dropna(subset=list(E1_CANDIDATES)).index)
+    excluded = sorted(set(metrics["item_id"]) - set(common))
+    metrics = metrics[metrics["item_id"].isin(common)]
     table = {}
     for config_id, sub in metrics.groupby("config_id"):
         fam = sub.groupby("benchmark")["S_tie"].mean().to_dict()
@@ -73,8 +80,9 @@ def e1_lock(run_root: Path, *, draws=None, cache=None) -> dict:
     calls = {c: int(c.split("x")[0]) for c in E1_CANDIDATES}
     best = sorted(E1_CANDIDATES, key=lambda c: (-round(table[c]["mixture"], 12), calls[c]))[0]
     payload = {"version": "passk-e1-lock-v1", "selected": best, "rule": "argmax L96 mixture-weighted tie-averaged "
-               "plurality accuracy over {8x2,4x4,2x8}; ties -> fewer calls", "weights": MIXTURE_WEIGHTS,
-               "table": table, "reference_1x16": table.get("1x16")}
+               "plurality accuracy over {8x2,4x4,2x8} on the common known cohort; ties -> fewer calls",
+               "weights": MIXTURE_WEIGHTS, "table": table, "reference_1x16": table.get("1x16"),
+               "cohort": {"n_common": len(common), "excluded_unknown": excluded}}
     _write_once_json(Path(run_root) / "sealed" / "e1_selection.json", payload, compare_keys=("selected",))
     _ = pd  # frame library imported for the helpers above
     return payload

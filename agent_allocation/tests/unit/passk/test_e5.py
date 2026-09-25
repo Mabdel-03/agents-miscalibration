@@ -184,7 +184,9 @@ def test_observed_outcomes_use_seeded_readouts_and_absent_members():
                           "a": [1, 1], "member_ids": [["a", "b"], ["c"]]})
     cls = ClassSource(draws=draws)
     obs = observed_pool_table(pools, draws, cls).set_index("pool_id")
-    assert obs.loc["p", "plurality"] == 0.5 and obs.loc["q", "coverage"] == 0.0
+    # PREREG: an all-absent pool is missing in the primary analysis (never a delivered 0)
+    assert obs.loc["p", "plurality"] == 0.5 and np.isnan(obs.loc["q", "coverage"]) and bool(obs.loc["q", "all_absent"])
+    assert np.isnan(obs.loc["q", "plurality"]) and not bool(obs.loc["p", "all_absent"])
     ro = pd.DataFrame({"pool_id": ["p"], "delivered_correct": [True]})
     obs = observed_pool_table(pools, draws, cls, ro).set_index("pool_id")
     assert obs.loc["p", "plurality"] == 1.0 and obs.loc["p", "plurality_tieavg"] == 0.5

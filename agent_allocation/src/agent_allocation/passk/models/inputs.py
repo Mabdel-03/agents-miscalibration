@@ -207,10 +207,12 @@ def observed_pool_table(pools: pd.DataFrame, draws: pd.DataFrame, cls: ClassSour
     correctness is used and the tie-averaged value is kept as ``plurality_tieavg``."""
     lab_map = {c: label_value(v) for c, v in zip(draws.candidate_id, draws.get("correct", pd.Series(
         [None] * len(draws))))}
+    absent_ids: set[str] = set()
     if "absent" in draws.columns:            # an absent member (no candidate) can never cover: 0, not unknown
         for c, ab in zip(draws.candidate_id, draws["absent"]):
             if ab is True or (isinstance(ab, (bool, np.bool_)) and bool(ab)):
                 lab_map[c] = 0.0
+                absent_ids.add(c)
     seeded = {}
     if readouts is not None and len(readouts) and "delivered_correct" in readouts.columns:
         seeded = {str(p): label_value(v) for p, v in zip(readouts.pool_id, readouts.delivered_correct)}
@@ -219,7 +221,13 @@ def observed_pool_table(pools: pd.DataFrame, draws: pd.DataFrame, cls: ClassSour
         mem = list(p.member_ids)
         out = pool_outcome(mem, cls.classes(p.pool_id, mem), lab_map)
         out["plurality_tieavg"] = out["plurality"]
-        if str(p.pool_id) in seeded:
+        # PREREG (same rule as passk.metrics): an all-absent pool is missing in the primary analysis (a failure only
+        # in the operational analysis), never a delivered 0.
+        out["all_absent"] = bool(mem) and all(m in absent_ids for m in mem)
+        if out["all_absent"]:
+            out["coverage"] = out["plurality"] = out["plurality_tieavg"] = np.nan
+            out["plurality_source"] = "all_absent"
+        elif str(p.pool_id) in seeded:
             out["plurality"] = seeded[str(p.pool_id)]
             out["plurality_source"] = "readouts_seeded"
         else:
