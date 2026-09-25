@@ -33,7 +33,7 @@ from agent_allocation.passk.models import glm as glm_mod
 from agent_allocation.passk.models.answers import item_classes, modal_margin, simulate_pools
 from agent_allocation.passk.models.inputs import (
     BENCHMARKS, CONFIGS_16A, CONFIGS_8A, CROSSOVER_K, DEPTHS, PASSK_SEED, PREDICT_CONFIGS, ClassSource,
-    build_prefix_pools, config_id, fitting_draws, label_value, load_analysis_inputs, load_panels,
+    build_prefix_pools, config_id, fitting_draws, label_value, load_analysis_inputs, load_panels, load_readouts,
     observed_pool_table, parse_config, pool_outcome, sha256_file,
 )
 from agent_allocation.passk.models.response import (
@@ -138,7 +138,7 @@ def fit_and_predict(run_root: Path | str | None = None, *, draws: pd.DataFrame |
     rng = np.random.default_rng(seed)
     fit = fitting_draws(draws, c48)
     _guard(fit)
-    cls = ClassSource(draws=draws, table=classes)
+    cls = ClassSource(draws=draws, table=classes, pools=pools)
     counts = cell_counts(fit)
     pooled = fit_pooled(fit, seed=seed)
     bench = dict(zip(fit.item_id, fit.benchmark))
@@ -335,7 +335,7 @@ def _write(out_dir: Path, res: dict, *, seed: int, S: int, inner: int, items: li
 
 # ---------------------------------------------------------------------- scoring (after the V48 release)
 def observed_v48(draws: pd.DataFrame, pools: pd.DataFrame | None, cls: ClassSource,
-                 v48: list[str]) -> pd.DataFrame:
+                 v48: list[str], readouts: pd.DataFrame | None = None) -> pd.DataFrame:
     vd = draws[draws.partition == "v48_bank"]
     local = build_prefix_pools(vd, v48, needed_configs(), "V48")
     if pools is not None:
@@ -346,7 +346,7 @@ def observed_v48(draws: pd.DataFrame, pools: pd.DataFrame | None, cls: ClassSour
         vp = pd.concat([vp, extra], ignore_index=True)
     else:
         vp = local
-    return observed_pool_table(vp, vd, cls)
+    return observed_pool_table(vp, vd, cls, readouts)
 
 
 def score(run_root: Path | str | None = None, *, draws: pd.DataFrame | None = None, pools=None, classes=None,
@@ -362,7 +362,8 @@ def score(run_root: Path | str | None = None, *, draws: pd.DataFrame | None = No
             draws, pools, classes = load_analysis_inputs(Path(run_root))
         if v48 is None:
             v48 = list(load_panels(Path(run_root))["V48"])
-        observed = observed_v48(draws, pools, ClassSource(draws=draws, table=classes), v48)
+        readouts = load_readouts(Path(run_root)) if run_root is not None else None
+        observed = observed_v48(draws, pools, ClassSource(draws=draws, table=classes, pools=pools), v48, readouts)
     obs = observed[["item_id", "config_id", "coverage", "plurality"]]
     res = score_frames(pred, cross, pop, obs)
     if write:

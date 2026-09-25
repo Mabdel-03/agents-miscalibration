@@ -159,3 +159,33 @@ def test_class_table_is_used_when_complete_and_falls_back_otherwise():
     cls.classes("s2", ids)
     assert cls.stats() == {"source": "analysis_inputs/classes.parquet", "scopes_from_table": 1,
                            "scopes_exact_fallback": 1}
+
+
+def test_class_source_reads_wpa_class_rows_and_aliases():
+    draws, panels = synth(n_dev=2, n_t200=1)
+    item = panels["C48"][0]
+    ids = list(draws[(draws.item_id == item) & (draws.allowance_a == 1)].sort_values("replicate").candidate_id[:4])
+    pools = pd.DataFrame({"pool_id": ["P-fit", "P-diag"], "item_id": [item, item], "config_id": ["c48fit", "diag5"]})
+    table = pd.DataFrame({"pool_id": ["P-fit", "P-fit"], "class_id": ["math:1", "math:2"],
+                          "member_ids": [[ids[0], ids[2]], [ids[1]]]})
+    cls = ClassSource(draws=draws, table=table, pools=pools)
+    got = cls.classes(f"e2fit:{item}", ids)
+    assert got == {ids[0]: "math:1", ids[1]: "math:2", ids[2]: "math:1", ids[3]: None}   # ids[3]: no vote
+    assert cls.stats()["scopes_from_table"] == 1
+    cls.classes(f"diag5:{item}", ids)                     # alias exists but no class rows -> exact fallback
+    assert cls.stats()["scopes_exact_fallback"] == 1
+
+
+def test_observed_outcomes_use_seeded_readouts_and_absent_members():
+    from agent_allocation.passk.models.inputs import observed_pool_table
+    draws = pd.DataFrame({"candidate_id": ["a", "b", "c"], "item_id": ["x"] * 3, "vote_exact_key": ["1", "2", None],
+                          "option": [None] * 3, "correct": [True, False, None], "absent": [False, False, True]})
+    pools = pd.DataFrame({"pool_id": ["p", "q"], "item_id": ["x", "x"], "config_id": ["2x1", "1x1"], "n": [2, 1],
+                          "a": [1, 1], "member_ids": [["a", "b"], ["c"]]})
+    cls = ClassSource(draws=draws)
+    obs = observed_pool_table(pools, draws, cls).set_index("pool_id")
+    assert obs.loc["p", "plurality"] == 0.5 and obs.loc["q", "coverage"] == 0.0
+    ro = pd.DataFrame({"pool_id": ["p"], "delivered_correct": [True]})
+    obs = observed_pool_table(pools, draws, cls, ro).set_index("pool_id")
+    assert obs.loc["p", "plurality"] == 1.0 and obs.loc["p", "plurality_tieavg"] == 0.5
+    assert obs.loc["p", "plurality_source"] == "readouts_seeded"

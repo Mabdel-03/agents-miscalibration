@@ -21,7 +21,8 @@ from agent_allocation.passk.features import FEATURES, LATENCY, diag_features
 from agent_allocation.passk.models import glm as glm_mod
 from agent_allocation.passk.models.inputs import (
     BENCHMARKS, CONFIGS_16A, CONFIGS_8A, MIXTURE, PASSK_SEED, PREDICT_CONFIGS, ClassSource, build_prefix_pools,
-    fitting_draws, label_value, load_analysis_inputs, load_assignment_t200, load_panels, observed_pool_table,
+    fitting_draws, label_value, load_analysis_inputs, load_assignment_t200, load_panels, load_readouts,
+    observed_pool_table,
     parse_config, sha256_file,
 )
 from agent_allocation.passk.models.predictors import (
@@ -152,7 +153,7 @@ def fit_and_predict(run_root: Path | str | None = None, *, draws: pd.DataFrame |
         if col in draws.columns and draws.loc[draws.partition.isin(["t200_diag", "t200_bank", "v48_bank"]),
                                               col].notna().any():
             raise RuntimeError(f"held-out labels present in draws ({col}); E5 fits only before the release")
-    cls = ClassSource(draws=draws, table=classes)
+    cls = ClassSource(draws=draws, table=classes, pools=pools)
     l96, t200, c48 = list(panels["L96"]), list(panels["T200"]), list(panels.get("C48", []))
     feats_all = diag_features(draws, cls, pools=pools)
     dev_feats = feats_all[feats_all.item_id.isin(l96)]
@@ -208,13 +209,14 @@ def _write(out_dir: Path, res: dict, *, seed: int, n_sim: int, cls: ClassSource)
 
 
 # ---------------------------------------------------------------------- evaluation
-def observed_t200(draws: pd.DataFrame, pools: pd.DataFrame | None, cls: ClassSource, t200) -> pd.DataFrame:
+def observed_t200(draws: pd.DataFrame, pools: pd.DataFrame | None, cls: ClassSource, t200,
+                  readouts: pd.DataFrame | None = None) -> pd.DataFrame:
     td = draws[draws.partition == "t200_bank"]
     if pools is not None:
         tp = pools[(pools.panel == "T200") & pools.config_id.isin(PREDICT_CONFIGS)]
     else:
         tp = build_prefix_pools(td, t200, PREDICT_CONFIGS, "T200")
-    return observed_pool_table(tp, td, cls).rename(columns={"plurality": "delivered"})
+    return observed_pool_table(tp, td, cls, readouts).rename(columns={"plurality": "delivered"})
 
 
 def _weighted(values: pd.Series, bench: pd.Series, weights: dict) -> float:
@@ -335,7 +337,8 @@ def score(run_root: Path | str | None = None, *, draws=None, pools=None, classes
             draws, pools, classes = load_analysis_inputs(Path(run_root))
         if t200 is None:
             t200 = list(load_panels(Path(run_root))["T200"])
-        observed = observed_t200(draws, pools, ClassSource(draws=draws, table=classes), t200)
+        readouts = load_readouts(Path(run_root)) if run_root is not None else None
+        observed = observed_t200(draws, pools, ClassSource(draws=draws, table=classes, pools=pools), t200, readouts)
     res = score_frames(pred, observed)
     if write:
         out = Path(out_dir) if out_dir is not None else Path(run_root) / "scores" / "e5"
@@ -365,7 +368,7 @@ def validate_split(draws: pd.DataFrame, items: list[str], *, classes=None, pools
                    fold: int = 0) -> dict:
     """Fit on the development items minus a hashed held-out subset, predict the subset's diag features (legacy slots
     20-24), and score against the subset's own development pools (prefix pools; whatever configurations exist)."""
-    cls = ClassSource(draws=draws, table=classes)
+    cls = ClassSource(draws=draws, table=classes, pools=pools)
     bench = dict(zip(draws.item_id, draws.benchmark))
     train, test = holdout_split({i: bench[i] for i in items}, n_test_per_bench, fold=fold)
     feats_all = diag_features(draws, cls, pools=pools)

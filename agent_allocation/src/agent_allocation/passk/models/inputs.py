@@ -116,10 +116,17 @@ def exact_classes(draws: pd.DataFrame, scope_id: str, member_ids: list[str]) -> 
 
 @dataclass
 class ClassSource:
-    """Scope -> {candidate_id: class_id|None}; WP-A classes when given, else the exact-key fallback."""
+    """Scope -> {candidate_id: class_id|None}; WP-A classes when given, else the exact-key fallback.
+
+    Accepts WP-A's ``classes.parquet`` (one row per class: ``pool_id, class_id, member_ids``; a scope with no rows was
+    skipped for a missing pair or has no voters) or a member-level table (``scope_id, candidate_id, class_id``).
+    With the WP-A schema, a scope that has rows maps its non-listed members to None (no vote). ``pools`` supplies the
+    aliases ``e2fit:<item>`` -> the item's ``c48fit`` scope and ``diag5:<item>`` -> its ``diag5`` pool.
+    """
 
     draws: pd.DataFrame
     table: pd.DataFrame | None = None
+    pools: pd.DataFrame | None = None
     n_table: int = 0
     n_fallback: int = 0
 
@@ -130,14 +137,33 @@ class ClassSource:
     def stats(self) -> dict:
         return {"source": self.source, "scopes_from_table": self.n_table, "scopes_exact_fallback": self.n_fallback}
 
+    def _index(self) -> None:
+        self._by_scope: dict[str, dict] = {}
+        self._complete: set[str] = set()
+        t = self.table
+        if "member_ids" in t.columns:
+            key = "pool_id" if "pool_id" in t.columns else "scope_id"
+            for sid, cid, mem in zip(t[key], t["class_id"], t["member_ids"]):
+                self._by_scope.setdefault(str(sid), {}).update({str(m): cid for m in list(mem)})
+                self._complete.add(str(sid))
+        else:
+            for sid, g in t.groupby("scope_id"):
+                self._by_scope[str(sid)] = dict(zip(g.candidate_id, g.class_id))
+        self._alias: dict[str, str] = {}
+        if self.pools is not None and "config_id" in self.pools.columns:
+            for r in self.pools[self.pools.config_id.isin(["c48fit", "diag5"])].itertuples(index=False):
+                tag = "e2fit" if r.config_id == "c48fit" else "diag5"
+                self._alias[f"{tag}:{r.item_id}"] = str(r.pool_id)
+
     def classes(self, scope_id: str, member_ids: list[str]) -> dict[str, str | None]:
         if self.table is not None:
             if not hasattr(self, "_by_scope"):
-                self._by_scope = {k: dict(zip(g.candidate_id, g.class_id)) for k, g in self.table.groupby("scope_id")}
-            m = self._by_scope.get(scope_id)
-            if m is not None and all(c in m for c in member_ids):
+                self._index()
+            sid = self._alias.get(scope_id, scope_id)
+            m = self._by_scope.get(sid)
+            if m is not None and (sid in self._complete or all(c in m for c in member_ids)):
                 self.n_table += 1
-                return {c: (None if pd.isna(m.get(c)) else m.get(c)) for c in member_ids}
+                return {c: (None if (m.get(c) is None or pd.isna(m.get(c))) else m.get(c)) for c in member_ids}
         self.n_fallback += 1
         return exact_classes(self.draws, scope_id, member_ids)
 
@@ -174,15 +200,37 @@ def pool_outcome(member_ids: list[str], classes: dict[str, str | None], lab_map:
     return {"coverage": cov, "plurality": plur}
 
 
-def observed_pool_table(pools: pd.DataFrame, draws: pd.DataFrame, cls: ClassSource) -> pd.DataFrame:
+def observed_pool_table(pools: pd.DataFrame, draws: pd.DataFrame, cls: ClassSource,
+                        readouts: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Observed coverage and plurality per pool. ``plurality`` is the tie-averaged value unless WP-A ``readouts``
+    (``pool_id, delivered_correct`` under the seeded passk tie rule) are given, in which case the seeded delivered
+    correctness is used and the tie-averaged value is kept as ``plurality_tieavg``."""
     lab_map = {c: label_value(v) for c, v in zip(draws.candidate_id, draws.get("correct", pd.Series(
         [None] * len(draws))))}
+    if "absent" in draws.columns:            # an absent member (no candidate) can never cover: 0, not unknown
+        for c, ab in zip(draws.candidate_id, draws["absent"]):
+            if ab is True or (isinstance(ab, (bool, np.bool_)) and bool(ab)):
+                lab_map[c] = 0.0
+    seeded = {}
+    if readouts is not None and len(readouts) and "delivered_correct" in readouts.columns:
+        seeded = {str(p): label_value(v) for p, v in zip(readouts.pool_id, readouts.delivered_correct)}
     rows = []
     for p in pools.itertuples(index=False):
         mem = list(p.member_ids)
         out = pool_outcome(mem, cls.classes(p.pool_id, mem), lab_map)
+        out["plurality_tieavg"] = out["plurality"]
+        if str(p.pool_id) in seeded:
+            out["plurality"] = seeded[str(p.pool_id)]
+            out["plurality_source"] = "readouts_seeded"
+        else:
+            out["plurality_source"] = "tie_averaged"
         rows.append(dict(pool_id=p.pool_id, item_id=p.item_id, config_id=p.config_id, n=p.n, a=p.a, **out))
     return pd.DataFrame(rows)
+
+
+def load_readouts(run_root: Path) -> pd.DataFrame | None:
+    path = Path(run_root) / "analysis_inputs" / "readouts.parquet"
+    return pd.read_parquet(path) if path.exists() else None
 
 
 def load_analysis_inputs(run_root: Path) -> tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None]:

@@ -13,7 +13,7 @@ numpy/scipy/pandas only; no new dependency, no change to `contracts.py`, `Genera
 | P3 | `passk/features.py`, `passk/models/predictors.py`, `e5.py` | done, tested. Entry points `e5.fit_and_predict(run_root)` → `sealed/t200/`, `e5.score(run_root)` → `scores/e5/`. |
 | dev shim | `tests/unit/passk/devshim.py` | **DEV SHIM, tests only.** Builds draws-shaped frames from the read-only legacy root (candidates.parquet + shards/*/parsed). Kept out of `passk/models` so the seal static scan stays clean. |
 
-Tests: `tests/unit/passk/{test_glm,test_e2,test_e5,test_legacy_integration,test_run_root_entrypoints}.py`, 29 passed (about 30 s); the full `tests/unit` suite was green (998 passed) at 14:56. The legacy
+Tests: `tests/unit/passk/{test_glm,test_e2,test_e5,test_legacy_integration,test_run_root_entrypoints}.py`, 31 passed (about 30 s); the full `tests/unit` suite was green (998 passed) at 14:56. The legacy
 integration tests skip when the legacy root is absent.
 
 ### E2 outputs (`sealed/v48/`, write-once: refuses to overwrite)
@@ -75,17 +75,20 @@ legacy-size data.
 1. **Wire into WP-A's `passk-analyze`**: stage `e2-fit` → `e2.fit_and_predict(run_root)`, `e5-fit` →
    `e5.fit_and_predict(run_root)`, `score` → `e2.score(run_root)` and `e5.score(run_root)`. Thin CLIs also exist:
    `python -m agent_allocation.passk.models.e2 fit|score --run-root R` (the same for e5).
-2. **Agree the classes schema with WP-A.** WP-M reads optional `analysis_inputs/classes.parquet` with columns
-   `scope_id, candidate_id, class_id` (null = no vote). Scope ids:
-   - one per pool, as `pool_id`;
-   - one per diagnostic pool, as the `diag5` `pool_id`, falling back to `diag5:<item>`;
-   - one per C48 item over its fitting draws, as **`e2fit:<item_id>`**.
+2. **Classes schema: aligned with WP-A's `extract._derived_tables`** (checked against the WP-A worktree at `416c599`).
+   `ClassSource` reads WP-A's `classes.parquet` (one row per class: `pool_id, class_id, member_ids`); a scope with
+   rows maps its unlisted members to None, meaning no vote. It also reads a member-level table (`scope_id,
+   candidate_id, class_id`). Aliases come from `pools.parquet`:
+   - `e2fit:<item>` → the item's `c48fit` scope;
+   - `diag5:<item>` → its `diag5` pool.
 
-   A scope that is missing, or that lacks any member, falls back to exact vote keys. The manifest `classes` field
-   counts the fallbacks, and it should be 0 in production.
-3. **Readout alignment.** The observed pool outcomes use the tie-averaged plurality, which is the expectation of the
-   seeded rule. If the PREREG requires the seeded delivered answer for the primary Brier, pass WP-A's readout as
-   `observed=` (columns `item_id, config_id, coverage, delivered`) to `e5.score` / `e2.score`.
+   A scope with no rows (a missing pair, or no voters) falls back to exact vote keys. The fallback is counted in
+   `manifest.json` (`classes.scopes_exact_fallback`) and should be 0 in production. Re-check this if WP-A renames
+   `c48fit`/`diag5` or the class-row columns.
+3. **Readout alignment: done.** When `analysis_inputs/readouts.parquet` exists (`pool_id, delivered_correct`),
+   `e2.score`/`e5.score` use the seeded delivered correctness as the observed plurality/delivered outcome and keep the
+   tie-averaged value as `plurality_tieavg`. Training targets stay tie-averaged, which is the expectation of the
+   seeded rule. Absent members count as not covering (0), not unknown.
 4. Bootstrap and Holm for P2 vs P1 belong to WP-A `stats.py`, fed from `scores/e5/item_brier.parquet`.
 5. Possible refinements, not required:
    - a random depth slope in P2;
@@ -110,7 +113,7 @@ cd /orcd/data/tpoggio/001/mabdel03/agents_scaling_passk_wpM/agent_allocation
 export UV_CACHE_DIR=/orcd/data/tpoggio/001/mabdel03/.cache/uv HF_HOME=/orcd/data/tpoggio/001/mabdel03/.cache/huggingface \
   HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 MPLCONFIGDIR=/orcd/data/tpoggio/001/mabdel03/.cache/matplotlib \
   PYTHONNOUSERSITE=1 OPENBLAS_NUM_THREADS=1
-.venv/bin/python -m pytest -q tests/unit/passk            # 29 tests, about 30 s
+.venv/bin/python -m pytest -q tests/unit/passk            # 31 tests, about 30 s
 # after WP-A extract has written analysis_inputs/ and splits.json exists (pre-seal):
 .venv/bin/python -m agent_allocation.passk.models.e2 fit --run-root /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/passk_cont_v1
 .venv/bin/python -m agent_allocation.passk.models.e5 fit --run-root /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/passk_cont_v1
