@@ -195,6 +195,12 @@ def run_e0(run_root: Path, *, legacy_root: Path = LEGACY_ROOT, draws: pd.DataFra
     catalog.to_parquet(out / "candidate_catalog.parquet", index=False)
     (out / "reuse_manifest.json").write_text(json.dumps(_reuse_manifest(draws), indent=1, sort_keys=True) + "\n")
     plots = _plots(metrics, out)
+    from agent_allocation.passk.costs import logical_ledger, physical_ledger, physical_summary
+    ledger = physical_ledger(draws)
+    physical_summary(ledger).to_csv(out / "legacy_physical_ledger.csv", index=False)
+    logical = logical_ledger(pools[pools["config_id"] != "diag5"], draws)
+    logical.groupby("config_id")[["nominal_C_tokens", "cost_usd", "think_out", "answer_out"]].mean() \
+        .reset_index().to_csv(out / "legacy_logical_ledger_by_config.csv", index=False)
 
     present = draws[~draws["absent"].astype(bool)]
     gen_ids = pd.concat([present["generation_id_think"], present["generation_id_answer"]]).dropna()
@@ -227,7 +233,8 @@ def run_e0(run_root: Path, *, legacy_root: Path = LEGACY_ROOT, draws: pd.DataFra
                    if len(clean) else None, "drift_eligible": int(rep["drift_eligible"].sum()),
                    "drift_mismatches": int((~rep["match"] & rep["drift_eligible"]).sum()),
                    "gate_100pct_clean": bool(len(clean) and clean["match"].all())},
-        "pair_cache_rows": len(cache), "plots": plots, "mixture_weights": MIXTURE_WEIGHTS,
+        "pair_cache_rows": len(cache), "plots": plots,
+        "legacy_bank_cost_usd": float(ledger["cost_usd"].sum()), "legacy_bank_requests": int(len(ledger)), "mixture_weights": MIXTURE_WEIGHTS,
     }
     (out / "audit.json").write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n")
     return audit

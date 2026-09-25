@@ -36,6 +36,15 @@ def numbers(run_root: Path) -> dict:
     primary = _json(run_root / "scored" / "primary.json")
     if primary:
         N["primary"] = primary
+    draws_path = run_root / "analysis_inputs" / "draws.parquet"
+    if draws_path.exists():                                                   # T2 physical ledger
+        from agent_allocation.passk.costs import physical_ledger, physical_summary
+        ledger = physical_ledger(pd.read_parquet(draws_path))
+        by = physical_summary(ledger, by=("source", "partition"))
+        N["costs"] = {"total_usd": float(ledger["cost_usd"].sum()), "requests": int(len(ledger)),
+                      "by_partition": {f"{r.source}/{r.partition}": {"usd": float(r.cost_usd or 0),
+                                                                     "requests": int(r.requests)}
+                                       for r in by.itertuples()}}
     menus = run_root / "scored" / "menus.csv"
     if menus.exists():
         m = pd.read_csv(menus)
@@ -81,6 +90,13 @@ def tables(N: dict) -> None:
         (out / "t1_cohorts.tex").write_text(
             "\\begin{tabular}{lrrr}\\toprule cohort & 96 & 94 & 93\\\\\\midrule items & "
             f"{c['96']} & {c['94']} & {c['93']}\\\\\\bottomrule\\end{{tabular}}\n")
+    if "costs" in N:                                                         # T2 costs (physical)
+        esc = "\\_"
+        rows = [k.replace("_", esc) + f" & {v['requests']:,} & {v['usd']:.2f}\\\\"
+                for k, v in sorted(N["costs"]["by_partition"].items())]
+        (out / "t2_costs.tex").write_text(
+            "\\begin{tabular}{lrr}\\toprule source/partition & requests & USD\\\\\\midrule\n" + "\n".join(rows)
+            + "\n\\bottomrule\\end{tabular}\n")
     if "primary" in N and N["primary"].get("holm"):                          # T3 primary tests
         p = N["primary"]
         rows = []
