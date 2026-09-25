@@ -16,7 +16,7 @@ import pandas as pd
 from agent_allocation._vendor.ard_stats import Resampler, holm, mean_ci, paired_contrast
 
 __all__ = ["DOMAINS", "MACRO", "MIXTURE", "N_PRIMARY", "N_REPLICATES", "SEED", "contrast", "holm2", "level",
-           "resampler"]
+           "menu_contrasts", "resampler"]
 
 DOMAINS = ("aime", "hmmt", "omni_math_hard", "gpqa_diamond")
 MIXTURE = {"aime": 0.10, "hmmt": 0.10, "omni_math_hard": 0.50, "gpqa_diamond": 0.30}
@@ -40,13 +40,13 @@ def resampler(frame: pd.DataFrame, *, n_resamples: int = N_REPLICATES, seed: int
 
 
 def contrast(items: pd.DataFrame, a: str, b: str, *, weights: Mapping[str, float] = MIXTURE,
-             n_resamples: int = N_REPLICATES, seed: int = SEED) -> dict:
+             n_resamples: int = N_REPLICATES, seed: int = SEED, n_family: int = N_PRIMARY) -> dict:
     """Paired contrast mean(a − b) over items where both are known; one row per item (``item_id, benchmark``)."""
     known = items.dropna(subset=[a, b]).copy()
     known["_diff"] = known[a].astype(float) - known[b].astype(float)
     rs = resampler(known, n_resamples=n_resamples, seed=seed)
     result = paired_contrast(_by_domain(known, "_diff"), rs, domains=DOMAINS, weights=dict(weights),
-                             n_primary=N_PRIMARY)
+                             n_primary=n_family)
     result["n_items"] = int(len(known))
     result["n_dropped_unknown"] = int(len(items) - len(known))
     return result
@@ -57,6 +57,34 @@ def level(items: pd.DataFrame, value: str, *, weights: Mapping[str, float] = MAC
     known = items.dropna(subset=[value])
     rs = resampler(known, n_resamples=n_resamples, seed=seed)
     return mean_ci(_by_domain(known, value), rs, domains=DOMAINS, weights=dict(weights))
+
+
+def menu_contrasts(metrics: pd.DataFrame, menu: tuple[str, ...], reference: str, *, value: str = "S_known",
+                   weights: Mapping[str, float] = MACRO, n_resamples: int = N_REPLICATES,
+                   seed: int = SEED) -> pd.DataFrame:
+    """Secondary: every menu configuration vs ``reference`` per panel, with Bonferroni-simultaneous intervals
+    (``ci_primary_bonferroni`` over the ``len(menu) - 1`` comparisons of the menu)."""
+    rows = []
+    others = [c for c in menu if c != reference]
+    for panel, sub in metrics[metrics["config_id"].isin(menu)].groupby("panel"):
+        wide = sub.pivot_table(index=["item_id", "benchmark"], columns="config_id", values=value, aggfunc="first")
+        if reference not in wide:
+            continue
+        items = wide.reset_index()
+        for config_id in others:
+            if config_id not in items or items[[config_id, reference]].dropna().empty:
+                continue
+            try:
+                r = contrast(items, config_id, reference, weights=weights, n_resamples=n_resamples, seed=seed,
+                             n_family=len(others))
+            except Exception as exc:  # noqa: BLE001 - too few items in a panel: reported, not fatal
+                rows.append({"panel": panel, "config_id": config_id, "reference": reference, "error": str(exc)})
+                continue
+            rows.append({"panel": panel, "config_id": config_id, "reference": reference, "estimate": r["estimate"],
+                         "ci95_lo": r["ci95_studentized"][0], "ci95_hi": r["ci95_studentized"][1],
+                         "simul_lo": r["ci_primary_bonferroni"][0], "simul_hi": r["ci_primary_bonferroni"][1],
+                         "p": r["p"], "n_items": r["n_items"]})
+    return pd.DataFrame(rows)
 
 
 def holm2(p_mixed_vs_deep: float, p_p2_vs_p1: float) -> dict:

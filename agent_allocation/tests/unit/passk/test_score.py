@@ -52,3 +52,8 @@ def test_release_then_score_primary_family(tmp_path):
     assert (tmp_path / "scored" / "menus.csv").exists()
     menus = pd.read_csv(tmp_path / "scored" / "menus.csv")
     assert set(menus[menus.panel == "T200"].config_id) >= set(B16_MENU)
+    mc = pd.read_csv(tmp_path / "scored" / "menu_contrasts.csv")
+    t = mc[(mc.panel == "T200") & (mc.reference == "1x16")]
+    assert set(t.config_id) == {"16x1", "8x2", "4x4", "2x8"}
+    assert (t.simul_lo <= t.ci95_lo + 1e-12).all() and (t.simul_hi >= t.ci95_hi - 1e-12).all()
+    assert (tmp_path / "records" / "run_manifest.json").exists()

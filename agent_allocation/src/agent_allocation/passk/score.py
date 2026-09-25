@@ -90,6 +90,10 @@ def score(run_root: Path, *, n_resamples: int = 10_000) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     metrics.drop(columns=["class_sizes", "class_first_ids"]).to_parquet(out / "pool_metrics.parquet", index=False)
     config_summary(metrics).to_csv(out / "menus.csv", index=False)
+    from agent_allocation.passk.stats import menu_contrasts
+    pd.concat([menu_contrasts(metrics, B16_MENU, "1x16", n_resamples=n_resamples),
+               menu_contrasts(metrics, B8_MENU, "1x8", n_resamples=n_resamples)], ignore_index=True) \
+        .to_csv(out / "menu_contrasts.csv", index=False)
     locked = json.loads((run_root / "sealed" / "e1_selection.json").read_text())["selected"]
     primary: dict = {"seal_code_commit": seal.get("code_commit"), "locked": locked}
     primary["mixed_vs_deep"] = mixed_vs_deep(metrics, locked, n_resamples=n_resamples)
