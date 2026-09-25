@@ -132,7 +132,7 @@ def fit_and_predict(run_root: Path | str | None = None, *, draws: pd.DataFrame |
         draws, pools, classes = load_analysis_inputs(Path(run_root))
     if c48 is None:
         c48 = list(load_panels(Path(run_root))["C48"])
-    out_dir = Path(out_dir) if out_dir is not None else (Path(run_root) / "sealed" / "v48")
+    out_dir = Path(out_dir) if out_dir is not None else (Path(run_root) / "sealed" / "v48" if write else None)
     if write and (out_dir / "predictions.parquet").exists() and not overwrite:
         raise FileExistsError(f"{out_dir}/predictions.parquet exists (sealed artifacts are write-once)")
     rng = np.random.default_rng(seed)
