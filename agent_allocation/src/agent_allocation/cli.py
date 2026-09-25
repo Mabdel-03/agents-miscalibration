@@ -25,6 +25,7 @@ VERBS: dict[str, str] = {
     "merge-shards": "agent_allocation.analysis.merge:cmd_merge_shards",
     "calibrate": "agent_allocation.calibrate:cmd_calibrate",
     "passk-run": "agent_allocation.passk.run:cmd_passk_run",
+    "passk-analyze": "agent_allocation.passk.analyze:cmd_passk_analyze",
 }
 EXIT_BLOCKED = 2
 

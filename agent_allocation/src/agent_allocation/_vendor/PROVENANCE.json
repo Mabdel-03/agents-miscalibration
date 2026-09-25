@@ -222,5 +222,17 @@
     "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/learnagents/data/evalplus_validation.py",
     "origin_commit": "2af2879",
     "origin_sha256": "0d3c05760a9ae481b5b4c451892ce5561efbe0c8fc736c5c236bb04b50c1b129"
+  },
+  {
+    "changes": "parquet frames instead of JSON rows; hash registry is the passk seal (SEAL_predictions.json artifacts) instead of predictions/MANIFEST.json; LABEL_LIKE extended with this study's outcome columns; local LabelJoinRefused",
+    "file": "src/agent_allocation/_vendor/seal_join.py",
+    "functions": [
+      "LABEL_LIKE (line 56)",
+      "write_held_out_predictions (line 110)",
+      "join_labels (line 146)"
+    ],
+    "origin": "src/agents_scaling/nextdyn/analysis.py",
+    "origin_commit": "6498531",
+    "origin_sha256": "69a104e0f12daf130e4204befd5f7f1b1e0375fa2c8b24827b1c79cb49378681"
   }
 ]
