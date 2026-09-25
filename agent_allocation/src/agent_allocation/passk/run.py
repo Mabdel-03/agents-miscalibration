@@ -26,6 +26,7 @@ import asyncio
 import json
 import os
 import shutil
+import time
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
@@ -162,6 +163,68 @@ def assert_frozen(cfg: Mapping[str, Any], paths, graphs: Mapping[str, Sequence])
 # Dispatch
 # ------------------------------------------------------------------------------------------------------------------
 
+PROTOCOL_PARAMETERS = ("logit_bias", "top_k", "temperature", "top_p", "max_tokens")   # the forced protocol's needs
+PRICE_TOLERANCE = Decimal("0.10")        # a price rise beyond +10% refuses; a smaller rise or any decrease is noted
+
+
+def classify_endpoint_drift(lock, live) -> tuple[list[str], list[str]]:
+    """(hard, soft) differences between the adopted lock and the live endpoint. Hard = protocol-relevant: the model,
+    the provider pin (provider_tag carries the quantization, e.g. ``parasail/fp8``), a forced-protocol parameter
+    dropped from ``supported_parameters``, a price rise beyond +10%, or a smaller context / completion cap. Everything
+    else (other parameters, price decreases or small rises, a larger cap) is soft: logged, dispatch continues. The
+    adopted lock stays the identity of the frozen node ids either way."""
+    hard: list[str] = []
+    soft: list[str] = []
+    for field in ("model", "provider_tag", "provider_name"):
+        if getattr(live, field) != getattr(lock, field):
+            hard.append(f"{field}: {getattr(lock, field)!r} -> {getattr(live, field)!r}")
+    live_params, lock_params = set(live.supported_parameters), set(lock.supported_parameters)
+    dropped = sorted(p for p in PROTOCOL_PARAMETERS if p in lock_params and p not in live_params)
+    if dropped:
+        hard.append(f"supported_parameters: forced-protocol parameters dropped {dropped}")
+    if live_params != lock_params and not dropped:
+        soft.append(f"supported_parameters: +{sorted(live_params - lock_params)} -{sorted(lock_params - live_params)}")
+    for field in ("input_price_per_token", "output_price_per_token", "internal_reasoning_price_per_token"):
+        old, new = Decimal(str(getattr(lock, field) or "0")), Decimal(str(getattr(live, field) or "0"))
+        if new == old:
+            continue
+        rise = new > old * (1 + PRICE_TOLERANCE) if old > 0 else new > 0
+        (hard if rise else soft).append(f"{field}: {old} -> {new}")
+    for field in ("context_length", "max_completion_tokens"):
+        old, new = int(getattr(lock, field) or 0), int(getattr(live, field) or 0)
+        if new != old:
+            (hard if new < old else soft).append(f"{field}: {old} -> {new}")
+    if live.service_tier != lock.service_tier:
+        soft.append(f"service_tier: {lock.service_tier!r} -> {live.service_tier!r}")
+    return hard, soft
+
+
+async def passk_endpoint_drift(client, lock, cfg: Mapping[str, Any], *, attempts: int = 5,
+                               delay_s: float = 60.0) -> tuple[list[str], list[str], Any]:
+    """Probe the live listing (retried: a transient GET failure is not drift) and classify it against the lock.
+    Returns (hard, soft, raw listing or None)."""
+    from agent_allocation.api.endpoints import EndpointBlocked, select_standard_endpoint
+    from agent_allocation.api.forced import forced_enabled
+    model = cfg["primary_model"]
+    last: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            raw, parsed = await client.list_endpoints(model)
+            break
+        except Exception as exc:                   # noqa: BLE001 - transport/5xx: retried, then a distinct refusal
+            last = exc
+            if attempt + 1 < attempts:
+                await asyncio.sleep(delay_s)
+    else:
+        raise PasskRunRefused(f"endpoint drift probe unavailable after {attempts} attempts: {last!r}")
+    try:
+        live = select_standard_endpoint(parsed, model, preferred_tag=lock.provider_tag, forced=forced_enabled(cfg))
+    except EndpointBlocked as exc:
+        return [f"{model}: {exc}"], [], raw
+    hard, soft = classify_endpoint_drift(lock, live)
+    return [f"{model}: {d}" for d in hard], [f"{model}: {d}" for d in soft], raw
+
+
 async def run_partitions(cfg: Mapping[str, Any], paths, partitions: Sequence[str], *, max_usd: Decimal,
                          transport=None, api_key: str | None = None, allow_paid: bool = True,
                          account_auto_reload: bool = True, wrap_client: Callable[[Any], Any] | None = None,
@@ -169,7 +232,7 @@ async def run_partitions(cfg: Mapping[str, Any], paths, partitions: Sequence[str
     """Write the frozen jobs files and dispatch the partitions' waves on this shard (resumable)."""
     from agent_allocation.live import (
         Runtime, active_ceiling, ledger_settled, load_amendments, load_tasks, provider_snapshot,
-        read_endpoint_locks, record_decision, rehearsal, stopped_early, verify_endpoint_drift, write_jobs,
+        read_endpoint_locks, record_decision, rehearsal, stopped_early, write_jobs,
     )
     tasks = load_tasks(paths)
     amendments = load_amendments(paths)
@@ -186,12 +249,21 @@ async def run_partitions(cfg: Mapping[str, Any], paths, partitions: Sequence[str
         from agent_allocation.api.client import OpenRouterClient
         client = OpenRouterClient(api_key=api_key)
         try:
-            drift = await verify_endpoint_drift(client, {cfg["primary_model"]: lock}, cfg)
+            hard, soft, raw = await passk_endpoint_drift(client, lock, cfg)
         finally:
             await client.aclose()
-        if drift:
-            record_decision(paths, phase="passk_run", decision="stop_notify", reason="endpoint drift", detail=drift)
-            raise PasskRunRefused(f"endpoint drift: {drift}")
+        if hard or soft:
+            snap_dir = paths.lock_snapshots_dir
+            snap_dir.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+            snap = snap_dir / f"drift_probe_{shard_id_of(cfg) or 'shard'}_{stamp}.json"
+            snap.write_bytes(raw if isinstance(raw, (bytes, bytearray)) else json.dumps(raw, default=str).encode())
+            if soft:
+                record_decision(paths, phase="passk_run", decision="drift_noted", detail=soft, snapshot=str(snap))
+            if hard:
+                record_decision(paths, phase="passk_run", decision="stop_notify", reason="endpoint drift",
+                                detail=hard, snapshot=str(snap))
+                raise PasskRunRefused(f"endpoint drift (protocol-relevant): {hard}; live listing saved to {snap}")
     graphs = shard_plan(cfg, paths, partitions, tasks=tasks, lock=lock, amendments=amendments)
     shas = assert_frozen(cfg, paths, graphs)
     for partition, gs in graphs.items():
