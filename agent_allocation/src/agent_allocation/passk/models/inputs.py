@@ -120,17 +120,25 @@ class ClassSource:
 
     draws: pd.DataFrame
     table: pd.DataFrame | None = None
+    n_table: int = 0
+    n_fallback: int = 0
 
     @property
     def source(self) -> str:
         return "analysis_inputs/classes.parquet" if self.table is not None else "exact_vote_key_fallback"
 
+    def stats(self) -> dict:
+        return {"source": self.source, "scopes_from_table": self.n_table, "scopes_exact_fallback": self.n_fallback}
+
     def classes(self, scope_id: str, member_ids: list[str]) -> dict[str, str | None]:
         if self.table is not None:
-            t = self.table[self.table.scope_id == scope_id]
-            if len(t):
-                m = dict(zip(t.candidate_id, t.class_id))
+            if not hasattr(self, "_by_scope"):
+                self._by_scope = {k: dict(zip(g.candidate_id, g.class_id)) for k, g in self.table.groupby("scope_id")}
+            m = self._by_scope.get(scope_id)
+            if m is not None and all(c in m for c in member_ids):
+                self.n_table += 1
                 return {c: (None if pd.isna(m.get(c)) else m.get(c)) for c in member_ids}
+        self.n_fallback += 1
         return exact_classes(self.draws, scope_id, member_ids)
 
 
@@ -154,7 +162,7 @@ def pool_outcome(member_ids: list[str], classes: dict[str, str | None], lab_map:
         if k is not None:
             support.setdefault(k, []).append(c)
     if not support:
-        return {"coverage": cov, "plurality": 0.0 if not any(np.isnan(v) for v in labs) else 0.0}
+        return {"coverage": cov, "plurality": 0.0}     # nobody votes: nothing is delivered
     top = max(len(v) for v in support.values())
     tied = [k for k, v in support.items() if len(v) == top]
     vals = []

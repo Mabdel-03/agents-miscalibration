@@ -187,7 +187,8 @@ def _write(out_dir: Path, res: dict, *, seed: int, n_sim: int, cls: ClassSource)
         "passk_seed": seed, "n_sim": n_sim, "cv_folds": 5, "train_configs": list(TRAIN_CONFIGS),
         "c48_only_configs": list(C48_ONLY_CONFIGS), "withheld": list(WITHHELD_IDS)}, indent=1))
     manifest = {"version": VERSION, "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "classes_source": cls.source, "n_train_pools": int(len(pf)),
+                "classes_source": cls.source, "classes": cls.stats(), "n_train_pools": int(len(pf)),
+                "latency": res["models"]["latency"],
                 "train_configs_present": sorted(set(pf.config_id)), "n_train_draws": int(len(res["draw_frame"])),
                 "train_partitions": sorted(set(res["draw_frame"].partition)),
                 "n_items_predicted": int(res["predictions"].item_id.nunique()),
@@ -237,7 +238,7 @@ def score_frames(pred: pd.DataFrame, obs: pd.DataFrame, *, min_known: int = 3) -
                                                                  n_known=("sq_del", "size")).reset_index()
     dropped = item[item.n_known < min_known]
     item = item[item.n_known >= min_known]
-    rows = []
+    rows, cals = [], []
     for name, g in m.groupby("predictor"):
         gi = item[item.predictor == name]
         kd, kc = g[g.delivered.notna()], g[g.coverage.notna()]
@@ -246,6 +247,8 @@ def score_frames(pred: pd.DataFrame, obs: pd.DataFrame, *, min_known: int = 3) -
         p = np.clip(k16g.p_delivered.to_numpy(float), 1e-6, 1 - 1e-6)
         yv = k16g.delivered.to_numpy(float)
         cal, ece = _calibration(yv, p) if len(yv) else (pd.DataFrame(), float("nan"))
+        if len(cal):
+            cals.append(cal.assign(predictor=name))
         rows.append({
             "predictor": name,
             "primary_brier_mixture": _weighted(gi.brier, gi.benchmark, MIXTURE),
@@ -274,7 +277,8 @@ def score_frames(pred: pd.DataFrame, obs: pd.DataFrame, *, min_known: int = 3) -
     policy = policy_readout(m)
     return {"summary": summary, "contrasts": pd.DataFrame([{"contrast": k, "mixture_diff": v}
                                                             for k, v in contrasts.items()]),
-            "item_brier": item, "dropped_items": dropped, "residuals": resid, "policy": policy, "merged": m}
+            "item_brier": item, "dropped_items": dropped, "residuals": resid, "policy": policy,
+            "calibration": pd.concat(cals, ignore_index=True) if cals else pd.DataFrame(), "merged": m}
 
 
 def _ranking_accuracy(g: pd.DataFrame) -> float:

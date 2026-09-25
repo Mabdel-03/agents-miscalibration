@@ -140,3 +140,22 @@ def test_holdout_folds_are_disjoint_and_cover():
         assert not set(train) & set(test) and len(test) == 24 and len(train) == 72
         seen += test
     assert sorted(seen) == sorted(items)
+
+
+def test_e5_is_deterministic():
+    draws, panels = synth(n_dev=4, n_t200=2)
+    a = e5.fit_and_predict(draws=draws, panels=panels, write=False, n_sim=100)["predictions"]
+    b = e5.fit_and_predict(draws=draws, panels=panels, write=False, n_sim=100)["predictions"]
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_class_table_is_used_when_complete_and_falls_back_otherwise():
+    draws, panels = synth(n_dev=2, n_t200=1)
+    item = panels["L96"][0]
+    ids = list(draws[draws.item_id == item].candidate_id[:3])
+    table = pd.DataFrame({"scope_id": ["s1"] * 3, "candidate_id": ids, "class_id": ["c", "c", None]})
+    cls = ClassSource(draws=draws, table=table)
+    assert cls.classes("s1", ids) == {ids[0]: "c", ids[1]: "c", ids[2]: None}
+    cls.classes("s2", ids)
+    assert cls.stats() == {"source": "analysis_inputs/classes.parquet", "scopes_from_table": 1,
+                           "scopes_exact_fallback": 1}

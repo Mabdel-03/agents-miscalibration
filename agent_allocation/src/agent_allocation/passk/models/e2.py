@@ -183,7 +183,7 @@ def fit_and_predict(run_root: Path | str | None = None, *, draws: pd.DataFrame |
     pop = _population(pred, sims, rng)
     illus = _illustrative(cross)
     result = {"predictions": pred, "crossover": cross, "population": pop, "illustrative": illus,
-              "pooled": pooled, "ridge": ridge, "classes_source": cls.source}
+              "pooled": pooled, "ridge": ridge, "classes_source": cls.source, "classes_stats": cls.stats()}
     if write:
         _write(out_dir, result, seed=seed, S=S, inner=inner, items=items, fit=fit)
     return result
@@ -283,7 +283,8 @@ def _write(out_dir: Path, res: dict, *, seed: int, S: int, inner: int, items: li
              "pi": PI, "pop_pi": POP_PI, "cv_folds": 5}
     (out_dir / "seeds.json").write_text(json.dumps(seeds, indent=1))
     manifest = {"version": VERSION, "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "classes_source": res["classes_source"], "n_items": len(items), "items": items,
+                "classes_source": res["classes_source"], "classes": res.get("classes_stats"), "n_items": len(items),
+                "items": items,
                 "fit_partitions": sorted(set(fit.partition)), "n_fit_draws": int(len(fit)),
                 "models": list(MODELS), "configs": needed_configs()}
     manifest["sha256"] = {str(p.relative_to(out_dir)): sha256_file(p) for p in sorted(out_dir.rglob("*"))
