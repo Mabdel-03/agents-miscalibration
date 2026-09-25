@@ -113,3 +113,20 @@ def test_gate4_per_split(tmp_path, monkeypatch):
     monkeypatch.setattr(cp, "node_rows", lambda _paths, _parts: rows(True))
     g4 = cp.gate4(cfg, paths, check_duplicates=False)
     assert g4["passed"] and g4["splits"]["v48"]["passed"] and g4["splits"]["t200"]["passed"]
+
+
+def test_gate1_smoke_requires_dev_grades(tmp_path, monkeypatch):
+    """ops_budget review: Gate 1 runs the smoke through the dev grader, so an ungraded smoke candidate fails it."""
+    cfg = shard_config(load_config(PROJECT / "configs" / "passk_cont_v1.json"), "mancer")
+    paths = RunPaths.for_run(tmp_path / "shards" / "mancer", local_state_dir=tmp_path / "l")
+    lock = fake_forced_endpoint_lock("qwen/qwen3.8-27b", tag="mancer/fp8")
+    paths.endpoint_lock.parent.mkdir(parents=True)
+    paths.endpoint_lock.write_text(json.dumps({"locks": {"qwen/qwen3.8-27b": dump_record(lock)}}))
+    row = {"node_id": "smoke-1", "partition": "smoke", "parsed": True, "succeeded": True, "exact": True,
+           "has_candidate": True, "model": cfg["primary_model"], "provider": lock.provider_name}
+    monkeypatch.setattr(cp, "node_rows", lambda _paths, _parts: [row])
+    assert not cp.gate1_smoke(cfg, paths)["criteria"]["smoke_graded"]["passed"]
+    grade = paths.grade("smoke-1")
+    grade.parent.mkdir(parents=True, exist_ok=True)
+    grade.write_text("{}")
+    assert cp.gate1_smoke(cfg, paths)["criteria"]["smoke_graded"]["passed"]

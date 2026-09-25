@@ -16,8 +16,9 @@
 #   analyze       allocation passk-analyze --stage ${STAGE} [--release r for r in RELEASE split on '+']
 #                 [FLAGS split on '+', e.g. FLAGS=--sandbox for the fit stages] (WP-A)             (no SHARD)
 #
-# Paid verbs (canary, smoke, run) always pass --account-auto-reload to passk-run (the account auto-refills; the key
-# limit, --max-usd and the shard slice still bind). SIGTERM (Slurm --signal, scancel --signal=TERM --batch) drains:
+# The passk-run verbs (smoke, run) pass --account-auto-reload (the account auto-refills; the key limit, --max-usd
+# and the shard slice still bind). `allocation canary` has no such flag: its $0.50 window is also capped by the
+# account balance - $1 (live.py; not changed here). SIGTERM (Slurm --signal, scancel --signal=TERM --batch) drains:
 # the trap touches control/DRAIN, the dispatcher stops admitting and finishes in-flight work, and the script waits
 # for it (the python runs in the background and is waited on twice; no exec, so the trap can run).
 #SBATCH --job-name=passk-cont

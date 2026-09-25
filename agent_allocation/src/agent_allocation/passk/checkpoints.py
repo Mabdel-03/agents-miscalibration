@@ -115,6 +115,9 @@ def gate1_smoke(cfg: Mapping[str, Any], paths, *, metadata: Mapping[str, Any] | 
         "pin": {"passed": all(r["model"] == cfg["primary_model"] and r["provider"] == pin_name for r in ok),
                 "pin": pin_name, "tag": pin_tag},
     }
+    # the smoke goes "through the new verb and the dev grader": every smoke candidate must carry a grade
+    ungraded = [r["node_id"] for r in rows if r.get("has_candidate") and not paths.grade(r["node_id"]).exists()]
+    crit["smoke_graded"] = {"passed": not ungraded, "ungraded": len(ungraded), "examples": ungraded[:10]}
     if metadata is not None:
         records = [metadata.get(r["generation_id"]) for r in ok if r.get("generation_id")]
         bad = [m for m in records if not m or m.get("model") != EXPECTED_PERMASLUG or m.get("provider_name") != pin_name]
