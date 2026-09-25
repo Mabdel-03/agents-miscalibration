@@ -107,6 +107,22 @@ def _stage_models(run_root: Path, which: str) -> int:
     return EXIT_OK
 
 
+def _audited_models(run_root: Path, stage: str, log: Path) -> int:
+    handle = log.open("w", encoding="utf-8")
+    handle.write("# mode=audithook (strace unavailable: ptrace not permitted)\n")
+
+    def hook(event: str, event_args: tuple) -> None:
+        if event == "open" and event_args and isinstance(event_args[0], (str, bytes, os.PathLike)):
+            path = os.fsdecode(event_args[0])
+            handle.write(f'audit openat(AT_FDCWD, "{os.path.abspath(path)}", {event_args[1]!r})\n')
+            handle.flush()
+    sys.addaudithook(hook)
+    try:
+        return _stage_models(run_root, "e2" if stage == "e2-fit" else "e5")
+    finally:
+        handle.flush()
+
+
 def cmd_passk_analyze(argv: list[str]) -> int:
     from agent_allocation.passk.extract import LEGACY_ROOT, RUN_ROOT
 
@@ -118,6 +134,8 @@ def cmd_passk_analyze(argv: list[str]) -> int:
     parser.add_argument("--release", action="append", default=[], choices=("v48", "t200"))
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--no-raw", action="store_true", help="extract: skip the THINK generation id (raw gz)")
+    parser.add_argument("--strace", action="store_true",
+                        help="e2-fit/e5-fit: re-run this stage under strace into logs/strace/<stage>.log (Gate P)")
     args = parser.parse_args(argv)
     run_root = Path(args.run_root)
     if args.stage in ("extract", "release"):
@@ -136,6 +154,20 @@ def cmd_passk_analyze(argv: list[str]) -> int:
         print(json.dumps({"selected": payload["selected"]}))
         return EXIT_OK
     if args.stage in ("e2-fit", "e5-fit"):
+        if args.strace:
+            import subprocess
+            log = run_root / "logs" / "strace" / f"{args.stage}.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            inner = [a for a in argv if a != "--strace"]
+            cmd = ["strace", "-f", "-e", "trace=open,openat,openat2", "-o", str(log), sys.executable, "-m",
+                   "agent_allocation.cli", "passk-analyze", *inner]
+            proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            if "PTRACE_TRACEME" not in (proc.stderr or "") and "Operation not permitted" not in (proc.stderr or ""):
+                sys.stderr.write(proc.stderr or "")
+                return proc.returncode
+            # ptrace is blocked on this node: fall back to a Python audit hook (weaker: C-level opens such as
+            # pyarrow's are not seen). The log header records the mode so the seal reviewer can tell.
+            return _audited_models(run_root, args.stage, log)
         return _stage_models(run_root, "e2" if args.stage == "e2-fit" else "e5")
     if args.stage == "seal":
         from agent_allocation.passk.seal import run_seal
