@@ -13,7 +13,7 @@ numpy/scipy/pandas only; no new dependency, no change to `contracts.py`, `Genera
 | P3 | `passk/features.py`, `passk/models/predictors.py`, `e5.py` | done, tested. Entry points `e5.fit_and_predict(run_root)` → `sealed/t200/`, `e5.score(run_root)` → `scores/e5/`. |
 | dev shim | `tests/unit/passk/devshim.py` | **DEV SHIM, tests only.** Builds draws-shaped frames from the read-only legacy root (candidates.parquet + shards/*/parsed). Kept out of `passk/models` so the seal static scan stays clean. |
 
-Tests: `tests/unit/passk/{test_glm,test_e2,test_e5,test_legacy_integration}.py`, 28 passed (about 25 s). The legacy
+Tests: `tests/unit/passk/{test_glm,test_e2,test_e5,test_legacy_integration,test_run_root_entrypoints}.py`, 29 passed (about 30 s); the full `tests/unit` suite was green (998 passed) at 14:56. The legacy
 integration tests skip when the legacy root is absent.
 
 ### E2 outputs (`sealed/v48/`, write-once: refuses to overwrite)
@@ -110,7 +110,7 @@ cd /orcd/data/tpoggio/001/mabdel03/agents_scaling_passk_wpM/agent_allocation
 export UV_CACHE_DIR=/orcd/data/tpoggio/001/mabdel03/.cache/uv HF_HOME=/orcd/data/tpoggio/001/mabdel03/.cache/huggingface \
   HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 MPLCONFIGDIR=/orcd/data/tpoggio/001/mabdel03/.cache/matplotlib \
   PYTHONNOUSERSITE=1 OPENBLAS_NUM_THREADS=1
-.venv/bin/python -m pytest -q tests/unit/passk            # 28 tests, about 25 s
+.venv/bin/python -m pytest -q tests/unit/passk            # 29 tests, about 30 s
 # after WP-A extract has written analysis_inputs/ and splits.json exists (pre-seal):
 .venv/bin/python -m agent_allocation.passk.models.e2 fit --run-root /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/passk_cont_v1
 .venv/bin/python -m agent_allocation.passk.models.e5 fit --run-root /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/passk_cont_v1
