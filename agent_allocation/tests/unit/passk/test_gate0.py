@@ -12,7 +12,7 @@ import pytest
 from agent_allocation.config import load_config
 from agent_allocation.passk import banks, gates
 from agent_allocation.passk.run import (
-    PasskRunRefused, adopt_legacy_lock, assert_frozen, cmd_passk_run, plan_summary, shard_plan,
+    PasskRunRefused, adopt_legacy_lock, assert_frozen, cmd_passk_run, plan_summary, require_gate0, shard_plan,
 )
 from agent_allocation.paths import RunPaths
 from agent_allocation.shards import materialize_shard, root_assignment, shard_config
@@ -96,3 +96,29 @@ def test_legacy_lock_tag_mismatch_refused(study, tmp_path):
     fresh = RunPaths.for_run(tmp_path / "shards" / "mancer", local_state_dir=tmp_path / "l")
     with pytest.raises(PasskRunRefused):
         adopt_legacy_lock(wrong, fresh)
+
+
+def test_paid_dispatch_requires_a_passed_gate0(study, tmp_path):
+    base, root, shards = study
+    cfg, paths = shards["parasail"]
+    if not gates.gate0_path(root).is_file():
+        gates.write_gate0(root, gates.evaluate_gate0(base, root, e0={"passed": True},
+                                                     local_state_root=root.parent / "g0local"))
+    record = json.loads(gates.gate0_path(root).read_text())
+    try:
+        with pytest.raises(PasskRunRefused):                  # offline record: key + tests not evaluated
+            require_gate0(cfg, paths, ["smoke"])
+        gates.gate0_path(root).write_text(json.dumps({**record, "complete": True}))
+        assert require_gate0(cfg, paths, list(banks.PARTITIONS))["passed"]
+        gates.gate0_path(root).write_text(json.dumps({**record, "complete": True, "passed": False}))
+        with pytest.raises(PasskRunRefused):
+            require_gate0(cfg, paths, ["smoke"])
+        gates.gate0_path(root).write_text(json.dumps({**record, "complete": True,
+                                                      "jobs_sha256": {"mancer": record["jobs_sha256"]["mancer"]}}))
+        with pytest.raises(PasskRunRefused):
+            require_gate0(cfg, paths, ["smoke"])
+        with pytest.raises(PasskRunRefused):                  # the paid path checks before any network call
+            asyncio.run(__import__("agent_allocation.passk.run", fromlist=["run_partitions"]).run_partitions(
+                cfg, paths, ["smoke"], max_usd=Decimal("1"), allow_paid=True))
+    finally:
+        gates.gate0_path(root).write_text(json.dumps(record))

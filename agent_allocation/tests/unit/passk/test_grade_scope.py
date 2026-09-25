@@ -100,3 +100,15 @@ def test_worker_scope_config_prefers_flag_then_shard_config(tmp_path):
     skip, only = _grade_scope(paths, cfg)
     assert skip == set(ids["v48_bank"] + ids["t200_bank"] + ids["t200_diag"]) and only is not None
     assert _scope_config(paths, str(PROJECT / "configs" / "forced27b.json")).get("passk") is None
+
+
+def test_a_partially_written_heldout_manifest_never_leaks_ids(tmp_path):
+    study, paths, ids = _shard(tmp_path)
+    cfg = _cfg()
+    target = paths.jobs("t200_bank")
+    full = target.read_text()
+    target.write_text(full[: len(full) // 2])              # a rewrite caught mid-way: the tail line is cut
+    skip, only = gs.grade_scope(paths, cfg)
+    heldout = set(ids["v48_bank"] + ids["t200_bank"] + ids["t200_diag"])
+    assert not (only & heldout)
+    assert only == set(ids["smoke"] + ids["e1_fill"] + ids["c48_extra"])

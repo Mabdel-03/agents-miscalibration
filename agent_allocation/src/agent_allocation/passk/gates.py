@@ -356,7 +356,11 @@ def main(argv: list[str] | None = None) -> int:
         snapshot = fetch(load_api_key())
     result = evaluate_gate0(cfg, study, snapshot=snapshot, tests=tests, e0=e0)
     result["code"] = _git_head(code_dir)
-    target = write_gate0(study, result, overwrite=args.overwrite)
+    try:
+        target = write_gate0(study, result, overwrite=args.overwrite)
+    except RuntimeError as exc:                      # the frozen lists changed: semantic, never retried
+        print(json.dumps({"gate0": "refused", "reason": str(exc)}))
+        return 3
     print(json.dumps({"gate0": str(target), "passed": result["passed"], "complete": result["complete"],
                       "criteria": {k: v.get("passed") for k, v in result["criteria"].items()}}, indent=1))
     return 0 if result["passed"] and result["complete"] else 3

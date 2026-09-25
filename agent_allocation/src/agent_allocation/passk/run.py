@@ -4,8 +4,9 @@ Modelled on :func:`agent_allocation.calibrate.collect`:
 
 * loads the shard's public tasks, endpoint lock and amendments, and ``<artifacts>/manifests/splits.json``;
 * builds the FULL frozen node list of every requested partition for this shard (:mod:`passk.banks`), writes
-  ``manifests/jobs/<partition>.jsonl`` (always the whole list, so a resume never shrinks it) and asserts that the
-  sha256 of each jobs file equals the one recorded at Gate 0 (``<study>/gates/gate0.json``) when that record exists;
+  ``manifests/jobs/<partition>.jsonl`` (always the whole list, so a resume never shrinks it; an identical file is
+  left untouched) and asserts that its sha256 equals the one recorded at Gate 0 (``<study>/gates/gate0.json``); a
+  PAID dispatch refuses unless that record exists, passed, and froze every requested partition of this shard;
 * builds one :class:`live.Runtime` whose ledger ceiling is explicit per shard:
   ``min(live.active_ceiling(max_usd, settled, /key snapshot, account_auto_reload=...), shard credit slice)``;
 * runs the waves (stage 1 then seeded stage-2 item-waves; ``passk.banks.plan_waves``). It NEVER grades inline:
@@ -26,6 +27,7 @@ import json
 import os
 import shutil
 from decimal import Decimal
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -131,6 +133,19 @@ def plan_summary(cfg: Mapping[str, Any], paths, graphs: Mapping[str, Sequence]) 
     return out
 
 
+def require_gate0(cfg: Mapping[str, Any], paths, partitions: Sequence[str]) -> dict[str, Any]:
+    """Paid dispatch needs a passed Gate 0 record that froze every requested partition of this shard."""
+    record = gate0_record(paths)
+    if not record or not record.get("passed") or not record.get("complete"):
+        raise PasskRunRefused(f"no passed and complete (key + tests) Gate 0 record at "
+                              f"{banks.study_root(paths) / 'gates' / GATE0_NAME}; nothing is sent")
+    shard = shard_id_of(cfg)
+    missing = [p for p in partitions if recorded_jobs_sha(paths, shard, p) is None]
+    if missing:
+        raise PasskRunRefused(f"Gate 0 froze no node list for {shard}/{missing}; nothing is sent")
+    return record
+
+
 def assert_frozen(cfg: Mapping[str, Any], paths, graphs: Mapping[str, Sequence]) -> dict[str, str]:
     shard = shard_id_of(cfg)
     shas = {}
@@ -163,6 +178,8 @@ async def run_partitions(cfg: Mapping[str, Any], paths, partitions: Sequence[str
         raise PasskRunRefused(f"{paths.run_dir}: no endpoint lock (run the canary for this shard first)")
     lock = locks[cfg["primary_model"]]
     offline = transport is not None or rehearsal()
+    if allow_paid and not offline:
+        require_gate0(cfg, paths, partitions)
     if check_drift is None:
         check_drift = allow_paid and not offline
     if check_drift:
@@ -178,6 +195,9 @@ async def run_partitions(cfg: Mapping[str, Any], paths, partitions: Sequence[str
     graphs = shard_plan(cfg, paths, partitions, tasks=tasks, lock=lock, amendments=amendments)
     shas = assert_frozen(cfg, paths, graphs)
     for partition, gs in graphs.items():
+        target = paths.jobs(partition)
+        if target.is_file() and sha256(target.read_bytes()).hexdigest() == shas[partition]:
+            continue                        # identical frozen list already on disk: never rewrite under the grader
         written = write_jobs(paths, partition, gs)
         if written != shas[partition]:
             raise PasskRunRefused(f"{partition}: written jobs sha differs from the planned list")

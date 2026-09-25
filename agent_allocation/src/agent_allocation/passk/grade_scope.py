@@ -99,42 +99,50 @@ def _jobs_ids(path: Path) -> set[str]:
     return out
 
 
+def _jobs_by_partition(paths) -> dict[str, set[str]]:
+    """``{partition: node ids}`` from ONE read of every jobs manifest of the run dir."""
+    jobs_dir = paths.manifests_dir / "jobs"
+    if not jobs_dir.is_dir():
+        return {}
+    return {path.stem: _jobs_ids(path) for path in sorted(jobs_dir.glob("*.jsonl"))}
+
+
+def _scope(paths, cfg: Mapping[str, Any]) -> tuple[frozenset[str], frozenset[str]]:
+    """``(blocked, gradeable)`` computed from the same single read of the jobs manifests, so a manifest rewritten
+    mid-pass can only drop ids from BOTH sets (never grade a fenced id)."""
+    by_partition = _jobs_by_partition(paths)
+    released = released_splits(cfg, verify_seal(paths))
+    fenced_partitions = {p for split, parts in heldout_splits(cfg).items() if split not in released for p in parts}
+    blocked: set[str] = set()
+    allowed: set[str] = set()
+    for partition, ids in by_partition.items():
+        (blocked if partition in fenced_partitions else allowed).update(ids)
+    return frozenset(blocked), frozenset(allowed - blocked)
+
+
 def blocked_node_ids(paths, cfg: Mapping[str, Any]) -> frozenset[str]:
     """Held-out node ids of this run dir whose split has no verified seal (empty for a non-passk config)."""
     if not is_passk_config(cfg):
         return frozenset()
-    released = released_splits(cfg, verify_seal(paths))
-    blocked: set[str] = set()
-    for split, partitions in heldout_splits(cfg).items():
-        if split in released:
-            continue
-        for partition in partitions:
-            blocked |= _jobs_ids(paths.jobs(partition))
-    return frozenset(blocked)
+    return _scope(paths, cfg)[0]
 
 
 def all_job_ids(paths) -> set[str]:
-    jobs_dir = paths.manifests_dir / "jobs"
-    out: set[str] = set()
-    if jobs_dir.is_dir():
-        for path in sorted(jobs_dir.glob("*.jsonl")):
-            out |= _jobs_ids(path)
-    return out
+    return {i for ids in _jobs_by_partition(paths).values() for i in ids}
 
 
 def gradeable_node_ids(paths, cfg: Mapping[str, Any]) -> frozenset[str] | None:
     """Node ids the grader may grade on a passk run dir (``None``: no restriction, legacy behaviour)."""
     if not is_passk_config(cfg):
         return None
-    return frozenset(all_job_ids(paths) - blocked_node_ids(paths, cfg))
+    return _scope(paths, cfg)[1]
 
 
 def grade_scope(paths, cfg: Mapping[str, Any] | None) -> tuple[frozenset[str], frozenset[str] | None]:
-    """``(skip, only)`` for one grading pass (recomputed every pass)."""
+    """``(skip, only)`` for one grading pass (recomputed every pass, from one read of the manifests)."""
     if not is_passk_config(cfg):
         return frozenset(), None
-    blocked = blocked_node_ids(paths, cfg)
-    return blocked, frozenset(all_job_ids(paths) - blocked)
+    return _scope(paths, cfg)
 
 
 def fenced_counts(paths, cfg: Mapping[str, Any], candidate_ids: Iterable[str]) -> dict[str, int]:
