@@ -61,8 +61,11 @@ as "Mancer", not the real lock's "Mancer 2" — the pin guard working, not a def
 
 ## Known issues
 
-- `tests/unit/runtime/test_aimd_waves.py::test_retries_may_use_the_reserve_above_the_soft_ceiling` failed once in a
-  loaded full-suite run and passes alone (timing flake in an untouched scheduler test).
+- Suite at 15:01 EDT: `pytest tests/unit tests/integration/test_forced_wp3_mocked.py
+  tests/integration/test_passk_wpg_e2e.py` -> **1005 passed, 1 failed**; the failure
+  (`tests/unit/runtime/test_status_control.py::test_status_json_is_written_live_and_at_the_end`, and in an earlier
+  run `test_aimd_waves.py::test_retries_may_use_the_reserve_above_the_soft_ceiling`) is a timing flake in untouched
+  scheduler tests under load: both pass alone, with and without WP-G's changes.
 - `PROBE_USD_PER_RUN = $0.05` per passk-run invocation is an estimate for the forced Gate-0 probes.
 - `checkpoints gate2/gate3` reread every jobs/parsed file per poll (NFS); fine at 5-min polls, slow if polled faster.
 - The conductor's analysis stages call `allocation passk-analyze --stage X` (WP-A); until that verb exists the chain

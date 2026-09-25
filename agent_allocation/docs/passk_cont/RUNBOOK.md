@@ -94,7 +94,9 @@ new attempts under the shard's soft slice itself. It never grades; `allocation g
 ## 6. Control
 
 - Drain a shard (finish in-flight, admit nothing new): `touch $RUN/shards/<s>/control/DRAIN` (the sbatch's SIGTERM
-  trap does the same; Slurm sends it 15 min before the time limit). Remove it before resubmitting.
+  trap does the same; Slurm sends it 15 min before the time limit, or `scancel --signal=TERM --batch <jobid>`).
+  A plain `scancel <jobid>` kills the dispatcher without a drain (no SIGTERM handler; in-flight calls are then
+  reconciled on the next start). Remove `control/DRAIN` before resubmitting (the conductor does this itself).
 - Hard stop: `touch $RUN/shards/<s>/control/STOP` (also ends `grade --follow`).
 - Status: `$A status --run-dir $RUN/shards/<s>`; decisions: `$RUN/shards/<s>/state/run_decisions.jsonl`
   (`passk_run_start` records the ceiling, slice, limit_remaining and the jobs shas).
