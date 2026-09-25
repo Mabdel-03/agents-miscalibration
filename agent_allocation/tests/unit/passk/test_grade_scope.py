@@ -70,8 +70,16 @@ def test_empty_or_bad_seal_does_not_verify(tmp_path):
     assert gs.verify_seal(study) is None
     (study / "sealed" / "SEAL_predictions.json").write_text("{not json")
     assert gs.verify_seal(study) is None
-    (study / "sealed" / "SEAL_predictions.json").write_text(json.dumps({"artifacts": {"sealed/missing.json": "0"}}))
+    (study / "sealed" / "SEAL_predictions.json").write_text(json.dumps({"code_commit": "x",
+                                                                        "artifacts": {"sealed/missing.json": "0"}}))
     assert gs.verify_seal(study) is None
+    art = study / "sealed" / "a.bin"
+    art.write_bytes(b"a")
+    ok = {"artifacts": {"sealed/a.bin": sha256(b"a").hexdigest()}}
+    (study / "sealed" / "SEAL_predictions.json").write_text(json.dumps(ok))
+    assert gs.verify_seal(study) is None                                   # no code_commit
+    (study / "sealed" / "SEAL_predictions.json").write_text(json.dumps({**ok, "code_commit": "abc"}))
+    assert gs.verify_seal(study) is not None
 
 
 def test_legacy_config_is_unrestricted(tmp_path):

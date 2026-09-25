@@ -52,7 +52,12 @@ as "Mancer", not the real lock's "Mancer 2" — the pin guard working, not a def
    dispatcher pauses admission by itself; no stop); Gate 4 union key reconciliation and pair-cache completeness
    (WP-A); Gate 4 duplicate-THINK check is implemented but reads every raw (legacy + new; a few minutes).
 6. Overlap with WP-A: contract §5.6 names `labels.blocked_node_ids/verify_seal`; mine live in
-   `passk/grade_scope.py` (the grader imports them). WP-A's `labels.py` should import these (one definition).
+   `passk/grade_scope.py` (the grader imports them). WP-A's `extract.py`/`score.py` already import
+   `grade_scope.verify_seal` when present; the acceptance rule is aligned (parses, non-empty `code_commit`, non-empty
+   `artifacts`, every sha matches, paths relative to the study root). WP-A's `labels.blocked_node_ids` should
+   delegate to `grade_scope.blocked_node_ids` after the merge (one definition).
+7. Conductor: only dry-run tested with stub Slurm (`tests/integration/test_passk_conductor_dryrun.py`); the
+   transient-retry branches (10-min sleeps) and run resubmission are not exercised.
 
 ## Known issues
 

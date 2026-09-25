@@ -8,8 +8,8 @@
 * :func:`gradeable_node_ids` -- every node id listed in the shard's jobs manifests minus the blocked ones. The grader
   grades ONLY these (fail closed: a parsed candidate that no jobs file lists is never graded).
 
-:func:`verify_seal` accepts ``sealed/SEAL_predictions.json`` only when it parses, lists at least one artifact and every
-listed artifact exists with the recorded sha256. A seal may restrict what it releases with ``"splits": [...]``;
+:func:`verify_seal` accepts ``sealed/SEAL_predictions.json`` only when it parses, names a ``code_commit``, lists at least
+one artifact and every listed artifact exists with the recorded sha256. A seal may restrict what it releases with ``"splits": [...]``;
 without that key a verified seal releases every held-out split. The seal lives at the study root
 (``.../passk_cont_v1/sealed``), found from a shard dir via :func:`passk.banks.study_root`.
 """
@@ -55,8 +55,8 @@ def verify_seal(run_root: Any) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     artifacts = seal.get("artifacts") if isinstance(seal, Mapping) else None
-    if not isinstance(artifacts, Mapping) or not artifacts:
-        return None
+    if not isinstance(artifacts, Mapping) or not artifacts or not seal.get("code_commit"):
+        return None                                  # same acceptance rule as WP-A's labels.verify_seal
     for rel, expected in artifacts.items():
         path = Path(rel)
         path = path if path.is_absolute() else root / path
