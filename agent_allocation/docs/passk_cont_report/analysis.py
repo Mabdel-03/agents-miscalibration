@@ -29,7 +29,9 @@ def numbers(run_root: Path) -> dict:
     if audit:
         N["e0"] = {"cohorts": audit["cohorts"], "replay": audit["replay"], "n_candidates": audit["n_candidates"],
                    "headlines": {k.split(" ")[0]: v for k, v in audit["headlines"].items()},
-                   "model_pinned": str(audit["observed_model_all_pinned"])}
+                   "model_pinned": str(audit["observed_model_all_pinned"]),
+                   "think_text_duplicates": audit.get("think_text_duplicates", 0),
+                   "model": (audit.get("observed_models") or ["?"])[0]}
     e1 = _json(run_root / "sealed" / "e1_selection.json")
     if e1:
         N["e1"] = {"locked": e1["selected"], "table": e1["table"]}
@@ -86,10 +88,17 @@ def tables(N: dict) -> None:
     out = HERE / "tables"
     out.mkdir(exist_ok=True)
     if "e0" in N:                                                            # T1 audit / cohorts
-        c = N["e0"]["cohorts"]
+        e0 = N["e0"]
+        c = e0["cohorts"]
+        esc = "\\_"
+        rows = [f"legacy candidates (L96 root/deep + D32 root) & {e0['n_candidates']:,}",
+                f"cohort items 96 / 94 / 93 & {c['96']} / {c['94']} / {c['93']}",
+                "served model & \\texttt{" + e0.get("model", "qwen/qwen3.8-27b").replace("_", esc) + "}",
+                f"THINK-text duplicates & {e0.get('think_text_duplicates', 0)}",
+                f"legacy replay match (clean pools) & {100 * e0['replay']['clean_match_rate']:.1f}\\%"]
         (out / "t1_cohorts.tex").write_text(
-            "\\begin{tabular}{lrrr}\\toprule cohort & 96 & 94 & 93\\\\\\midrule items & "
-            f"{c['96']} & {c['94']} & {c['93']}\\\\\\bottomrule\\end{{tabular}}\n")
+            "\\begin{tabular}{lr}\\toprule audit item & value\\\\\\midrule\n" + "\\\\\n".join(rows)
+            + "\\\\\n\\bottomrule\\end{tabular}\n")
     if "costs" in N:                                                         # T2 costs (physical)
         esc = "\\_"
         rows = [k.replace("_", esc) + f" & {v['requests']:,} & {v['usd']:.2f}\\\\"
