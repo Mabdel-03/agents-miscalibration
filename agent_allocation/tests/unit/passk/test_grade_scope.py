@@ -112,3 +112,11 @@ def test_a_partially_written_heldout_manifest_never_leaks_ids(tmp_path):
     heldout = set(ids["v48_bank"] + ids["t200_bank"] + ids["t200_diag"])
     assert not (only & heldout)
     assert only == set(ids["smoke"] + ids["e1_fill"] + ids["c48_extra"])
+
+
+def test_one_fence_implementation():
+    """labels (contract §5.6 name), extract, score and the grader resolve to the same function objects."""
+    from agent_allocation.passk import extract, grade_scope, labels
+    assert labels.verify_seal is grade_scope.verify_seal
+    assert labels.blocked_node_ids is grade_scope.blocked_node_ids
+    assert extract._seal_functions() is grade_scope.verify_seal

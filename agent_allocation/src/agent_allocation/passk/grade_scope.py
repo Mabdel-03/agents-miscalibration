@@ -101,7 +101,8 @@ def _jobs_ids(path: Path) -> set[str]:
 
 def _jobs_by_partition(paths) -> dict[str, set[str]]:
     """``{partition: node ids}`` from ONE read of every jobs manifest of the run dir."""
-    jobs_dir = paths.manifests_dir / "jobs"
+    manifests = paths.manifests_dir if hasattr(paths, "manifests_dir") else Path(paths) / "manifests"
+    jobs_dir = manifests / "jobs"
     if not jobs_dir.is_dir():
         return {}
     return {path.stem: _jobs_ids(path) for path in sorted(jobs_dir.glob("*.jsonl"))}
@@ -120,8 +121,15 @@ def _scope(paths, cfg: Mapping[str, Any]) -> tuple[frozenset[str], frozenset[str
     return frozenset(blocked), frozenset(allowed - blocked)
 
 
-def blocked_node_ids(paths, cfg: Mapping[str, Any]) -> frozenset[str]:
-    """Held-out node ids of this run dir whose split has no verified seal (empty for a non-passk config)."""
+def blocked_node_ids(paths, cfg: Mapping[str, Any] | None = None) -> frozenset[str]:
+    """Held-out node ids of this run dir whose split has no verified seal (empty for a non-passk config).
+
+    THE single fence implementation (``passk.labels.blocked_node_ids`` is this function). ``paths`` is a RunPaths or a
+    shard run dir; ``cfg=None`` means the default passk held-out map (fail closed). The seal written by
+    ``passk.seal.run_seal`` lists both splits, so once it verifies grading lifts for v48 AND t200 together; the
+    *analysis* release stays per split (``extract --release v48|t200``, score only on released + sealed splits)."""
+    if cfg is None:
+        cfg = {"passk": {}}
     if not is_passk_config(cfg):
         return frozenset()
     return _scope(paths, cfg)[0]

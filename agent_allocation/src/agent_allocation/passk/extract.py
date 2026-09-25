@@ -287,10 +287,7 @@ def _frame(rows: list[dict]) -> pd.DataFrame:
 
 def _seal_functions():
     """``blocked_node_ids``/``verify_seal`` from WP-G's ``grade_scope`` when present, else the local shim."""
-    try:
-        from agent_allocation.passk.grade_scope import verify_seal  # type: ignore[attr-defined]
-    except ImportError:
-        from agent_allocation.passk.labels import verify_seal
+    from agent_allocation.passk.grade_scope import verify_seal
     return verify_seal
 
 

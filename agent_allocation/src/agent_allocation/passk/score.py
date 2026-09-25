@@ -30,10 +30,7 @@ __all__ = ["brier_items", "coverage_tables", "mixed_vs_deep", "score"]
 
 
 def _seal(run_root: Path) -> dict:
-    try:
-        from agent_allocation.passk.grade_scope import verify_seal  # type: ignore[attr-defined]
-    except ImportError:
-        from agent_allocation.passk.labels import verify_seal
+    from agent_allocation.passk.grade_scope import verify_seal
     seal = verify_seal(run_root)
     if seal is None:
         raise PermissionError(f"{run_root}: no verifying SEAL_predictions.json; scoring refused")
