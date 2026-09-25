@@ -212,3 +212,18 @@ def test_passk_e2e_all_partitions_kill_resume_fence_and_order(tmp_path):
         released = [n for n, s in shard_nodes.items() if s.partition_id in heldout
                     and json.loads(shard_paths.parsed(n).read_text()).get("candidate")]
         assert released and all(shard_paths.grade(n).exists() for n in released)
+
+    # ---- the in-run gates over the same shard dirs ---------------------------------------------------------------
+    from agent_allocation.passk import checkpoints as cp
+    smoke_gate = cp.gate1_smoke(cfg, paths)
+    assert smoke_gate["criteria"]["all_terminal"]["passed"], smoke_gate
+    assert smoke_gate["criteria"]["exact_budgets"]["passed"], smoke_gate
+    assert smoke_gate["criteria"]["zero_cache_hits"]["passed"]
+    assert smoke_gate["complete"] is False                     # permaslug needs --fetch-metadata (live)
+    g2 = cp.gate2(cfg_m, paths_m, force=True)
+    assert g2["due"] and g2["criteria"]["exact_budgets"]["passed"] and g2["criteria"]["provider_drift"]["passed"], g2
+    assert not cp.gate2(cfg_m, paths_m, last_checked=g2["settled_nodes"])["due"]
+    g3 = cp.gate3(cfg_m, paths_m)
+    assert g3["passed"] and not paths_m.drain_sentinel.exists(), g3
+    g4 = cp.gate4(cfg_m, paths_m, check_duplicates=False)
+    assert g4["criteria"]["completion"]["passed"] and g4["criteria"]["dev_grades"]["passed"], g4
