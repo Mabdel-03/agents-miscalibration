@@ -28,7 +28,7 @@ def record_sandboxed_run(run_root: Path, stage: str, outputs: list[str], *, comm
 
 def write_prereg(run_root: Path, *, v48_predictions: pd.DataFrame | None = None,
                  t200_predictions: pd.DataFrame | None = None, predictors=PREDICTORS,
-                 skip: tuple[str, ...] = ()) -> None:
+                 skip: tuple[str, ...] = (), stages: tuple[str, ...] = ("e2-fit", "e5-fit")) -> None:
     """The complete sealed/ set from sandboxed e2-fit/e5-fit runs (+ e1_selection.json unless present)."""
     run_root = Path(run_root)
     sealed = run_root / "sealed"
@@ -53,6 +53,8 @@ def write_prereg(run_root: Path, *, v48_predictions: pd.DataFrame | None = None,
                 "sealed/t200/manifest.json": {"model": "e5"}, "sealed/t200/seeds.json": {"seed": 1},
                 "sealed/t200/models/P1.json": {"w": [0]}}
     for stage, files in (("e2-fit", e2_files), ("e5-fit", e5_files)):
+        if stage not in stages:
+            continue
         written = []
         for rel, payload in files.items():
             if rel in skip:

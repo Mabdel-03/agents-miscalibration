@@ -86,10 +86,27 @@ def _require_seeded(observed: pd.DataFrame) -> None:
             raise RuntimeError(f"{int(mixed.sum())} scored pools are missing from analysis_inputs/readouts.parquet "
                                "(pairs not cached?); refusing to mix seeded and tie-averaged outcomes")
 
+def _track_fallback(cls) -> None:
+    """Record the fallback scopes where the class definition could matter (>= 2 distinct exact vote keys; an
+    all-absent or single-answer pool reads the same under any class definition)."""
+    orig = cls.classes
+    cls.material_fallback = []
+
+    def classes(scope_id, member_ids):
+        before = cls.n_fallback
+        out = orig(scope_id, member_ids)
+        if cls.n_fallback > before and len({v for v in out.values() if v is not None}) >= 2:
+            cls.material_fallback.append(str(scope_id))
+        return out
+    cls.classes = classes
+
+
 def _require_no_fallback(cls) -> None:
-    if cls.n_fallback:
-        raise RuntimeError(f"{cls.n_fallback} scopes fell back to exact vote keys (missing from classes.parquet); "
-                           "refusing to seal predictions on the wrong class definition")
+    material = getattr(cls, "material_fallback", None)
+    n = len(material) if material is not None else cls.n_fallback
+    if n:
+        raise RuntimeError(f"{n} scopes fell back to exact vote keys (missing from classes.parquet; e.g. "
+                           f"{(material or [])[:3]}); refusing to use the wrong class definition")
 
 # ---------------------------------------------------------------------- unstructured ridge
 def _item_features(fd_item: pd.DataFrame, ic) -> dict:
@@ -165,6 +182,8 @@ def fit_and_predict(run_root: Path | str | None = None, *, draws: pd.DataFrame |
     fit = fitting_draws(draws, c48)
     _guard(fit)
     cls = ClassSource(draws=draws, table=classes, pools=pools)
+    if strict:
+        _track_fallback(cls)
     counts = cell_counts(fit)
     pooled = fit_pooled(fit, seed=seed)
     bench = dict(zip(fit.item_id, fit.benchmark))
@@ -395,6 +414,8 @@ def score(run_root: Path | str | None = None, *, draws: pd.DataFrame | None = No
             _require_complete_classes(Path(run_root))
         readouts = load_readouts(Path(run_root)) if run_root is not None else None
         cls = ClassSource(draws=draws, table=classes, pools=pools)
+        if strict:
+            _track_fallback(cls)
         observed = observed_v48(draws, pools, cls, v48, readouts)
         if strict:
             _require_no_fallback(cls)

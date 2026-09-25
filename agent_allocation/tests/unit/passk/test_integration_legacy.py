@@ -85,14 +85,23 @@ def test_pipeline_on_real_legacy(tmp_path, legacy_root, cache_path):
     for config_id, a in (("8x2", 2), ("4x4", 4), ("2x8", 8)):
         assert payload["table"][config_id]["macro"] == pytest.approx(legacy_deep.loc[a].mean(), abs=1e-9)
 
-    v48 = pd.DataFrame({"item_id": c48, "config_id": "1x16", "model": "beta", "pred_coverage": 0.5,
-                        "pred_plurality": 0.5, "pi_lo": 0.1, "pi_hi": 0.9})
-    sealkit.write_prereg(run_root, v48_predictions=v48, skip=("sealed/t200/predictions.parquet",))
+    # WP-A -> WP-M seam: the real E2 fit on the real extract's analysis_inputs (strict: no pending classes, no
+    # exact-key fallback), written where the seal expects it, then scored after the V48 release below.
+    from agent_allocation.passk.models import e2 as e2_mod
+    e2_mod.fit_and_predict(run_root, S=40, inner=8)
+    e2_outs = sorted(str(p.relative_to(run_root)) for p in (run_root / "sealed" / "v48").rglob("*") if p.is_file())
+    assert "sealed/v48/predictions.parquet" in e2_outs and "sealed/v48/population.parquet" in e2_outs
+    sealkit.record_sandboxed_run(run_root, "e2-fit", e2_outs)
+    sealkit.write_prereg(run_root, skip=("sealed/t200/predictions.parquet",), stages=("e5-fit",))
     assert seal_mod.run_seal(run_root, require_git=False) == 1 and verify_seal(run_root) is None
-    sealkit.write_prereg(run_root, v48_predictions=v48)
+    sealkit.write_prereg(run_root, stages=("e5-fit",))
     assert seal_mod.run_seal(run_root, require_git=False) == 0 and verify_seal(run_root) is not None
 
     extract(run_root, legacy_root=legacy_root, read_raw=False, release=["v48"])
     released = load_draws(run_root)
     assert (released.partition == "v48_bank").sum() == 8 * len(c48)
     assert verify_seal(run_root) is not None
+    # post-release: the sealed E2 predictions are scored against the released V48 outcomes (the WP-M scorer on
+    # WP-A's analysis_inputs; strict: pending classes / missing readouts would raise)
+    scored = e2_mod.score(run_root)
+    assert (run_root / "scores" / "e2" / "overall.parquet").exists() and len(scored["overall"])
