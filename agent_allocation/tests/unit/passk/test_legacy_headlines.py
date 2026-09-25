@@ -68,6 +68,17 @@ def test_sample16_and_vote25_legacy_tie_mode(draws, cache):
     assert round(s94.loc["25x1", "S_known_macro"], 4) == 0.4330
 
 
+def test_decomposition_exact_on_legacy_pools(draws, cache):
+    from agent_allocation.passk.metrics import decomposition
+    pools = build_pools(draws, panels=("L96",), configs=("16x1", "8x1", "4x1", "1x16", "1x1"))
+    m = pool_metrics(readout_pools(pools, draws, cache=cache, mode="legacy"), draws).dropna(subset=["H_known",
+                                                                                                    "S_known"])
+    assert len(m) > 400
+    for row in m.itertuples():
+        d = decomposition(row.H_known, row.H_known, row.S_known)
+        assert d["generation"] + d["availability"] + d["selection"] == d["error"]
+
+
 def test_legacy_replay_matches_sealed_selections(legacy_root, draws, cache):
     from agent_allocation.passk.e0.replay import replay
     out = replay(legacy_root, draws, cache)

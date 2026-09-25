@@ -94,3 +94,31 @@ def test_held_out_predictions_refuse_label_columns(tmp_path):
         write_held_out_predictions(tmp_path / "p.parquet", pd.DataFrame({"item_id": ["a"], "correct": [True]}))
     digest = write_held_out_predictions(tmp_path / "p.parquet", pd.DataFrame({"item_id": ["a"], "p": [0.5]}))
     assert digest == hashlib.sha256((tmp_path / "p.parquet").read_bytes()).hexdigest()
+
+
+def test_development_scopes_never_hold_held_out_members(tmp_path):
+    public = tmp_path / "artifacts" / "manifests" / "public"
+    public.mkdir(parents=True)
+    (public / "aime.jsonl").write_text(json.dumps(fakeroot.MATH_TASK) + "\n")
+    splits = {"panels": {"L96": ["aime/2026/1"], "C48": ["aime/2026/1"], "V48": ["aime/2026/1"], "T200": []}}
+    (tmp_path / "artifacts" / "manifests" / "splits.json").write_text(json.dumps(splits))
+    shard = tmp_path / "artifacts" / "shards" / "mancer"
+    task = fakeroot.MATH_TASK
+    for r in range(8):
+        fakeroot.write_node(shard, "e1_fill", task, 2048, r, "\\boxed{%d}" % (r % 2), r % 2 == 1)
+        fakeroot.write_node(shard, "c48_extra", task, 8192, r, "\\boxed{1}", True)
+        fakeroot.write_node(shard, "v48_bank", task, 2048, r, "\\boxed{1}", True)
+    _seal(tmp_path)
+    from agent_allocation.passk.pairs import PairCache, Pair
+    PairCache(tmp_path / "catalog" / "pair_verdicts.parquet").fill([Pair("aime/2026/1", "0", "1")])
+    extract(tmp_path, include_legacy=False, release=["v48"])
+    pools = pd.read_parquet(tmp_path / "analysis_inputs" / "pools.parquet")
+    draws = load_draws(tmp_path)
+    held = set(draws.loc[draws.partition == "v48_bank", "candidate_id"])
+    assert len(held) == 8
+    dev = pools[pools.panel.isin(["L96", "C48"])]
+    assert len(dev) and {"8x2", "c48fit", "2x8"} <= set(dev.config_id)
+    for members in dev.member_ids:
+        assert not set(members) & held
+    v48 = pools[pools.panel == "V48"]
+    assert set(v48.config_id) >= {"8x2"} and all(set(m) <= held for m in v48.member_ids)
