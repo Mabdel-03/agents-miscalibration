@@ -119,6 +119,9 @@ def score(run_root: Path, *, n_resamples: int = 10_000) -> dict:
     locked = json.loads((run_root / "sealed" / "e1_selection.json").read_text())["selected"]
     primary: dict = {"seal_code_commit": seal.get("code_commit"), "locked": locked}
     primary["mixed_vs_deep"] = mixed_vs_deep(metrics, locked, n_resamples=n_resamples)
+    tie = metrics.assign(S_known=metrics["S_tie"])            # secondary: the analytic tie-averaged readout
+    primary["mixed_vs_deep_tie_averaged"] = {k: v for k, v in mixed_vs_deep(tie, locked, n_resamples=n_resamples)
+                                             .items() if k in ("estimate", "ci95_studentized", "p", "n_items")}
     pred_path = run_root / "sealed" / "t200" / "predictions.parquet"
     if pred_path.exists():
         items, dropped = brier_items(pd.read_parquet(pred_path), metrics)

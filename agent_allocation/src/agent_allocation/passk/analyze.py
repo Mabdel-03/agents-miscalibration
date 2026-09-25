@@ -98,7 +98,7 @@ def _stage_pairs(run_root: Path, args) -> int:
     draws = pd.concat(frames, ignore_index=True)
     pairs = enumerate_pairs(math_votes_from_frame(draws))
     cache = PairCache(run_root / "catalog" / "pair_verdicts.parquet")
-    workers = args.workers or int(os.environ.get("SLURM_CPUS_PER_TASK") or os.cpu_count() or 1)
+    workers = args.workers or int(os.environ.get("SLURM_CPUS_PER_TASK") or len(os.sched_getaffinity(0)) or 1)
     summary = cache.fill(pairs, workers=workers,
                          progress=lambda i, n: print(f"pairs {i}/{n}", flush=True) if i % 1000 == 0 else None)
     summary["pairs_needed"] = len(pairs)
