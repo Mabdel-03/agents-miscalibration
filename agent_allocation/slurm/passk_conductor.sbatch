@@ -16,4 +16,12 @@
 # Gate 0 runs the passk tests here, hence 4 CPUs.
 set -uo pipefail
 CODE=${CODE:-/orcd/data/tpoggio/001/mabdel03/agents_scaling_passk_cont/agent_allocation}
-bash "$CODE/slurm/passk_conductor.sh"
+# bash reads a script by byte offset while it runs: run a private copy so a commit to the worktree during the run
+# cannot garble the live conductor (a code change takes effect only through a stop + START_AT resume).
+STUDY=${STUDY:-/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/passk_cont_v1}
+mkdir -p "$STUDY/logs"
+SNAP="$STUDY/logs/conductor_${SLURM_JOB_ID:-manual}.sh"
+cp "$CODE/slurm/passk_conductor.sh" "$SNAP" || exit 2
+echo "[conductor] running $SNAP from $CODE @ $(git -C "$CODE" rev-parse HEAD 2>/dev/null)"
+export CODE STUDY
+exec bash "$SNAP"

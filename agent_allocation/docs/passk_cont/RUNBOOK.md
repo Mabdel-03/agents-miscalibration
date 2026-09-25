@@ -99,7 +99,7 @@ Endpoint drift (`passk-run`, before any paid dispatch): only protocol-relevant c
 name incl. quantization, a dropped `logit_bias`/`top_k`/`temperature`/`top_p`/`max_tokens`, a price rise > +10%, a
 smaller context / completion cap). Other listing changes are recorded as `drift_noted` in `run_decisions.jsonl` and
 dispatch continues under the adopted (frozen) lock. On refusal the live listing is saved under
-`state/locks/snapshots/drift_probe_*.json`; the owner decides (the frozen node ids never change).
+`$RUN/shards/<s>/locks/snapshots/drift_probe_*.json`; the owner decides (the frozen node ids never change).
 
 ## 5. Single steps by hand
 

@@ -221,6 +221,7 @@ if [ "$START_AT" = gate1 ]; then
   declare -A GJ
   for s in "${SHARDS[@]}"; do GJ[$s]=$(submit grade "$s"); [ -n "${GJ[$s]}" ] || stop gate1 "grade $s not submitted" 1; done
   wait_jobs "${GJ[@]}" || stop gate1 "grade jobs did not end within ${WAIT_MAX}s" 1
+  for s in "${SHARDS[@]}"; do [ "$(job_rc "${GJ[$s]}")" = 0 ] || stop gate1 "smoke grade $s rc=$(job_rc "${GJ[$s]}")"; done
   for s in "${SHARDS[@]}"; do
     checkpoint gate1-smoke "$s" --fetch-metadata; rc=$?
     [ $rc -eq 0 ] || stop gate1 "smoke gate $s rc=$rc (gates/gate1_smoke_$s.json)"
