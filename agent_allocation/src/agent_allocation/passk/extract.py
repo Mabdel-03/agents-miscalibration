@@ -335,7 +335,8 @@ def extract(run_root: Path = RUN_ROOT, *, legacy_root: Path = LEGACY_ROOT, relea
     splits = _splits(run_root)
     panels = splits.get("panels", {})
     frames = []
-    if include_legacy and Path(legacy_root).exists():
+    include_legacy = include_legacy and Path(legacy_root).exists()
+    if include_legacy:
         frames.append(legacy_draws(legacy_root, with_labels=True, panels=panels, read_raw=read_raw))
     frames.append(passk_draws(run_root, plan.partitions, labelled=plan.labelled, panels=panels, read_raw=read_raw))
     draws = pd.concat([f for f in frames if len(f)], ignore_index=True) if any(len(f) for f in frames) \
