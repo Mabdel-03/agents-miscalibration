@@ -3,8 +3,8 @@
 Worktree `/orcd/data/tpoggio/001/mabdel03/agents_scaling_passk_wpA`, package `agent_allocation/src/agent_allocation/passk/`.
 Tests: `cd agent_allocation && .venv/bin/python -m pytest -q tests/unit/passk` (40 pass, 1 skipped where ptrace is
 blocked; includes `test_integration_legacy.py`: real L96 + synthetic e1_fill/v48 through extract, E1 lock, seal
-refusing an injected fenced read, and release). The rest of the unit suite (`tests/unit --ignore=tests/unit/passk`)
-is green: 971 passed. Without a filled pair cache the five cache-dependent real-data tests skip (35 pass, 6 skip);
+refusing an injected fenced read, and release). Whole unit suite (`tests/unit`, env-var free) at the final
+commit: 1007 passed, 6 skipped (5 need a filled pair cache, 1 needs ptrace). Without a filled pair cache the five cache-dependent real-data tests skip (35 pass, 6 skip);
 point `PASSK_PAIR_CACHE` at a cache (e.g. the copy named below) to run them (~25 s).
 
 ## Done (all committed)
@@ -68,6 +68,9 @@ point `PASSK_PAIR_CACHE` at a cache (e.g. the copy named below) to run them (~25
 8. Report: F2/F6 figures (WP-M outputs), prose beyond the skeleton, `latexmk` not tested here.
 
 ## Known issues
+
+- Merge hazard: `tests/unit/passk/__init__.py` and `conftest.py` are new here; if WP-G/WP-M add files with the same
+  names the merge is an add/add conflict (the conftest only defines the skippable `legacy_root` fixture).
 
 - Pair fills run Math-Verify in-process on each worker's main thread (SIGALRM 5 s). A stall inside C code that ignores
   SIGALRM would hang that worker; the scratch legacy fill (15,158 pairs) never hit one. `--isolate-pairs` evaluates
