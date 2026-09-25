@@ -118,20 +118,214 @@ def _stage_models(run_root: Path, which: str) -> int:
     return EXIT_OK
 
 
-def _audited_models(run_root: Path, stage: str, log: Path) -> int:
-    handle = log.open("w", encoding="utf-8")
-    handle.write("# mode=audithook (strace unavailable: ptrace not permitted)\n")
+# --------------------------------------------------------------------------- Gate P sandbox (bwrap)
+# strace/ptrace is blocked on the compute nodes (probe 23919235), and an in-process audit hook cannot see
+# pyarrow's C-level reads, so neither is accepted as the fence. The fit stages (and the seal) instead re-exec
+# themselves inside a bwrap mount namespace in which the fenced data (artifacts/shards, artifacts/private, the HF
+# cache, the legacy root) does not exist: a forbidden read fails with ENOENT instead of depending on a log.
+SANDBOX_STAGES = ("e2-fit", "e5-fit", "seal")
+SANDBOX_SYSTEM = ("/usr", "/lib", "/lib64", "/bin", "/etc")
+SANDBOX_ENV_ROOT = "/orcd/home/002/mabdel03/conda_envs/consortium"
+CODE_ROOT = Path(__file__).resolve().parents[4]          # the worktree (holds agent_allocation/.venv + src)
+SANDBOX_RECORD_VERSION = "passk-sandbox-run-v1"
+_HASH_ENV = "PASSK_SANDBOX_ARGV_SHA256"
 
-    def hook(event: str, event_args: tuple) -> None:
-        if event == "open" and event_args and isinstance(event_args[0], (str, bytes, os.PathLike)):
-            path = os.fsdecode(event_args[0])
-            handle.write(f'audit openat(AT_FDCWD, "{os.path.abspath(path)}", {event_args[1]!r})\n')
-            handle.flush()
-    sys.addaudithook(hook)
+
+def _sha256_file(path: Path) -> str:
+    import hashlib
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def argv_sha256(argv: list[str]) -> str:
+    import hashlib
+    return hashlib.sha256(json.dumps(list(argv)).encode("utf-8")).hexdigest()
+
+
+def sandbox_mounts(run_root: Path, *, code_root: Path = CODE_ROOT, env_root: str = SANDBOX_ENV_ROOT) -> list[tuple]:
+    """(flag, source) pairs, in order. Only these paths exist inside the sandbox (plus tmpfs /tmp, /proc, /dev)."""
+    rr = Path(run_root).resolve()
+    mounts = [("--ro-bind", p) for p in SANDBOX_SYSTEM if Path(p).exists()]
+    mounts += [("--ro-bind", str(env_root)), ("--ro-bind", str(Path(code_root).resolve())),
+               ("--ro-bind", str(rr / "analysis_inputs"))]
+    if (rr / "gates").is_dir():
+        mounts.append(("--ro-bind", str(rr / "gates")))
+    splits = rr / "artifacts" / "manifests" / "splits.json"       # gold-free panels/strata (Gate S); the fits read it
+    if splits.is_file():
+        mounts.append(("--ro-bind", str(splits)))
+    mounts.append(("--bind", str(rr / "sealed")))
+    return mounts
+
+
+def allowed_sandbox_sources(run_root: Path, *, code_root: Path = CODE_ROOT,
+                            env_root: str = SANDBOX_ENV_ROOT) -> dict[str, set[str]]:
+    rr = Path(run_root).resolve()
+    ro = set(SANDBOX_SYSTEM) | {str(env_root), str(Path(code_root).resolve()), str(rr / "analysis_inputs"),
+                                str(rr / "gates"), str(rr / "artifacts" / "manifests" / "splits.json")}
+    return {"--ro-bind": ro, "--bind": {str(rr / "sealed")}}
+
+
+def sandbox_argv(run_root: Path, inner: list[str], *, python: str | None = None, code_root: Path = CODE_ROOT,
+                 env_root: str = SANDBOX_ENV_ROOT) -> list[str]:
+    """The exact bwrap command (without the argv-hash setenv, which is appended by ``_run_sandboxed``)."""
+    rr = Path(run_root).resolve()
+    cmd = ["bwrap", "--unshare-all", "--die-with-parent", "--tmpfs", "/tmp", "--proc", "/proc", "--dev", "/dev"]
+    for flag, src in sandbox_mounts(rr, code_root=code_root, env_root=env_root):   # after /tmp: binds win
+        cmd += [flag, src, src]
+    cmd += ["--chdir", str(Path(code_root).resolve()),
+            "--setenv", "PASSK_SANDBOXED", "1", "--setenv", "HOME", "/tmp", "--setenv", "MPLCONFIGDIR", "/tmp/mpl",
+            "--setenv", "HF_HUB_OFFLINE", "1"]
+    cmd += [python or sys.executable, "-m", "agent_allocation.cli", "passk-analyze", *inner,
+            "--run-root", str(rr)]
+    return cmd
+
+
+def check_sandbox_argv(argv: list[str], run_root: Path, **kw) -> list[str]:
+    """Problems with a recorded bwrap argv (empty list = it is the fence). Used by the seal."""
+    problems = []
+    if not argv or Path(argv[0]).name != "bwrap":
+        return ["not a bwrap command"]
+    for flag in ("--unshare-all", "--die-with-parent"):
+        if flag not in argv:
+            problems.append(f"missing {flag}")
+    allowed = allowed_sandbox_sources(run_root, **kw)
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok in ("--bind", "--ro-bind", "--bind-try", "--ro-bind-try", "--dev-bind", "--dev-bind-try"):
+            src, dst = argv[i + 1], argv[i + 2]
+            if tok not in allowed or src not in allowed[tok] or src != dst:
+                problems.append(f"mount {tok} {src} -> {dst} is not on the allow-list")
+            i += 3
+            continue
+        if tok in ("--setenv",):
+            i += 3
+            continue
+        if tok in ("--tmpfs", "--proc", "--dev", "--chdir", "--unsetenv"):
+            if tok == "--tmpfs" and argv[i + 1] != "/tmp":
+                problems.append(f"tmpfs at {argv[i + 1]}")
+            i += 2
+            continue
+        if tok.startswith("--"):
+            if tok not in ("--unshare-all", "--die-with-parent", "--new-session"):
+                problems.append(f"unexpected bwrap option {tok}")
+            i += 1
+            continue
+        break                                                       # the program starts here
+    return problems
+
+
+def _code_commit() -> tuple[str | None, bool]:
+    import subprocess
     try:
-        return _stage_models(run_root, "e2" if stage == "e2-fit" else "e5")
-    finally:
-        handle.flush()
+        head = subprocess.run(["git", "-C", str(CODE_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(CODE_ROOT), "status", "--porcelain", "--untracked-files=no"],
+                               capture_output=True, text=True, check=True).stdout.strip()
+        return head, bool(dirty)
+    except (OSError, Exception):                                   # noqa: BLE001 - git missing or not a repo
+        return None, True
+
+
+def _sealed_hashes(run_root: Path) -> dict[str, str]:
+    out = {}
+    sealed = Path(run_root) / "sealed"
+    if sealed.is_dir():
+        for path in sorted(sealed.rglob("*")):
+            rel = str(path.relative_to(run_root))
+            if (path.is_file() and not path.name.startswith(".") and path.name != "SEAL_predictions.json"
+                    and not rel.startswith("sealed/runs/")):
+                out[rel] = _sha256_file(path)
+    return out
+
+
+def run_record_path(run_root: Path, stage: str) -> Path:
+    return Path(run_root) / "sealed" / "runs" / f"{stage}.json"
+
+
+def verify_run_record(run_root: Path, stage: str) -> tuple[dict | None, list[str]]:
+    """The sandboxed-run record of a fit stage, and its problems (rc, argv hash, outputs still match)."""
+    path = run_record_path(run_root, stage)
+    if not path.exists():
+        return None, [f"{path} missing (run --stage {stage} --sandbox)"]
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, [f"{path} unreadable: {exc}"]
+    problems = []
+    if rec.get("version") != SANDBOX_RECORD_VERSION or rec.get("sandbox") != "bwrap":
+        problems.append(f"{stage}: not a bwrap sandbox record")
+    if rec.get("rc") != 0:
+        problems.append(f"{stage}: sandboxed run exited {rec.get('rc')}")
+    if argv_sha256(rec.get("argv") or []) != rec.get("argv_sha256"):
+        problems.append(f"{stage}: argv hash mismatch")
+    problems += [f"{stage}: {p}" for p in check_sandbox_argv(rec.get("argv") or [], run_root)]
+    outputs = rec.get("outputs") or {}
+    if stage != "seal" and not outputs:
+        problems.append(f"{stage}: the sandboxed run wrote nothing")
+    for rel, sha in outputs.items():
+        target = Path(run_root) / rel
+        if not target.is_file() or _sha256_file(target) != sha:
+            problems.append(f"{stage}: {rel} changed or missing since the sandboxed run")
+    return rec, problems
+
+
+def _run_sandboxed(run_root: Path, stage: str, argv: list[str]) -> int:
+    """Re-exec ``passk-analyze --stage <stage>`` inside bwrap; record the exact argv in sealed/runs/<stage>.json."""
+    import shutil
+    import socket
+    import subprocess
+    from datetime import datetime, timezone
+
+    run_root = Path(run_root).resolve()
+    if stage not in SANDBOX_STAGES:
+        print(f"--sandbox applies to {SANDBOX_STAGES} only", file=sys.stderr)
+        return EXIT_FAIL
+    if shutil.which("bwrap") is None:
+        print("bwrap not found on this node; the Gate P fence cannot run here", file=sys.stderr)
+        return EXIT_FAIL
+    if not (run_root / "analysis_inputs").is_dir():
+        print(f"blocked: {run_root}/analysis_inputs missing", file=sys.stderr)
+        return EXIT_BLOCKED
+    if stage != "seal":
+        rec, problems = verify_run_record(run_root, stage)
+        if rec is not None and not problems:
+            print(json.dumps({"stage": stage, "sandboxed": "already done", "outputs": len(rec["outputs"])}))
+            return EXIT_OK                                           # resumable: a verified fit is a no-op
+        if rec is not None:
+            print(f"{stage}: an earlier sandboxed record does not verify: {problems}", file=sys.stderr)
+            return EXIT_FAIL
+    (run_root / "sealed").mkdir(parents=True, exist_ok=True)
+    head, dirty = _code_commit()
+    inner = [a for a in argv if a not in ("--sandbox", "--strace")]
+    cmd = sandbox_argv(run_root, inner)
+    digest = argv_sha256(cmd)
+    env_extra = ["--setenv", _HASH_ENV, digest, "--setenv", "PASSK_CODE_COMMIT", head or "",
+                 "--setenv", "PASSK_CODE_DIRTY", "1" if dirty else "0"]
+    prog = cmd.index("--chdir")                                      # setenvs go among the bwrap options
+    full = cmd[:prog] + env_extra + cmd[prog:]
+    before = _sealed_hashes(run_root)
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    proc = subprocess.run(full, check=False)
+    after = _sealed_hashes(run_root)
+    outputs = {rel: sha for rel, sha in after.items() if before.get(rel) != sha}
+    rec = {"version": SANDBOX_RECORD_VERSION, "stage": stage, "sandbox": "bwrap", "argv": cmd, "argv_sha256": digest,
+           "exec_argv": full, "code_commit": head, "worktree_dirty": dirty, "rc": proc.returncode,
+           "started_at": started, "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+           "host": socket.gethostname(), "outputs": outputs}
+    attempts = run_root / "logs" / "sandbox"
+    attempts.mkdir(parents=True, exist_ok=True)
+    (attempts / f"{stage}.{started.replace(':', '')}.json").write_text(json.dumps(rec, indent=2, sort_keys=True))
+    if proc.returncode == 0 and stage != "seal":
+        target = run_record_path(run_root, stage)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f".{target.name}.tmp{os.getpid()}")
+        tmp.write_text(json.dumps(rec, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, target)
+    return proc.returncode
 
 
 def cmd_passk_analyze(argv: list[str]) -> int:
@@ -147,8 +341,12 @@ def cmd_passk_analyze(argv: list[str]) -> int:
     parser.add_argument("--isolate-pairs", action="store_true",
                         help="pairs: evaluate each pair in a hard-killable child (a C-level stall cannot hang the fill)")
     parser.add_argument("--no-raw", action="store_true", help="extract: skip the THINK generation id (raw gz)")
+    parser.add_argument("--sandbox", action="store_true",
+                        help="e2-fit/e5-fit/seal: re-exec this stage inside the Gate P bwrap mount namespace "
+                             "(only analysis_inputs/ ro, gates/ ro, sealed/ rw, code + env ro); the exact argv is "
+                             "recorded in sealed/runs/<stage>.json")
     parser.add_argument("--strace", action="store_true",
-                        help="e2-fit/e5-fit: re-run this stage under strace into logs/strace/<stage>.log (Gate P)")
+                        help="deprecated alias of --sandbox (ptrace is blocked on the compute nodes)")
     args = parser.parse_args(argv)
     run_root = Path(args.run_root)
     if args.stage in ("extract", "release"):
@@ -170,21 +368,9 @@ def cmd_passk_analyze(argv: list[str]) -> int:
             return EXIT_BLOCKED
         print(json.dumps({"selected": payload["selected"]}))
         return EXIT_OK
+    if (args.sandbox or args.strace) and args.stage in SANDBOX_STAGES and os.environ.get("PASSK_SANDBOXED") != "1":
+        return _run_sandboxed(run_root, args.stage, argv)
     if args.stage in ("e2-fit", "e5-fit"):
-        if args.strace:
-            import subprocess
-            log = run_root / "logs" / "strace" / f"{args.stage}.log"
-            log.parent.mkdir(parents=True, exist_ok=True)
-            inner = [a for a in argv if a != "--strace"]
-            cmd = ["strace", "-f", "-e", "trace=open,openat,openat2", "-o", str(log), sys.executable, "-m",
-                   "agent_allocation.cli", "passk-analyze", *inner]
-            proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
-            if "PTRACE_TRACEME" not in (proc.stderr or "") and "Operation not permitted" not in (proc.stderr or ""):
-                sys.stderr.write(proc.stderr or "")
-                return proc.returncode
-            # ptrace is blocked on this node: fall back to a Python audit hook (weaker: C-level opens such as
-            # pyarrow's are not seen). The log header records the mode so the seal reviewer can tell.
-            return _audited_models(run_root, args.stage, log)
         return _stage_models(run_root, "e2" if args.stage == "e2-fit" else "e5")
     if args.stage == "seal":
         from agent_allocation.passk.seal import run_seal

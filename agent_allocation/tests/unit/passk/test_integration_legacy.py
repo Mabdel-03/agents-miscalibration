@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 
 from agent_allocation.passk import seal as seal_mod
+from . import sealkit
 from agent_allocation.passk.analyze import e1_lock
 from agent_allocation.passk.extract import RUN_ROOT, extract, load_draws
 from agent_allocation.passk.labels import verify_seal
@@ -84,18 +85,11 @@ def test_pipeline_on_real_legacy(tmp_path, legacy_root, cache_path):
     for config_id, a in (("8x2", 2), ("4x4", 4), ("2x8", 8)):
         assert payload["table"][config_id]["macro"] == pytest.approx(legacy_deep.loc[a].mean(), abs=1e-9)
 
-    (run_root / "sealed" / "v48").mkdir(parents=True)
-    pd.DataFrame({"item_id": c48, "config_id": "1x16", "model": "beta", "pred_coverage": 0.5,
-                  "pred_plurality": 0.5, "pi_lo": 0.1, "pi_hi": 0.9}).to_parquet(
-        run_root / "sealed" / "v48" / "predictions.parquet")
-    logs = run_root / "logs" / "strace"
-    logs.mkdir(parents=True)
-    clean = f'1 openat(AT_FDCWD, "{run_root}/analysis_inputs/draws.parquet", O_RDONLY) = 3\n'
-    leak = f'1 openat(AT_FDCWD, "{art}/shards/mancer/parsed/aa/x.json", O_RDONLY) = 4\n'
-    (logs / "e2-fit.log").write_text(clean)
-    (logs / "e5-fit.log").write_text(clean + leak)
+    v48 = pd.DataFrame({"item_id": c48, "config_id": "1x16", "model": "beta", "pred_coverage": 0.5,
+                        "pred_plurality": 0.5, "pi_lo": 0.1, "pi_hi": 0.9})
+    sealkit.write_prereg(run_root, v48_predictions=v48, skip=("sealed/t200/predictions.parquet",))
     assert seal_mod.run_seal(run_root, require_git=False) == 1 and verify_seal(run_root) is None
-    (logs / "e5-fit.log").write_text(clean)
+    sealkit.write_prereg(run_root, v48_predictions=v48)
     assert seal_mod.run_seal(run_root, require_git=False) == 0 and verify_seal(run_root) is not None
 
     extract(run_root, legacy_root=legacy_root, read_raw=False, release=["v48"])
