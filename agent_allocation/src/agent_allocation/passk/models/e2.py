@@ -67,6 +67,30 @@ def _guard(fit: pd.DataFrame) -> None:
         raise RuntimeError(f"E2 fit frame contains {len(bad)} fenced rows ({sorted(set(bad.partition))})")
 
 
+
+def _require_complete_classes(run_root: Path) -> None:
+    """Production fits (inputs from analysis_inputs/) refuse while Math-Verify classes are pending: the chain is
+    extract -> pairs -> extract -> fit, never a silent exact-key fallback (review: integration_spec, fence)."""
+    manifest = Path(run_root) / "analysis_inputs" / "manifest.json"
+    pending = int(json.loads(manifest.read_text()).get("classes_pending_pools") or 0) if manifest.exists() else 0
+    if pending:
+        raise RuntimeError(f"classes_pending_pools={pending}: fill pairs and re-extract before fitting")
+
+
+
+def _require_seeded(observed: pd.DataFrame) -> None:
+    """Never mix seeded (readouts) and tie-averaged outcomes in one scored table."""
+    if "plurality_source" in observed.columns:
+        mixed = observed["plurality_source"] != "readouts_seeded"
+        if mixed.any():
+            raise RuntimeError(f"{int(mixed.sum())} scored pools are missing from analysis_inputs/readouts.parquet "
+                               "(pairs not cached?); refusing to mix seeded and tie-averaged outcomes")
+
+def _require_no_fallback(cls) -> None:
+    if cls.n_fallback:
+        raise RuntimeError(f"{cls.n_fallback} scopes fell back to exact vote keys (missing from classes.parquet); "
+                           "refusing to seal predictions on the wrong class definition")
+
 # ---------------------------------------------------------------------- unstructured ridge
 def _item_features(fd_item: pd.DataFrame, ic) -> dict:
     labs = np.array([label_value(v) for v in fd_item["correct"]])
@@ -128,13 +152,15 @@ def fit_and_predict(run_root: Path | str | None = None, *, draws: pd.DataFrame |
                     c48: list[str] | None = None, out_dir: Path | str | None = None, S: int = 800, inner: int = 48,
                     seed: int = PASSK_SEED, write: bool = True, overwrite: bool = False) -> dict:
     """Fit every E2 model on C48 development draws and predict all V48 items (= C48 items) x configurations."""
-    if draws is None:
+    out_dir = Path(out_dir) if out_dir is not None else (Path(run_root) / "sealed" / "v48" if write else None)
+    if write and (out_dir / "predictions.parquet").exists() and not overwrite:   # before any input is read
+        raise FileExistsError(f"{out_dir}/predictions.parquet exists (sealed artifacts are write-once)")
+    strict = draws is None
+    if strict:
+        _require_complete_classes(Path(run_root))
         draws, pools, classes = load_analysis_inputs(Path(run_root))
     if c48 is None:
         c48 = list(load_panels(Path(run_root))["C48"])
-    out_dir = Path(out_dir) if out_dir is not None else (Path(run_root) / "sealed" / "v48" if write else None)
-    if write and (out_dir / "predictions.parquet").exists() and not overwrite:
-        raise FileExistsError(f"{out_dir}/predictions.parquet exists (sealed artifacts are write-once)")
     rng = np.random.default_rng(seed)
     fit = fitting_draws(draws, c48)
     _guard(fit)
@@ -205,6 +231,8 @@ def fit_and_predict(run_root: Path | str | None = None, *, draws: pd.DataFrame |
     result = {"predictions": pred, "crossover": cross, "population": pop, "illustrative": illus,
               "illustrative_curves": pd.DataFrame(curves), "treatment_gap": _treatment_gap(pred),
               "pooled": pooled, "ridge": ridge, "classes_source": cls.source, "classes_stats": cls.stats()}
+    if strict:
+        _require_no_fallback(cls)
     if write:
         _write(out_dir, result, seed=seed, S=S, inner=inner, items=items, fit=fit)
     return result
@@ -362,8 +390,15 @@ def score(run_root: Path | str | None = None, *, draws: pd.DataFrame | None = No
             draws, pools, classes = load_analysis_inputs(Path(run_root))
         if v48 is None:
             v48 = list(load_panels(Path(run_root))["V48"])
+        strict = run_root is not None
+        if strict:
+            _require_complete_classes(Path(run_root))
         readouts = load_readouts(Path(run_root)) if run_root is not None else None
-        observed = observed_v48(draws, pools, ClassSource(draws=draws, table=classes, pools=pools), v48, readouts)
+        cls = ClassSource(draws=draws, table=classes, pools=pools)
+        observed = observed_v48(draws, pools, cls, v48, readouts)
+        if strict:
+            _require_no_fallback(cls)
+            _require_seeded(observed)
     obs = observed[["item_id", "config_id", "coverage", "plurality"]]
     res = score_frames(pred, cross, pop, obs)
     if write:

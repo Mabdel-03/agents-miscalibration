@@ -138,17 +138,43 @@ def predict_all(models: dict, frame: pd.DataFrame, seed: int = PASSK_SEED) -> pd
     return pd.concat(out, ignore_index=True)
 
 
+
+def _require_complete_classes(run_root: Path) -> None:
+    """Production fits (inputs from analysis_inputs/) refuse while Math-Verify classes are pending: the chain is
+    extract -> pairs -> extract -> fit, never a silent exact-key fallback (review: integration_spec, fence)."""
+    manifest = Path(run_root) / "analysis_inputs" / "manifest.json"
+    pending = int(json.loads(manifest.read_text()).get("classes_pending_pools") or 0) if manifest.exists() else 0
+    if pending:
+        raise RuntimeError(f"classes_pending_pools={pending}: fill pairs and re-extract before fitting")
+
+
+
+def _require_seeded(observed: pd.DataFrame) -> None:
+    """Never mix seeded (readouts) and tie-averaged outcomes in one scored table."""
+    if "plurality_source" in observed.columns:
+        mixed = observed["plurality_source"] != "readouts_seeded"
+        if mixed.any():
+            raise RuntimeError(f"{int(mixed.sum())} scored pools are missing from analysis_inputs/readouts.parquet "
+                               "(pairs not cached?); refusing to mix seeded and tie-averaged outcomes")
+
+def _require_no_fallback(cls) -> None:
+    if cls.n_fallback:
+        raise RuntimeError(f"{cls.n_fallback} scopes fell back to exact vote keys (missing from classes.parquet); "
+                           "refusing to seal predictions on the wrong class definition")
+
 def fit_and_predict(run_root: Path | str | None = None, *, draws: pd.DataFrame | None = None,
                     pools: pd.DataFrame | None = None, classes: pd.DataFrame | None = None,
                     panels: dict | None = None, out_dir: Path | str | None = None, seed: int = PASSK_SEED,
                     n_sim: int = 2000, write: bool = True, overwrite: bool = False) -> dict:
-    if draws is None:
+    out_dir = Path(out_dir) if out_dir is not None else (Path(run_root) / "sealed" / "t200" if write else None)
+    if write and (out_dir / "predictions.parquet").exists() and not overwrite:   # before any input is read
+        raise FileExistsError(f"{out_dir}/predictions.parquet exists (sealed artifacts are write-once)")
+    strict = draws is None
+    if strict:
+        _require_complete_classes(Path(run_root))
         draws, pools, classes = load_analysis_inputs(Path(run_root))
     if panels is None:
         panels = load_panels(Path(run_root))
-    out_dir = Path(out_dir) if out_dir is not None else (Path(run_root) / "sealed" / "t200" if write else None)
-    if write and (out_dir / "predictions.parquet").exists() and not overwrite:
-        raise FileExistsError(f"{out_dir}/predictions.parquet exists (sealed artifacts are write-once)")
     for col in ("correct", "grade_state"):
         if col in draws.columns and draws.loc[draws.partition.isin(["t200_diag", "t200_bank", "v48_bank"]),
                                               col].notna().any():
@@ -160,6 +186,8 @@ def fit_and_predict(run_root: Path | str | None = None, *, draws: pd.DataFrame |
     assignment = load_assignment_t200(Path(run_root)) if run_root is not None else {}
     res = _fit_predict_core(draws, pools, cls, l96, c48, t200, dev_feats, feats_all, seed=seed, n_sim=n_sim,
                             default_provider=assignment)
+    if strict:
+        _require_no_fallback(cls)
     if write:
         _write(out_dir, res, seed=seed, n_sim=n_sim, cls=cls)
     return res
@@ -337,8 +365,15 @@ def score(run_root: Path | str | None = None, *, draws=None, pools=None, classes
             draws, pools, classes = load_analysis_inputs(Path(run_root))
         if t200 is None:
             t200 = list(load_panels(Path(run_root))["T200"])
+        strict = run_root is not None
+        if strict:
+            _require_complete_classes(Path(run_root))
         readouts = load_readouts(Path(run_root)) if run_root is not None else None
-        observed = observed_t200(draws, pools, ClassSource(draws=draws, table=classes, pools=pools), t200, readouts)
+        cls = ClassSource(draws=draws, table=classes, pools=pools)
+        observed = observed_t200(draws, pools, cls, t200, readouts)
+        if strict:
+            _require_no_fallback(cls)
+            _require_seeded(observed)
     res = score_frames(pred, observed)
     if write:
         out = Path(out_dir) if out_dir is not None else Path(run_root) / "scores" / "e5"

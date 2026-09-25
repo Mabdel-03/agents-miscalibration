@@ -38,7 +38,33 @@ def _write_root(root, draws, panels):
     (root / "artifacts" / "manifests" / "splits.json").write_text(json.dumps({"panels": full}))
 
 
-def test_run_root_fit_then_score(tmp_path):
+def _lenient(monkeypatch):
+    """This synthetic root has no classes.parquet/readouts.parquet (exact-key classes by construction); the
+    production strictness (no fallback, no seeded/tie-averaged mix) is tested in test_production_fit_is_strict."""
+    for mod in (e2, e5):
+        monkeypatch.setattr(mod, "_require_no_fallback", lambda cls: None)
+        monkeypatch.setattr(mod, "_require_seeded", lambda observed: None)
+
+
+def test_production_fit_is_strict(tmp_path):
+    labelled, panels = synth(n_dev=4, n_t200=2, t200_labels=True)
+    pre = labelled[labelled.partition != "t200_bank"].astype({"correct": object, "grade_state": object})
+    pre.loc[pre.partition == "t200_diag", ["correct", "grade_state"]] = None
+    root = tmp_path / "run"
+    _write_root(root, pre, panels)
+    with pytest.raises(RuntimeError, match="exact vote keys"):          # no classes.parquet -> refused
+        e5.fit_and_predict(root, n_sim=50)
+    with pytest.raises(RuntimeError, match="exact vote keys"):
+        e2.fit_and_predict(root, S=20, inner=4)
+    assert not (root / "sealed" / "t200" / "predictions.parquet").exists()
+    (root / "analysis_inputs" / "manifest.json").write_text(json.dumps({"classes_pending_pools": 3}))
+    for fit in (lambda: e5.fit_and_predict(root, n_sim=50), lambda: e2.fit_and_predict(root, S=20, inner=4)):
+        with pytest.raises(RuntimeError, match="classes_pending_pools=3"):
+            fit()
+
+
+def test_run_root_fit_then_score(tmp_path, monkeypatch):
+    _lenient(monkeypatch)
     labelled, panels = synth(n_dev=4, n_t200=2, t200_labels=True)
     v48 = _v48_rows(panels["C48"])
     pre = labelled[labelled.partition != "t200_bank"].astype({"correct": object, "grade_state": object})

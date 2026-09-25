@@ -45,6 +45,7 @@ def write_prereg(run_root: Path, *, v48_predictions: pd.DataFrame | None = None,
                                          "predictor": list(predictors), "p_delivered": 0.5, "p_coverage": 0.5})
     e2_files = {"sealed/v48/predictions.parquet": v48_predictions,
                 "sealed/v48/crossover.parquet": pd.DataFrame({"item_id": ["c0"], "x": [1.0]}),
+                "sealed/v48/population.parquet": pd.DataFrame({"config_id": ["1x16"], "x": [1.0]}),
                 "sealed/v48/manifest.json": {"model": "e2"}, "sealed/v48/seeds.json": {"seed": 1},
                 "sealed/v48/models/ridge.json": {"w": [0]}}
     e5_files = {"sealed/t200/predictions.parquet": t200_predictions,

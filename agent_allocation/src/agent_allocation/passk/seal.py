@@ -49,6 +49,7 @@ _ALLOWED_DIRS = ("analysis_inputs", "sealed")
 # PREREG seal contents (path under the run root -> producing stage; None = not a sandboxed stage).
 REQUIRED = {"sealed/e1_selection.json": None,
             "sealed/v48/predictions.parquet": "e2-fit", "sealed/v48/crossover.parquet": "e2-fit",
+            "sealed/v48/population.parquet": "e2-fit",
             "sealed/v48/manifest.json": "e2-fit", "sealed/v48/seeds.json": "e2-fit",
             "sealed/t200/predictions.parquet": "e5-fit", "sealed/t200/features.parquet": "e5-fit",
             "sealed/t200/manifest.json": "e5-fit", "sealed/t200/seeds.json": "e5-fit"}
