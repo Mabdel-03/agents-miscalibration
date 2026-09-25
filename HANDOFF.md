@@ -71,6 +71,18 @@ Per-config Brier: 16x1 P2 0.117 / P3 0.111 / P0 0.206; 1x16 about 0.165 for all.
 Production-size E2 (S=800, inner=48) on the legacy pseudo-C48 takes about 51 s. E5 takes about 7 s per fit on
 legacy-size data.
 
+### Cross-worktree schema check (WP-A `416c599` → WP-M)
+WP-A's own code built `draws.parquet`, `pools.parquet` (with `c48fit` scopes), `classes.parquet` (exact classes,
+no pair cache) and `readouts.parquet` from the legacy root into a scratch run root. Two things were checked against
+that run root:
+- `e2.fit_and_predict(run_root)` resolved **196/196 class scopes from WP-A's table and needed 0 fallbacks**.
+- `e5.validate_split(..., classes=, pools=)` ran on WP-A's tables. Its fold-0 primary Brier (min_known 2) was P2 0.171,
+  P1 0.177, P0 0.201. Only fold 0 was run, so these are not the 4-fold numbers above.
+
+The script is `wpa_build.py` in this session's scratchpad, which is not committed. Rebuild it by running WP-A's
+`extract.legacy_draws` → `pools.build_pools` + `c48_fit_scopes` → `readout.class_rows(cache=None)` with
+`PYTHONPATH=<wpA>/agent_allocation/src`.
+
 ## Remaining, in priority order
 1. **Wire into WP-A's `passk-analyze`**: stage `e2-fit` → `e2.fit_and_predict(run_root)`, `e5-fit` →
    `e5.fit_and_predict(run_root)`, `score` → `e2.score(run_root)` and `e5.score(run_root)`. Thin CLIs also exist:
