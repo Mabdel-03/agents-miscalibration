@@ -54,6 +54,7 @@ DEFAULT = "1x16"
 REFERENCE = "fixed:1x16"
 OUT_PARTS = ("lex", "selcmp")
 EPS = 1e-12            # float slack on the delta comparisons (0.80 - 0.02 must tie 0.78)
+CI_TOL = 1e-9          # a percentile bound this close to 0 touches zero (0/1 T200 outcomes give bounds like 3e-18)
 assert len(set(M15)) == 15 and all(n * a <= 16 for n, a in map(parse, M15)) and set(M5) <= set(M15)
 
 
@@ -84,6 +85,17 @@ def lex_order(table: pd.DataFrame, *, acc: str, lat: str, cons: str | None = Non
         order.append(winner)
         remaining = remaining[remaining[key] != winner]
     return order
+
+
+def ci_side(ci: Sequence[float], tol: float = CI_TOL) -> int:
+    """+1 if the 95% interval lies strictly above zero, -1 if strictly below, 0 if it includes or touches zero
+    (a bound within ``tol`` of 0 counts as touching: it is a discrete bootstrap landing on no difference)."""
+    lo, hi = float(ci[0]), float(ci[1])
+    if lo > tol:
+        return 1
+    if hi < -tol:
+        return -1
+    return 0
 
 
 def macro_mean(values: Sequence[float], benchmarks: Sequence[str]) -> float:
@@ -312,11 +324,17 @@ def _fmt_lvl(r: Mapping[str, Any], scale: float = 1.0, digits: int = 3) -> str:
     return f"{r['mean'] * scale:.{digits}f} [{lo * scale:.{digits}f}, {hi * scale:.{digits}f}]"
 
 
+def _z(x: float) -> float:
+    """Float noise at zero (e.g. -3.5e-18 from a discrete bootstrap) prints as +0.0, not -0.0."""
+    return 0.0 if abs(x) <= CI_TOL else x
+
+
 def _fmt_diff(r: Mapping[str, Any] | None, scale: float = 1.0, digits: int = 1) -> str:
     if not r:
         return "--"
     lo, hi = r["ci95"]
-    return f"{r['estimate'] * scale:+.{digits}f} [{lo * scale:+.{digits}f}, {hi * scale:+.{digits}f}]"
+    return (f"{_z(r['estimate']) * scale:+.{digits}f} [{_z(lo) * scale:+.{digits}f}, "
+            f"{_z(hi) * scale:+.{digits}f}]")
 
 
 class Stats:
@@ -679,7 +697,12 @@ def analyze(study_root: Path, *, n_sim: int = 2000, n_resamples: int = 10_000, o
                                "macro accuracy within 0.02 of the best -> consistency within 0.02 (C48 only) -> "
                                "lowest macro latency",
             "winner_share": "share of 10,000 benchmark-stratified bootstrap replicates in which the selector is the "
-                            "population LEX winner among the deployable selectors",
+                            "population LEX winner among the deployable selectors (C48: macro; T200: "
+                            "winner_share_macro and winner_share_mixture)",
+            "headline": "per view (C48 macro, T200 macro, T200 mixture): in_top_band = accuracy within delta of the "
+                        "best deployable row; within_delta_of_1x16 = accuracy at most delta below always-1x16; "
+                        "ci_side = +1/-1 if the 95% percentile CI lies above/below 0, else 0 (a bound within 1e-9 "
+                        "of 0 counts as touching); like-for-like statistical rows = C48 stat M5, T200 sealed M5",
         },
         "crossfit": {"outer_folds": "glm.grouped_folds(L96, 5, seed 20260925) = the E5 ridge-CV fold assignment on "
                                     "L96 (verified identical to the sealed fit's)",
@@ -701,6 +724,7 @@ def analyze(study_root: Path, *, n_sim: int = 2000, n_resamples: int = 10_000, o
                  "stat_minus_llm": llm_contrasts_t200},
         "runtime_s": round(time.time() - started, 1),
     }
+    report["headline"] = headline_facts(report)
     (out_dir / "report.json").write_text(json.dumps(report, indent=1, default=float) + "\n")
     (out_dir / "report.md").write_text(render_markdown(report))
     return report
@@ -736,25 +760,193 @@ def c48_table(report: Mapping[str, Any], *, only: Iterable[str] | None = None) -
     return "\n".join(out)
 
 
-def t200_table(report: Mapping[str, Any], *, only: Iterable[str] | None = None) -> str:
+def _share(r: Mapping[str, Any], key: str) -> str:
+    return f"{r[key]:.2f}" if r.get(key) is not None else "--"
+
+
+def t200_table(report: Mapping[str, Any], *, only: Iterable[str] | None = None, order: str = "macro") -> str:
+    """T200 rows under both weightings (accuracy level, Δ vs 1x16, LEX rank and bootstrap win share for each),
+    sorted by the ``order`` ("macro" or "mixture") LEX rank."""
+    if order not in ("macro", "mixture"):
+        raise ValueError(order)
     rows = report["t200"]["selectors"]
     if only is not None:
         keep = set(only)
         rows = [r for r in rows if r["selector"] in keep]
-    rows = sorted(rows, key=lambda r: (r["lex_rank_macro"] is None, r["lex_rank_macro"] or 0))
+    rk_key = f"lex_rank_{order}"
+    rows = sorted(rows, key=lambda r: (r[rk_key] is None, r[rk_key] or 0))
     out = ["| selector | menu | overhead | acc mixture [95% CI] | acc macro [95% CI] | latency s (macro) [95% CI] | "
-           "Δacc macro vs 1x16 (pts) | Δlat vs 1x16 (s) | rank macro | rank mixture | P(win) macro |",
-           "|---|---|---|---|---|---|---|---|---|---|---|"]
+           "Δacc mixture vs 1x16 (pts) | Δacc macro vs 1x16 (pts) | Δlat vs 1x16 (s) | rank mixture | rank macro | "
+           "P(win) mixture | P(win) macro |",
+           "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         d = r.get("minus_1x16", {})
         rk = r["lex_rank_macro"] if r["lex_rank_macro"] is not None else "ref"
         rm = r["lex_rank_mixture"] if r["lex_rank_mixture"] is not None else "ref"
-        share = f"{r['winner_share_macro']:.2f}" if r.get("winner_share_macro") is not None else "--"
         out.append(f"| {r['selector']} | {r['menu']} | {r['overhead_kind']} | {_fmt_lvl(r['acc_mixture'])} | "
                    f"{_fmt_lvl(r['acc_macro'])} | {_fmt_lvl(r['lat_macro'], digits=0)} | "
-                   f"{_fmt_diff(d.get('acc_macro'), 100)} | {_fmt_diff(d.get('lat_macro'), 1, 0)} | {rk} | {rm} | "
-                   f"{share} |")
+                   f"{_fmt_diff(d.get('acc_mixture'), 100)} | {_fmt_diff(d.get('acc_macro'), 100)} | "
+                   f"{_fmt_diff(d.get('lat_macro'), 1, 0)} | {rm} | {rk} | {_share(r, 'winner_share_mixture')} | "
+                   f"{_share(r, 'winner_share_macro')} |")
     return "\n".join(out)
+
+
+# ------------------------------------------------------------------------------------------------------------------
+# headline facts (generated from the numbers, per panel and weighting, so the prose cannot outrun them)
+# ------------------------------------------------------------------------------------------------------------------
+
+# view -> (panel, weights, accuracy key, rank key, win-share key, minus_1x16 key, stat_minus_llm key)
+VIEWS = {
+    "C48_macro": ("c48", "macro", "acc", "lex_rank_deployable", "winner_share_deployable", "acc", "acc"),
+    "T200_macro": ("t200", "macro", "acc_macro", "lex_rank_macro", "winner_share_macro", "acc_macro", "acc_macro"),
+    "T200_mixture": ("t200", "mixture", "acc_mixture", "lex_rank_mixture", "winner_share_mixture", "acc_mixture",
+                     "acc_mixture"),
+}
+# the statistical rows that share the LLM allocator's 5-option menu: cross-fitted M5 on C48, sealed M5 on T200
+LIKE_FOR_LIKE = {"c48": ("stat", "M5"), "t200": ("stat-sealed", "M5sealed")}
+STAT_KINDS = ("stat", "stat-sealed")
+
+
+def _predictor(selector: str) -> str:
+    return selector.split(":", 1)[1].split("/", 1)[0]
+
+
+def _contrast(c: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not c:
+        return None
+    return {"estimate": float(c["estimate"]), "ci95": [float(x) for x in c["ci95"]], "p": float(c["p"]),
+            "ci_side": ci_side(c["ci95"])}
+
+
+def headline_facts(report: Mapping[str, Any], delta: float = DELTA) -> dict[str, Any]:
+    """Per view (C48 macro, T200 macro, T200 mixture): where each statistical and LLM row sits against the LEX
+    accuracy tie band, its contrast with always-1x16, its rank and win share, and the like-for-like
+    statistical-minus-LLM accuracy contrasts. ``ci_side`` is +1 / -1 when the percentile CI is above / below 0,
+    else 0; ``in_top_band`` is accuracy within ``delta`` of the best deployable row (the set latency can decide);
+    ``within_delta_of_1x16`` is accuracy no more than ``delta`` below always-1x16."""
+    out: dict[str, Any] = {}
+    for view, (panel, weights, acc_k, rank_k, share_k, d_k, c_k) in VIEWS.items():
+        rows = report[panel]["selectors"]
+        dep = [r for r in rows if r.get(rank_k) is not None]
+        best = max(r[acc_k]["mean"] for r in dep)
+        ref_acc = next(r for r in rows if r["selector"] == REFERENCE)[acc_k]["mean"]
+
+        def entry(r: Mapping[str, Any]) -> dict[str, Any]:
+            a = float(r[acc_k]["mean"])
+            return {"selector": r["selector"], "predictor": _predictor(r["selector"]) if r["kind"] in STAT_KINDS
+                    else None, "kind": r["kind"], "menu": r["menu"], "acc": a,
+                    "in_top_band": bool(a >= best - delta - EPS),
+                    "within_delta_of_1x16": bool(a >= ref_acc - delta - EPS),
+                    "minus_1x16": _contrast(r.get("minus_1x16", {}).get(d_k)),
+                    "rank": r[rank_k], "winner_share": r[share_k]}
+
+        stat = [entry(r) for r in dep if r["kind"] in STAT_KINDS]
+        llm = {r["selector"]: entry(r) for r in dep if r["kind"] == "llm"}
+        best_llm_rank = min(e["rank"] for e in llm.values())
+        kind, menu = LIKE_FOR_LIKE[panel]
+        lfl = [r["selector"] for r in rows if r["kind"] == kind and r["menu"] == menu]
+        vs_llm = {}
+        for arm in ("A0", "A1"):
+            cs = [{"selector": s, **_contrast(report[panel]["stat_minus_llm"][s][arm][c_k])} for s in lfl]
+            est = [c["estimate"] for c in cs]
+            vs_llm[f"LLM:{arm}"] = {
+                "rows": cs, "n": len(cs), "estimate_range": [min(est), max(est)],
+                "n_ci_above_zero": sum(c["ci_side"] > 0 for c in cs),
+                "n_ci_below_zero": sum(c["ci_side"] < 0 for c in cs),
+                "ci_includes_or_touches_zero": [c["selector"] for c in cs if c["ci_side"] == 0],
+                "p_range": [min(c["p"] for c in cs), max(c["p"] for c in cs)]}
+        stat_share = max(stat, key=lambda e: (e["winner_share"] or 0.0, -e["rank"]))
+        others = {r["selector"]: entry(r) for r in dep if r["selector"] == REFERENCE or r["kind"] == "heuristic"}
+        out[view] = {
+            "panel": panel, "weights": weights, "delta": delta, "best_deployable_acc": float(best),
+            "band_floor": float(best - delta), "acc_1x16": float(ref_acc),
+            "stat_rows": stat, "llm": llm, "reference_rows": others,
+            "stat_like_for_like": lfl,
+            "stat_outside_top_band": [e["selector"] for e in stat if not e["in_top_band"]],
+            "stat_ranked_below_best_llm": [e["selector"] for e in sorted(stat, key=lambda e: e["rank"])
+                                           if e["rank"] > best_llm_rank],
+            "best_llm_rank": best_llm_rank,
+            "stat_ranks": [min(e["rank"] for e in stat), max(e["rank"] for e in stat)],
+            "max_stat_winner_share": {"selector": stat_share["selector"],
+                                      "share": float(stat_share["winner_share"] or 0.0)},
+            "stat_minus_llm_like_for_like": vs_llm,
+        }
+    return out
+
+
+def _side_text(c: Mapping[str, Any]) -> str:
+    if c["ci_side"] > 0:
+        return "CI above 0"
+    if c["ci_side"] < 0:
+        return "CI below 0"
+    return "CI touches 0" if any(abs(x) <= CI_TOL for x in c["ci95"]) else "CI includes 0"
+
+
+def _fmt_c(c: Mapping[str, Any] | None) -> str:
+    if not c:
+        return "--"
+    lo, hi = c["ci95"]
+    if all(abs(x) <= CI_TOL for x in (c["estimate"], lo, hi)):
+        return "no difference on any item"
+    return (f"{_z(c['estimate']) * 100:+.1f} pts [{_z(lo) * 100:+.1f}, {_z(hi) * 100:+.1f}], {_side_text(c)}, "
+            f"p = {c['p']:.3f}")
+
+
+def _fmt_entry(s: str, e: Mapping[str, Any]) -> str:
+    return (f"{s} {e['acc']:.3f}, vs 1x16 {_fmt_c(e['minus_1x16'])}, "
+            f"{'inside' if e['in_top_band'] else 'outside'} the top band, rank {e['rank']}, "
+            f"P(win) {e['winner_share']:.3f}")
+
+
+def render_findings(facts: Mapping[str, Any]) -> list[str]:
+    """Markdown bullets for :func:`headline_facts`, one block per view."""
+    titles = {"C48_macro": "C48, macro weights (expected per-item values; ranking uses accuracy -> consistency -> "
+                           "latency)",
+              "T200_macro": "T200, macro weights (one realized outcome per item; accuracy -> latency)",
+              "T200_mixture": "T200, mixture weights (aime .10, hmmt .10, omni .50, gpqa .30: the study's primary "
+                              "T200 estimand and E8a's pre-registered test; accuracy -> latency)"}
+    lines: list[str] = []
+    for view, f in facts.items():
+        lines += [f"**{titles.get(view, view)}.** Best deployable accuracy {f['best_deployable_acc']:.3f}, so the "
+                  f"LEX tie band starts at {f['band_floor']:.3f}; always-1x16 is {f['acc_1x16']:.3f}.", ""]
+        by_pred: dict[str, list[dict]] = {}
+        for e in f["stat_rows"]:
+            by_pred.setdefault(e["predictor"], []).append(e)
+        lfl = set(f["stat_like_for_like"])
+        lines.append("- Statistical models (accuracy and contrast shown for the row on the LLM's 5-option menu; "
+                     "band counts and ranks over all of the predictor's rows):")
+        for p, es in by_pred.items():
+            rep = next((e for e in es if e["selector"] in lfl), es[0])
+            n_in = sum(e["in_top_band"] for e in es)
+            n_1x16 = sum(e["within_delta_of_1x16"] for e in es)
+            lo_r, hi_r = min(e["rank"] for e in es), max(e["rank"] for e in es)
+            lines.append(f"  - {p}: {n_in} of {len(es)} rows inside the top band, {n_1x16} of {len(es)} within 0.02 "
+                         f"of 1x16; {rep['selector']} {rep['acc']:.3f}, vs 1x16 {_fmt_c(rep['minus_1x16'])}; "
+                         f"rank{'s' if lo_r != hi_r else ''} {lo_r}{f'-{hi_r}' if lo_r != hi_r else ''}.")
+        lines.append("- LLM selectors: " + "; ".join(_fmt_entry(s, e) for s, e in f["llm"].items()) + ".")
+        lines.append("- Reference rows: " + "; ".join(_fmt_entry(s, e) for s, e in f["reference_rows"].items())
+                     + ".")
+        vs = []
+        for arm, v in f["stat_minus_llm_like_for_like"].items():
+            lo, hi = v["estimate_range"]
+            inc = v["ci_includes_or_touches_zero"]
+            vs.append(f"vs {arm} {lo * 100:+.1f} to {hi * 100:+.1f} pts, CI above 0 for {v['n_ci_above_zero']} of "
+                      f"{v['n']}" + (f" (includes or touches 0: {', '.join(inc)})" if inc else "")
+                      + f", p {v['p_range'][0]:.3f}-{v['p_range'][1]:.3f}")
+        lines.append(f"- Statistical minus LLM accuracy on the LLM's own 5-option menu "
+                     f"({', '.join(f['stat_like_for_like'])}): " + "; ".join(vs) + ".")
+        below = f["stat_ranked_below_best_llm"]
+        lines.append(f"- Ranking: statistical rows rank {f['stat_ranks'][0]}-{f['stat_ranks'][1]}; the better LLM "
+                     f"ranks {f['best_llm_rank']}; statistical rows ranked below it: "
+                     + (", ".join(below) if below else "none") + ".")
+        ms = f["max_stat_winner_share"]
+        lines += [f"- Bootstrap win share: " + ", ".join(f"{s} {e['winner_share']:.3f}" for s, e in f["llm"].items())
+                  + f"; highest statistical row {ms['selector']} {ms['share']:.3f}.", ""]
+    lines.append("CI = 95% percentile interval of the 10,000-replicate benchmark-stratified bootstrap; p = the "
+                 "null-centred studentised bootstrap p of the same contrast (unadjusted). The two can disagree at "
+                 "these sample sizes. \"CI touches 0\" = a bound exactly at 0 (0/1 outcomes), which is not an "
+                 "exclusion of 0.")
+    return lines
 
 
 HEADLINE_C48 = ("fixed:1x16", "fixed:1x8", "fixed:1x25", "stat:P0/M5", "stat:P1/M5", "stat:P1-conc/M5", "stat:P2/M5",
@@ -788,17 +980,24 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
         "`LEX rank` ranks the deployable selectors (fixed M15 options, statistical, heuristic, LLM); `ref` rows "
         "(1x25, oracles, split-half) are references outside that competition. `P(win)` = share of bootstrap "
-        "replicates in which the selector is the population LEX winner.",
+        "replicates in which the selector is the population LEX winner; on T200 it is given under both the mixture "
+        "and the macro weights, and the two rankings differ.",
         "",
-        "## Headline: statistical vs LLM selectors",
+        "## Headline: statistical vs LLM selectors, by panel and weighting",
+        "",
+        "Generated from the numbers in this report (`report.json` → `headline`). The answer depends on the panel "
+        "and, on T200, on the benchmark weighting; read each block on its own.",
+        "",
+        *render_findings(report["headline"]),
         "",
         "C48 (bank estimates, macro; M5 rows are like-for-like with the LLM allocator's menu):",
         "",
         c48_table(report, only=HEADLINE_C48),
         "",
-        "T200 (realized outcomes; `sealed:` = the sealed 9-option predictions, `stat:` = post-hoc M15 refit):",
+        "T200 (realized outcomes; `sealed:` = the sealed 9-option predictions, `stat:` = post-hoc M15 refit), "
+        "sorted by the mixture rank:",
         "",
-        t200_table(report, only=HEADLINE_T200),
+        t200_table(report, only=HEADLINE_T200, order="mixture"),
         "",
         "## C48 (bank estimates, macro), all selectors",
         "",
@@ -806,23 +1005,25 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
         "## C48: statistical and heuristic selectors minus the LLM selectors",
         "",
-        "| selector | vs | Δacc (pts) | ΔC (pts) | Δlat (s) |",
-        "|---|---|---|---|---|",
+        "| selector | vs | Δacc (pts) | p (acc) | ΔC (pts) | Δlat (s) |",
+        "|---|---|---|---|---|---|",
     ]
     for s, d in report["c48"]["stat_minus_llm"].items():
         for arm, m in d.items():
-            lines.append(f"| {s} | LLM:{arm} | {_fmt_diff(m['acc'], 100)} | {_fmt_diff(m['C'], 100)} | "
-                         f"{_fmt_diff(m['lat'], 1, 0)} |")
+            lines.append(f"| {s} | LLM:{arm} | {_fmt_diff(m['acc'], 100)} | {m['acc']['p']:.3f} | "
+                         f"{_fmt_diff(m['C'], 100)} | {_fmt_diff(m['lat'], 1, 0)} |")
     lines += ["", "## C48 option distributions", "", "| selector | choices |", "|---|---|"]
     for r in report["c48"]["selectors"]:
         lines.append(f"| {r['selector']} | {_choices_str(r['choices'], 6)} |")
-    lines += ["", "## T200 (realized outcomes), all selectors", "", t200_table(report), "",
+    lines += ["", "## T200 (realized outcomes), all selectors, sorted by the macro rank", "", t200_table(report), "",
               "## T200: statistical and heuristic selectors minus the LLM selectors", "",
-              "| selector | vs | Δacc macro (pts) | Δacc mixture (pts) | Δlat (s) |", "|---|---|---|---|---|"]
+              "| selector | vs | Δacc mixture (pts) | p mixture | Δacc macro (pts) | p macro | Δlat (s) |",
+              "|---|---|---|---|---|---|---|"]
     for s, d in report["t200"]["stat_minus_llm"].items():
         for arm, m in d.items():
-            lines.append(f"| {s} | LLM:{arm} | {_fmt_diff(m['acc_macro'], 100)} | "
-                         f"{_fmt_diff(m['acc_mixture'], 100)} | {_fmt_diff(m['lat_macro'], 1, 0)} |")
+            lines.append(f"| {s} | LLM:{arm} | {_fmt_diff(m['acc_mixture'], 100)} | {m['acc_mixture']['p']:.3f} | "
+                         f"{_fmt_diff(m['acc_macro'], 100)} | {m['acc_macro']['p']:.3f} | "
+                         f"{_fmt_diff(m['lat_macro'], 1, 0)} |")
     lines += ["", "## T200 option distributions", "", "| selector | choices |", "|---|---|"]
     for r in report["t200"]["selectors"]:
         lines.append(f"| {r['selector']} | {_choices_str(r['choices'], 6)} |")
