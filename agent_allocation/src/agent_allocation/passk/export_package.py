@@ -385,13 +385,27 @@ COMMON: dict[str, str] = {
     "selector": "selector name: fixed:<config> (always that option), stat:<P>/<menu> (LEX rule on cross-fitted "
                 "predictions), sealed:<P>/<menu> (LEX rule on the sealed T200 predictions), heuristic/<menu> "
                 "(diagnostic plurality-share rule), LLM:<arm> (E8a allocator), oracle/<menu> (clairvoyant "
-                "ceiling), splithalf/M17 (LEX split-half reference); later versions may add E8b rows",
+                "ceiling), splithalf/M17 (LEX split-half reference), LLM:B0/B1 (E8b objective-aware LLM "
+                "selectors: told the LEX objective, M15 menu, 5 decisions per item)",
     "kind": "row kind (see file notes)",
     "menu": "option menu the selector chooses from: M15 (all n x a <= 16A), M5 (1x16, 2x8, 4x4, 8x2, 16x1), M9sealed "
             "(the 9 sealed E5 configurations), M17 (M15 + 1x25 + 25x1), or a single fixed option",
     "overhead_kind": "latency overhead added to the selector: none; diag (the five diagnostic calls' parallel "
                      "wall-clock); llm (the E8a decision call latency, summed over retries); diag+llm (both)",
-    "choice": "the option the selector chose for this item",
+    "choice": "the option the selector chose for this item (E8b: the modal option of its 5 decisions, ties -> "
+              "menu order)",
+    "stability": "E8b: share of the item's decisions that chose the modal option (1.0 = all 5 identical)",
+    "n_decisions": "E8b: number of LLM decisions scored (5 per item; summed over items in summary tables)",
+    "n_fallback": "E8b: decisions still invalid after one retry, scored as the pre-registered fallback 1x16",
+    "n_invalid_fallback": "E8b: decisions still invalid after one retry, scored as the fallback 1x16 (summed)",
+    "n_unknown_decisions": "E8b: decisions whose chosen option has an unknown outcome (excluded from the mean)",
+    "choices_k": "E8b: the item's decisions in sample order, '|'-separated option labels",
+    "choice_stability": "E8b: mean over items of the modal-choice share across the 5 decisions",
+    "share_items_all_identical": "E8b: share of items on which all 5 decisions chose the same option",
+    "deep_C": "always-1x16 consistency p^2 + (1-p)^2 on the scoring half",
+    "deep_latency": "always-1x16 latency (s) on the scoring half",
+    "deep25_C": "always-1x25 consistency on the scoring half",
+    "deep25_latency": "always-1x25 latency (s) on the scoring half",
     "acc": "delivered accuracy of the chosen option (C48: bank-estimated tie-averaged p; T200: realized S_known)",
     "C": "consistency p^2 + (1-p)^2 of the chosen option (C48 bank estimate; missing on T200: one realization)",
     "lat": "latency (s) of the chosen option: parallel wall-clock of its calls plus the selector overhead",
