@@ -118,6 +118,7 @@ def grade25(study_root: Path) -> dict[str, Any]:
     from agent_allocation.contracts import GenerationResult, GenerationSpec, PrivateEvalSpec, PublicTask, load_record
     from agent_allocation.extraction.final import extract_candidate
     from agent_allocation.grading.text.grade import grade_text
+    from agent_allocation.metrics.outcomes import CandidateState, candidate_state
     run_dir = study_root / "artifacts"
     tasks: dict[str, PublicTask] = {}
     private: dict[str, PrivateEvalSpec] = {}
@@ -142,7 +143,9 @@ def grade25(study_root: Path) -> dict[str, Any]:
         rows.append({"item_id": r["item_id"], "benchmark": r["benchmark"], "shard": r["shard"],
                      "replicate": r["replicate"], "candidate_id": spec.node_id, "allowance_a": MULTIPLIER,
                      "parse_status": cand.parse_status.value, "final_answer": cand.final_answer,
-                     "correct": grade.semantic_correct if grade.semantic_correct is not None else None,
+                     # the core rule (extract.py): candidate_state -> CORRECT True, WRONG/INVALID False, else unknown
+                     "correct": {CandidateState.CORRECT: True, CandidateState.WRONG: False,
+                                 CandidateState.INVALID: False}.get(candidate_state(cand, grade)),
                      "operational": grade.operational_success, "grade_status": grade.status.value,
                      "latency_s": r["latency_s"], "reasoning_tokens": r["reasoning_tokens"],
                      "cost_usd": float(r["cost_usd"]), "observed_provider": r["observed_provider"]})
