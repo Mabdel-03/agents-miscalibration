@@ -1,4 +1,5 @@
-"""selcmp: the population LEX ranking helper and the cross-fit guard (no item is predicted by a model trained on it)."""
+"""selcmp: the population LEX ranking helper, the cross-fit guard (no item is predicted by a model trained on it),
+the E8b K-sample LLM scoring and the no-diagnostic C48 bank."""
 from __future__ import annotations
 
 import numpy as np
@@ -6,6 +7,7 @@ import pandas as pd
 import pytest
 
 from agent_allocation.passk import features as feat_mod
+from agent_allocation.passk import lexfront
 from agent_allocation.passk import selcmp
 from agent_allocation.passk.models.inputs import ClassSource
 
@@ -257,3 +259,159 @@ def test_t200_table_shows_both_weightings_and_sorts_by_either_rank():
     assert body(table)[-1] == "oracle/M5"                            # reference rows last
     with pytest.raises(ValueError):
         selcmp.t200_table(rep, order="nope")
+
+
+# ---------------------------------------------------------------------- E8b: K-sample LLM selectors
+def _call(item, sample, final, choice, lat, arm="B0", panel="C48"):
+    return {"arm": arm, "panel": panel, "item_id": item, "sample": sample, "final": final, "choice": choice,
+            "latency_s": lat}
+
+
+def _calls():
+    return pd.DataFrame([
+        _call("a", 0, True, "1x16", 10.0),                                      # one attempt
+        _call("a", 1, False, None, 12.0), _call("a", 1, True, "4x4", 8.0),      # invalid parse, then a valid retry
+        _call("b", 0, False, None, 11.0), _call("b", 0, True, None, 13.0),      # invalid twice -> fallback 1x16
+        _call("b", 1, False, None, None), _call("b", 1, True, "1x1", 9.0),      # a failed transport, no latency
+    ])
+
+
+def test_e8b_decisions_sum_latency_over_attempts_and_fall_back_to_1x16():
+    dec = selcmp.e8b_decisions(_calls(), {"C48": ["a", "b"]}, arms=("B0",), k=2).set_index(["item_id", "sample"])
+    assert list(dec.option) == ["1x16", "4x4", "1x16", "1x1"]
+    assert list(dec.fallback) == [False, False, True, False]
+    assert pd.isna(dec.loc[("b", 0), "choice"])
+    assert list(dec.call_latency) == [10.0, 20.0, 24.0, 9.0]              # every attempt counts, retries included
+    assert list(dec.attempts) == [1, 2, 2, 2] and dec.attempts_missing_latency.tolist() == [0, 0, 0, 1]
+    summary = selcmp.e8b_choice_summary(dec.reset_index().assign(arm="B0", panel="C48"))["B0/C48"]
+    assert summary["n_invalid_fallback"] == 1 and summary["n_decisions_retried"] == 3
+    assert summary["raw_choice_counts"]["invalid"] == 1 and summary["option_counts"]["1x16"] == 2
+    assert summary["choice_stability"] == pytest.approx(0.5)             # both items split 1-1 across 2 decisions
+
+
+def test_e8b_decisions_refuse_incomplete_or_ambiguous_logs():
+    calls = _calls()
+    with pytest.raises(RuntimeError, match="missing"):
+        selcmp.e8b_decisions(calls[calls.item_id != "b"], {"C48": ["a", "b"]}, arms=("B0",), k=2)
+    with pytest.raises(RuntimeError, match="missing"):
+        selcmp.e8b_decisions(calls, {"C48": ["a", "b"]}, arms=("B0",), k=3)
+    dup = pd.concat([calls, pd.DataFrame([_call("a", 0, True, "2x8", 5.0)])], ignore_index=True)
+    with pytest.raises(RuntimeError, match="final attempts"):
+        selcmp.e8b_decisions(dup, {"C48": ["a", "b"]}, arms=("B0",), k=2)
+    off = calls.copy()
+    off.loc[0, "choice"] = "3x5"
+    with pytest.raises(RuntimeError, match="not on the menu"):
+        selcmp.e8b_decisions(off, {"C48": ["a", "b"]}, arms=("B0",), k=2)
+
+
+def _value(table):
+    def value(i, c):
+        p, lat = table[(i, c)]
+        return p, p * p + (1 - p) * (1 - p), lat
+    return value
+
+
+def test_llm_k_frame_scores_the_mean_over_decisions_with_summed_overheads():
+    dec = selcmp.e8b_decisions(_calls(), {"C48": ["a", "b"]}, arms=("B0",), k=2)
+    items = pd.DataFrame({"item_id": ["a", "b"], "benchmark": ["aime", "hmmt"]})
+    value = _value({("a", "1x16"): (0.9, 300.0), ("a", "4x4"): (0.5, 100.0),
+                    ("b", "1x16"): (0.8, 280.0), ("b", "1x1"): (0.2, 30.0)})
+    f = selcmp.llm_k_frame(items, dec, value=value, extra_overhead=None, name="LLM:B0", menu="M15",
+                           overhead_kind="llm", consistency=True).set_index("item_id")
+    assert f.loc["a", "acc"] == pytest.approx(0.7)                       # mean over the two decisions
+    assert f.loc["a", "C"] == pytest.approx(0.7 ** 2 + 0.3 ** 2)         # of the mean p, not the mean of C (0.66)
+    assert f.loc["a", "lat"] == pytest.approx(((300 + 10) + (100 + 20)) / 2)
+    assert f.loc["a", "overhead"] == pytest.approx(15.0)
+    assert f.loc["b", "acc"] == pytest.approx(0.5) and f.loc["b", "n_fallback"] == 1   # the fallback is scored 1x16
+    assert f.loc["b", "lat"] == pytest.approx(((280 + 24) + (30 + 9)) / 2)
+    assert f.loc["a", "stability"] == 0.5 and f.loc["a", "choice"] == "4x4"            # modal tie -> menu order
+    assert f.loc["a", "choices_k"] == "1x16|4x4" and f.loc["a", "solver_A"] == pytest.approx(16.0)
+    assert set(f.kind) == {"llm"} and set(f.menu) == {"M15"}
+    # B1: the diagnostics' wall-clock is added to every decision; T200-style scoring has no consistency
+    g = selcmp.llm_k_frame(items, dec, value=value, extra_overhead={"a": 40.0, "b": 0.0}, name="LLM:B1",
+                           menu="M15", overhead_kind="diag+llm", consistency=False).set_index("item_id")
+    assert g.loc["a", "lat"] == pytest.approx(f.loc["a", "lat"] + 40.0) and g.C.isna().all()
+    # a decision whose option outcome is unknown is skipped, not counted as wrong
+    value_unknown = _value({("a", "1x16"): (np.nan, 300.0), ("a", "4x4"): (0.5, 100.0),
+                            ("b", "1x16"): (0.8, 280.0), ("b", "1x1"): (0.2, 30.0)})
+    h = selcmp.llm_k_frame(items, dec, value=value_unknown, extra_overhead=None, name="LLM:B0", menu="M15",
+                           overhead_kind="llm", consistency=True).set_index("item_id")
+    assert h.loc["a", "acc"] == pytest.approx(0.5) and h.loc["a", "n_unknown_decisions"] == 1
+    with pytest.raises(RuntimeError, match="no decisions"):
+        selcmp.llm_k_frame(pd.DataFrame({"item_id": ["a", "z"], "benchmark": ["aime", "aime"]}), dec, value=value,
+                           extra_overhead=None, name="LLM:B0", menu="M15", overhead_kind="llm", consistency=True)
+
+
+# ---------------------------------------------------------------------- the no-diagnostic C48 bank
+def _bank():
+    rows = []
+
+    def add(partition, a, rep, correct):
+        rows.append({"candidate_id": f"{partition}/{a}/{rep}", "item_id": "aime/x", "benchmark": "aime",
+                     "partition": partition, "allowance_a": a, "replicate": rep, "correct": float(correct),
+                     "cls": "right" if correct else "wrong", "latency_s": 100.0 + rep if correct else 10.0 + rep})
+    for r in range(25):
+        add("legacy_main", 1, r, r >= 20)             # slots 20-24 = the diagnostics, all correct here
+    for r in range(16):
+        add("v48_bank", 1, r, False)
+    add("v48_bank", 1, 20, False)                     # replicate 20 outside the legacy partition: not a diagnostic
+    add("legacy_main", 2, 20, True)                   # slot 20 at 2A: not a diagnostic
+    for r in range(3):
+        add("e1_fill", 2, r, False)
+    return pd.DataFrame(rows)
+
+
+def test_nodiag_bank_excludes_exactly_the_legacy_A_slots_20_to_24():
+    bank = _bank()
+    mask = selcmp.is_diagnostic_draw(bank)
+    assert int(mask.sum()) == 5
+    assert set(bank[mask].candidate_id) == {f"legacy_main/1/{r}" for r in range(20, 25)}
+    full = lexfront.estimate(bank).set_index("config")
+    nd = selcmp.nodiag_estimates(bank).set_index("config")
+    assert full.loc["1x1", "m"] == 42 and nd.loc["1x1", "m"] == 37
+    assert full.loc["1x1", "p"] == pytest.approx(5 / 42) and nd.loc["1x1", "p"] == 0.0     # the correct slots are gone
+    assert nd.loc["1x1", "latency"] == pytest.approx(bank[~mask & (bank.allowance_a == 1)].latency_s.mean())
+    for c in ("1x2", "2x2"):                                                               # other allowances: untouched
+        assert nd.loc[c, "m"] == full.loc[c, "m"] == 4
+        assert nd.loc[c, "p"] == full.loc[c, "p"] and nd.loc[c, "latency"] == full.loc[c, "latency"]
+
+
+def test_same_partition_ignores_label_names_but_not_grouping():
+    assert selcmp.same_partition(["x", "x", "y", None], ["b", "b", "a", None])
+    assert not selcmp.same_partition(["x", "x", "y"], ["b", "c", "a"])
+    assert not selcmp.same_partition(["x", "y", "y"], ["a", "a", "a"])
+
+
+# ---------------------------------------------------------------------- headline with the E8b arms
+def test_headline_pairs_each_llm_with_the_statistical_rows_on_its_own_menu():
+    rep = _synthetic_report()
+    rep["c48"]["selectors"] += [
+        _c48_row("stat:P3/M15", "stat", "M15", 0.785, 7, 0.02, _d(-0.005, -0.02, 0.01)),
+        {**_c48_row("LLM:B0", "llm", "M15", 0.70, 8, 0.0, _d(-0.10, -0.15, -0.05, 0.005)),
+         "choice_stability": 0.46, "n_invalid_fallback": 0}]
+    rep["c48"]["stat_minus_llm"]["stat:P3/M15"] = {"A0": {"acc": _d(0.045, 0.0, 0.09)},
+                                                   "A1": {"acc": _d(0.065, 0.02, 0.11)},
+                                                   "B0": {"acc": _d(0.085, 0.04, 0.13, 0.005)}}
+    rep["c48"]["llm_objective_effect"] = {"LLM:B0": {"LLM:A0": {"acc": _d(-0.04, -0.09, 0.01, 0.1),
+                                                                "C": _d(-0.07, -0.12, -0.02, 0.02),
+                                                                "lat": _d(-50.0, -70.0, -30.0, 0.005)}}}
+    f = selcmp.headline_facts(rep)["C48_macro"]
+    assert f["stat_like_for_like_by_menu"] == {"M5": ["stat:P3/M5", "stat:P2/M5"], "M15": ["stat:P3/M15"]}
+    vs = f["stat_minus_llm_like_for_like"]
+    assert [r["selector"] for r in vs["LLM:A0"]["rows"]] == ["stat:P3/M5", "stat:P2/M5"]    # A arms: M5 rows only
+    assert [r["selector"] for r in vs["LLM:B0"]["rows"]] == ["stat:P3/M15"] and vs["LLM:B0"]["menu"] == "M15"
+    assert vs["LLM:B0"]["n_ci_above_zero"] == 1
+    assert f["stat_ranked_below_llm"]["LLM:B0"] == [] and f["stat_ranked_below_llm"]["LLM:A0"] == ["stat:P3/M15"]
+    assert f["best_llm"] == "LLM:A0" and f["llm"]["LLM:B0"]["choice_stability"] == 0.46
+    assert f["llm_objective_effect"]["LLM:B0 - LLM:A0"]["acc"]["ci_side"] == 0
+    text = "\n".join(selcmp.render_findings({"C48_macro": f}))
+    assert "on E8b's 15-option menu (stat:P3/M15): vs LLM:B0 +8.5 to +8.5 pts, CI above 0 for 1 of 1" in text
+    assert "LLM:B0 - LLM:A0: accuracy -4.0 pts [-9.0, +1.0], CI includes 0" in text
+    assert "choice stability 0.46, 0 invalid -> 1x16" in text
+
+
+def test_tiny_bootstrap_p_values_print_as_below_0001():
+    assert selcmp._p_eq(0.0) == "p < 0.001" and selcmp._p_eq(0.17) == "p = 0.170"
+    assert selcmp._p_range(0.0, 0.0) == "p <0.001" and selcmp._p_range(0.0, 0.002) == "p <0.001-0.002"
+    c = selcmp._contrast({"estimate": 0.1, "ci95": [0.05, 0.15], "p": 0.0})
+    assert selcmp._fmt_c(c).endswith("CI above 0, p < 0.001")

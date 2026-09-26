@@ -12,7 +12,15 @@ Overheads (added to the scored latency of every item):
 * P1, P2, P3, P1-conc, P2-conc and the diagnostic-agreement heuristic: the five diagnostic calls' parallel
   wall-clock (max of their five latencies; L96 = legacy A slots 20-24, T200 = ``t200_diag`` r0-4);
 * LLM A0: its decision call latency (``result.latency_seconds`` of every attempt in ``e8a/raw``, summed over retries);
-* LLM A1: the diagnostics' wall-clock plus its decision latency.
+* LLM A1: the diagnostics' wall-clock plus its decision latency;
+* LLM B0 / B1 (E8b, ``docs/passk_cont/PREREG_E8b_lex_llm.md``): per decision, ``latency_s`` of every attempt in
+  ``e8b/calls.jsonl`` summed (the invalid-parse retry included), plus the diagnostics' wall-clock for B1, averaged
+  over the item's K = 5 decisions.
+
+LLM selectors: A0/A1 (E8a) were asked for the most accurate M5 option, once per item. B0/B1 (E8b) were told the LEX
+objective and offered M15 with typical times, K = 5 times per item; each item's score is the mean over its decisions
+of the chosen option's value (an invalid decision is scored as 1x16), and on C48 the consistency is p_sys^2 +
+(1 - p_sys)^2 of that mean, so the selector's own choice variability counts.
 
 Menus: M15 = every n x a with n*a <= 16, n, a in {1, 2, 4, 8, 16} (15 options, present on the C48 banks and the T200
 pools) and M5 = the LLM allocator's 1x16, 2x8, 4x4, 8x2, 16x1.
@@ -23,9 +31,14 @@ fold and predict that fold's items for every M15 option. The outer folds are ``g
 i.e. exactly the problem-grouped fold assignment the sealed E5 fit used for its own ridge CV on L96. A final fit on
 all of L96 predicts T200 for M15 (post-hoc; the sealed 9-option predictions stay the confirmatory ones).
 
-Scoring: on C48 with the per-item bank estimates of ``lex/front_estimates.parquet`` (expected p, C, latency); on T200
-with realized delivered correctness (readouts ``S_known``, passk mode) and realized wall-clock (slowest member of the
-chosen T200 pool), where consistency is not measurable per item. Outputs go only to ``R/lex/selcmp/``.
+Scoring: on C48 with per-item bank estimates (expected p, C, latency) from the **no-diagnostic bank**: lexfront's
+``estimate()`` on the C48 bank minus each item's five diagnostic draws (legacy A slots 20-24, the draws the
+diagnostic-conditioned selectors read), written to ``lex/selcmp/front_estimates_nodiag.parquet``; only the n x 1
+options change. The same bank supplies the oracles, the split-half reference and the heuristic's C48 training
+outcomes. Every C48 selector is also scored on the full LEX-front bank (``lex/front_estimates.parquet``) and kept as a
+sensitivity table (``c48_bank_sensitivity``). On T200: realized delivered correctness (readouts ``S_known``, passk
+mode) and realized wall-clock (slowest member of the chosen T200 pool), where consistency is not measurable per item.
+Outputs go only to ``R/lex/selcmp/``.
 """
 from __future__ import annotations
 
@@ -41,7 +54,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from agent_allocation.passk.lexfront import DELTA, lex_choose, parse
+from agent_allocation.passk.lexfront import (DELTA, _half, estimate, item_classes, lex_choose, load_banks,
+                                             parse)
 
 M15 = ("1x1", "2x1", "4x1", "8x1", "16x1", "1x2", "2x2", "4x2", "8x2", "1x4", "2x4", "4x4", "1x8", "2x8", "1x16")
 M5 = ("1x16", "2x8", "4x4", "8x2", "16x1")
@@ -55,6 +69,15 @@ REFERENCE = "fixed:1x16"
 OUT_PARTS = ("lex", "selcmp")
 EPS = 1e-12            # float slack on the delta comparisons (0.80 - 0.02 must tie 0.78)
 CI_TOL = 1e-9          # a percentile bound this close to 0 touches zero (0/1 T200 outcomes give bounds like 3e-18)
+DIAG_SLOTS = (20, 24)  # legacy A-level replicate slots of the five diagnostic draws (features.diag_draws)
+E8A_ARMS = ("A0", "A1")
+E8B_ARMS = ("B0", "B1")
+E8B_K = 5              # decisions per item and arm (PREREG_E8b)
+E8B_FALLBACK = "1x16"  # an invalid decision (after its one retry) is scored as this option (PREREG_E8b)
+LLM_MENU = {"A0": "M5", "A1": "M5", "B0": "M15", "B1": "M15"}
+LLM_OVERHEAD = {"A0": "llm", "A1": "diag+llm", "B0": "llm", "B1": "diag+llm"}
+# (told the objective) minus (asked for accuracy only), matched on the diagnostics, then crossed; and B1 - B0
+OBJECTIVE_PAIRS = (("B0", "A0"), ("B1", "A1"), ("B0", "A1"), ("B1", "A0"), ("B1", "B0"))
 assert len(set(M15)) == 15 and all(n * a <= 16 for n, a in map(parse, M15)) and set(M5) <= set(M15)
 
 
@@ -231,6 +254,72 @@ def llm_decision_latency(study_root: Path) -> pd.DataFrame:
     return out
 
 
+def load_e8b_calls(study_root: Path) -> pd.DataFrame:
+    """The E8b call log (one row per call attempt), read without dtype coercion (a null choice stays None)."""
+    path = study_root / "e8b" / "calls.jsonl"
+    return pd.DataFrame([json.loads(line) for line in path.read_text().splitlines() if line.strip()])
+
+
+def e8b_decisions(calls: pd.DataFrame, items_by_panel: Mapping[str, Sequence[str]], *,
+                  arms: Sequence[str] = E8B_ARMS, k: int = E8B_K, fallback: str = E8B_FALLBACK,
+                  menu: Sequence[str] = M15) -> pd.DataFrame:
+    """One row per E8b decision (arm, panel, item_id, sample) from the call log (one row per attempt).
+
+    ``option`` is the final attempt's parsed choice, or ``fallback`` when that choice is null (still invalid after
+    the one retry: PREREG_E8b); ``call_latency`` is ``latency_s`` summed over every attempt of the decision
+    (the invalid-parse retry and any transport retry). Raises unless every item of every listed panel has exactly
+    ``k`` decisions per arm, each with exactly one final attempt."""
+    need = {"arm", "panel", "item_id", "sample", "final", "choice", "latency_s"}
+    if need - set(calls.columns):
+        raise RuntimeError(f"E8b call log lacks columns {sorted(need - set(calls.columns))}")
+    calls = calls[calls.arm.isin(arms) & calls.panel.isin(list(items_by_panel))]
+    rows = []
+    for (arm, panel, item, sample), g in calls.groupby(["arm", "panel", "item_id", "sample"], sort=True):
+        fin = g[g.final.astype(bool)]
+        if len(fin) != 1:
+            raise RuntimeError(f"E8b {arm}/{panel}/{item}/{sample}: {len(fin)} final attempts (need exactly 1)")
+        choice = fin.choice.iloc[0]
+        choice = None if choice is None or (not isinstance(choice, str) and pd.isna(choice)) else str(choice)
+        if choice is not None and choice not in menu:
+            raise RuntimeError(f"E8b {arm}/{panel}/{item}/{sample}: choice {choice!r} is not on the menu")
+        lat = pd.to_numeric(g.latency_s, errors="coerce").astype(float)
+        rows.append({"arm": arm, "panel": panel, "item_id": item, "sample": int(sample), "choice": choice,
+                     "option": choice if choice is not None else fallback, "fallback": choice is None,
+                     "attempts": int(len(g)), "attempts_missing_latency": int(lat.isna().sum()),
+                     "call_latency": float(np.nansum(lat))})
+    dec = pd.DataFrame(rows, columns=["arm", "panel", "item_id", "sample", "choice", "option", "fallback", "attempts",
+                                      "attempts_missing_latency", "call_latency"])
+    for panel, items in items_by_panel.items():
+        for arm in arms:
+            sub = dec[(dec.arm == arm) & (dec.panel == panel)]
+            got = set(zip(sub.item_id, sub["sample"]))
+            want = {(i, s) for i in items for s in range(k)}
+            if got != want:
+                raise RuntimeError(f"E8b {arm}/{panel}: {len(want - got)} decision(s) missing, "
+                                   f"{len(got - want)} unexpected")
+    return dec.reset_index(drop=True)
+
+
+def e8b_choice_summary(dec: pd.DataFrame) -> dict[str, Any]:
+    """Per arm/panel: decisions, invalid -> fallback count, retries, choice stability (mean over items of the
+    modal option's share of the item's decisions), items with all decisions identical, option counts."""
+    out: dict[str, Any] = {}
+    for (arm, panel), g in dec.groupby(["arm", "panel"]):
+        per_item = g.groupby("item_id").option
+        modal = per_item.agg(lambda s: s.value_counts().max() / len(s))
+        raw = pd.Series(np.where(g.fallback.astype(bool), "invalid", g.option)).value_counts()
+        out[f"{arm}/{panel}"] = {
+            "arm": arm, "panel": panel, "n_items": int(g.item_id.nunique()), "n_decisions": int(len(g)),
+            "n_invalid_fallback": int(g.fallback.sum()), "n_decisions_retried": int((g.attempts > 1).sum()),
+            "n_attempts": int(g.attempts.sum()), "attempts_missing_latency": int(g.attempts_missing_latency.sum()),
+            "choice_stability": float(modal.mean()), "share_items_all_identical": float((modal == 1.0).mean()),
+            "mean_distinct_options_per_item": float(per_item.nunique().mean()),
+            "call_latency_mean_s": float(g.call_latency.mean()), "call_latency_max_s": float(g.call_latency.max()),
+            "option_counts": {str(c): int(n) for c, n in g.option.value_counts().items()},
+            "raw_choice_counts": {str(c): int(n) for c, n in raw.items()}}
+    return out
+
+
 def realized_tables(study_root: Path, draws: pd.DataFrame, panel: str) -> tuple[dict, dict]:
     """(item, config) -> realized delivered correctness (S_known, passk) and realized wall-clock (slowest member)."""
     ro = pd.read_parquet(study_root / "analysis_inputs" / "readouts.parquet")
@@ -245,6 +334,62 @@ def realized_tables(study_root: Path, draws: pd.DataFrame, panel: str) -> tuple[
         vals = [lat_of.get(m, np.nan) for m in r.member_ids]
         lat[(r.item_id, r.config_id)] = float(np.nanmax(vals)) if np.isfinite(vals).any() else np.nan
     return acc, lat
+
+
+# ------------------------------------------------------------------------------------------------------------------
+# C48 bank without the diagnostic draws
+# ------------------------------------------------------------------------------------------------------------------
+
+def is_diagnostic_draw(bank: pd.DataFrame) -> pd.Series:
+    """True for the rows of a C48 bank that are the item's five diagnostic draws: legacy A-level slots 20-24 (the
+    ``features.diag_draws`` rule), i.e. the draws that P1-P3, the heuristic and the A1/B1 LLM arms read."""
+    return (bank.partition.astype(str).str.startswith("legacy") & (bank.allowance_a == 1)
+            & bank.replicate.between(*DIAG_SLOTS))
+
+
+def nodiag_estimates(bank: pd.DataFrame) -> pd.DataFrame:
+    """``lexfront.estimate`` on the C48 bank minus its diagnostic draws (only the A-level options can change)."""
+    return estimate(bank, subset_filter=~is_diagnostic_draw(bank))
+
+
+def split_half(bank: pd.DataFrame, keep: pd.Series | None = None) -> pd.DataFrame:
+    """lexfront's split-half check restricted to the bank rows ``keep``: per item, LEX-choose on one seeded hash
+    half and score on the other, both directions, averaged per item (the ``front_splithalf.parquet`` columns)."""
+    keep = pd.Series(True, index=bank.index) if keep is None else keep.astype(bool)
+    half = bank.candidate_id.map(_half)
+    halves = {h: estimate(bank, subset_filter=keep & (half == h)) for h in (0, 1)}
+    feasible = set.intersection(*[set(h.dropna(subset=["p"]).config) for h in halves.values()])
+    rows = []
+    for choose_h, score_h in ((0, 1), (1, 0)):
+        ch = lex_choose(halves[choose_h][halves[choose_h].config.isin(feasible)])
+        sc = halves[score_h].set_index(["item_id", "config"])
+        for r in ch.itertuples(index=False):
+            got, deep, deep25 = sc.loc[(r.item_id, r.config)], sc.loc[(r.item_id, "1x16")], sc.loc[(r.item_id, "1x25")]
+            rows.append({"item_id": r.item_id, "benchmark": r.benchmark, "chosen_on": choose_h, "config": r.config,
+                         "p": got.p, "C": got.C, "latency": got.latency, "deep_p": deep.p, "deep_C": deep.C,
+                         "deep_latency": deep.latency, "deep25_p": deep25.p, "deep25_C": deep25.C,
+                         "deep25_latency": deep25.latency})
+    cols = ("p", "C", "latency", "deep_p", "deep_C", "deep_latency", "deep25_p", "deep25_C", "deep25_latency")
+    return pd.DataFrame(rows).groupby(["item_id", "benchmark"]).agg(**{c: (c, "mean") for c in cols}).reset_index()
+
+
+def same_partition(a: Sequence, b: Sequence) -> bool:
+    """Two labelings of the same rows (None = no class) induce the same partition."""
+    pairs = set(zip((None if x is None or x != x else x for x in a), (None if y is None or y != y else y for y in b)))
+    return len({x for x, _ in pairs}) == len(pairs) == len({y for _, y in pairs})
+
+
+def c48_bank_with_classes(study_root: Path) -> pd.DataFrame:
+    """lexfront's C48 bank with its item-level answer classes. Read-only: refuses to fill a missing Math-Verify pair
+    (that is lexfront's job), so nothing is written outside ``lex/selcmp``."""
+    from agent_allocation.passk.pairs import PairCache, enumerate_pairs, math_votes_from_frame
+    bank = load_banks(study_root)
+    cache_path = study_root / "catalog" / "pair_verdicts.parquet"
+    missing = PairCache(cache_path).missing(enumerate_pairs(math_votes_from_frame(bank)))
+    if missing:
+        raise RuntimeError(f"{len(missing)} Math-Verify pair(s) missing from {cache_path}: run passk.lexfront first")
+    bank["cls"] = item_classes(bank, cache_path, workers=1)
+    return bank
 
 
 # ------------------------------------------------------------------------------------------------------------------
@@ -407,6 +552,43 @@ def _selector_frame(items: pd.DataFrame, choice: pd.Series, *, value: Callable[[
     return f
 
 
+def llm_k_frame(items: pd.DataFrame, dec: pd.DataFrame, *, value: Callable[[str, str], tuple],
+                extra_overhead: Mapping[str, float] | None, name: str, menu: str, overhead_kind: str,
+                consistency: bool) -> pd.DataFrame:
+    """Per-item scores of an LLM selector sampled K times per item (PREREG_E8b scoring).
+
+    ``dec``: that arm's decisions on this panel (``e8b_decisions`` rows). Per item: accuracy = mean over its decisions
+    of the chosen option's accuracy (decisions whose option outcome is unknown are skipped); consistency (when
+    ``consistency``) = p_sys^2 + (1 - p_sys)^2 of that mean, so the selector's own randomness counts; latency = mean
+    over decisions of (option latency + the decision's call latency summed over its attempts + ``extra_overhead``,
+    the diagnostics' wall-clock for B1). ``choice`` = the modal option (ties -> menu order), ``stability`` = its
+    share of the item's decisions, ``choices_k`` = the options in sample order."""
+    by_item = {i: g.sort_values("sample") for i, g in dec.groupby("item_id")}
+    missing = [i for i in items.item_id if i not in by_item]
+    if missing:
+        raise RuntimeError(f"{name}: no decisions for {len(missing)} item(s), e.g. {missing[:3]}")
+    rows = []
+    for i in items.item_id:
+        g = by_item[i]
+        opts = list(g.option)
+        vals = [value(i, c) for c in opts]
+        acc = np.array([v[0] for v in vals], float)
+        lat = np.array([v[2] for v in vals], float)
+        over = g.call_latency.to_numpy(float) + (float(extra_overhead[i]) if extra_overhead is not None else 0.0)
+        p = float(np.mean(acc[np.isfinite(acc)])) if np.isfinite(acc).any() else np.nan
+        counts = pd.Series(opts).value_counts()
+        modal = sorted(counts[counts == counts.max()].index, key=lambda c: M15.index(c) if c in M15 else 99)[0]
+        rows.append({"item_id": i, "choice": modal, "acc": p,
+                     "C": p * p + (1 - p) * (1 - p) if consistency else np.nan,
+                     "overhead": float(over.mean()), "lat": float(np.mean(lat + over)),
+                     "solver_A": float(np.mean([parse(c)[0] * parse(c)[1] for c in opts])),
+                     "stability": float(counts.max() / len(opts)), "n_decisions": len(opts),
+                     "n_fallback": int(g.fallback.sum()), "n_unknown_decisions": int((~np.isfinite(acc)).sum()),
+                     "choices_k": "|".join(opts)})
+    f = items[["item_id", "benchmark"]].merge(pd.DataFrame(rows), on="item_id", how="left")
+    return f.assign(selector=name, kind="llm", menu=menu, overhead_kind=overhead_kind)
+
+
 def _overhead_fn(kind: str, diag: Mapping[str, float], llm: Mapping[tuple, float], arm: str | None = None):
     if kind == "none":
         return None
@@ -421,7 +603,7 @@ def _overhead_fn(kind: str, diag: Mapping[str, float], llm: Mapping[tuple, float
 
 def analyze(study_root: Path, *, n_sim: int = 2000, n_resamples: int = 10_000, overwrite: bool = False,
             log: Callable[[str], None] = print) -> dict[str, Any]:
-    from agent_allocation.passk.features import diag_features
+    from agent_allocation.passk.features import diag_draws, diag_features
     from agent_allocation.passk.models import e5
     from agent_allocation.passk.models.inputs import (ClassSource, PASSK_SEED, load_analysis_inputs,
                                                       load_panels)
@@ -451,16 +633,78 @@ def analyze(study_root: Path, *, n_sim: int = 2000, n_resamples: int = 10_000, o
     diag = diag_wallclock(draws)
     llm_tab = llm_decision_latency(root)
     llm = {(r.arm, r.item_id): float(r.decision_latency) for r in llm_tab.itertuples(index=False)}
-    est = pd.read_parquet(root / "lex" / "front_estimates.parquet")
-    est_idx = est.set_index(["item_id", "config"])
-    split = pd.read_parquet(root / "lex" / "front_splithalf.parquet").set_index("item_id")
-    winners17 = pd.read_parquet(root / "lex" / "front_winners.parquet").set_index("item_id")["config"]
+    est_full = pd.read_parquet(root / "lex" / "front_estimates.parquet")
+    split_full = pd.read_parquet(root / "lex" / "front_splithalf.parquet").set_index("item_id")
+    winners_full = pd.read_parquet(root / "lex" / "front_winners.parquet").set_index("item_id")["config"]
     e8a_l96 = pd.read_parquet(root / "e8a" / "items_L96.parquet").set_index("item_id")
     e8a_t200 = pd.read_parquet(root / "e8a" / "items_T200.parquet").set_index("item_id")
     sealed = pd.read_parquet(root / "sealed" / "t200" / "predictions.parquet")
     for c in M15 + ("1x25",):
-        if est[(est.config == c)].p.notna().sum() != len(c48):
+        if est_full[(est_full.config == c)].p.notna().sum() != len(c48):
             raise RuntimeError(f"bank estimate missing for {c}")
+
+    # E8b: LLM selectors told the LEX objective (M15 menu, K = 5 decisions per item and arm)
+    calls = load_e8b_calls(root)
+    dec = e8b_decisions(calls, {"C48": c48, "T200": t200})
+    e8b_info = {"prompt_sha256": sorted(set(calls.prompt_sha256.dropna())) if "prompt_sha256" in calls else [],
+                "n_call_attempts": int(len(calls)),
+                "cost_usd": float(pd.to_numeric(calls.get("cost_usd"), errors="coerce").sum())
+                if "cost_usd" in calls else None,
+                "k": E8B_K, "fallback": E8B_FALLBACK, "by_arm_panel": e8b_choice_summary(dec)}
+
+    # ---------------------------------------------------------------- C48 bank without the diagnostic draws
+    t0 = time.time()
+    bank = c48_bank_with_classes(root)
+    dmask = is_diagnostic_draw(bank)
+    expected = set(diag_draws(draws, c48).candidate_id)
+    if set(bank.loc[dmask, "candidate_id"]) != expected or int(dmask.sum()) != 5 * len(c48):
+        raise RuntimeError(f"diagnostic rows in the C48 bank ({int(dmask.sum())}) are not the {len(expected)} "
+                           "diagnostic draws of features.diag_draws")
+    est_nd = nodiag_estimates(bank)
+    chk = est_full.merge(est_nd, on=["item_id", "config"], suffixes=("_full", "_nd"), how="outer")
+    if len(chk) != len(est_full) or len(chk) != len(est_nd):
+        raise RuntimeError("no-diagnostic estimates do not cover the front's (item, option) cells")
+    same_cols = ("p", "C", "latency", "m")
+    non_a = chk[chk.a_full != 1]
+    moved = [c for c in same_cols if not np.array_equal(non_a[f"{c}_full"].to_numpy(float),
+                                                         non_a[f"{c}_nd"].to_numpy(float), equal_nan=True)]
+    if moved:
+        raise RuntimeError(f"removing A-level diagnostic draws moved non-A options ({moved})")
+    for c in M15 + ("1x25",):
+        if est_nd[(est_nd.config == c)].p.notna().sum() != len(c48):
+            raise RuntimeError(f"no-diagnostic bank estimate missing for {c}")
+    est_nd.to_parquet(out_dir / "front_estimates_nodiag.parquet", index=False)
+    split_nd_frame = split_half(bank, ~dmask)
+    split_nd_frame.to_parquet(out_dir / "front_splithalf_nodiag.parquet", index=False)
+    split_nd = split_nd_frame.set_index("item_id")
+    winners_nd = lex_choose(est_nd).set_index("item_id")["config"]
+    reduced = bank[~dmask]
+    rebuilt = item_classes(reduced.drop(columns="cls"), root / "catalog" / "pair_verdicts.parquet", workers=1)
+    same_cls = sum(same_partition(list(g.cls), list(rebuilt.loc[g.index])) for _, g in reduced.groupby("item_id"))
+    a_level = chk[chk.a_full == 1]
+    bank_info = {
+        "primary": "nodiag",
+        "nodiag": "lexfront.estimate() on the C48 bank minus the five diagnostic draws per item (legacy_main A slots "
+                  "20-24) -> lex/selcmp/front_estimates_nodiag.parquet; only A-level options (n x 1) change",
+        "full": "lex/front_estimates.parquet (the LEX front bank, diagnostics included): sensitivity only",
+        "diag_rows_removed": int(dmask.sum()),
+        "a_bank_size": {"full": sorted(set(chk[chk.a_full == 1].m_full.astype(int))),
+                        "nodiag": sorted(set(chk[chk.a_full == 1].m_nd.astype(int)))},
+        "class_labels": "the full-bank item classes (as lexfront's split-half check); rebuilding the classes on the "
+                        "reduced bank gives the identical partition on "
+                        f"{same_cls} of {reduced.item_id.nunique()} items",
+        "items_identical_class_partition": int(same_cls),
+        "a_level_mean_p": {c: {"full": float(g.p_full.mean()), "nodiag": float(g.p_nd.mean()),
+                               "max_abs_item_diff": float((g.p_full - g.p_nd).abs().max())}
+                           for c, g in a_level.groupby("config")},
+        "selector_inputs_unchanged": "the statistical rule's predicted-latency table (C48 bank latency per (shard, "
+                                     "option), leave-item-out) stays on the front estimates, like the typical "
+                                     "times in the E8b prompt; outcomes (scoring, oracles, split-half, the "
+                                     "heuristic's C48 training outcomes) use the scoring bank; the split-half "
+                                     "reference is re-chosen and re-scored on the no-diagnostic halves "
+                                     "(lex/selcmp/front_splithalf_nodiag.parquet)",
+        "seconds": round(time.time() - t0, 1)}
+    log(f"[selcmp] no-diagnostic C48 bank ({time.time() - t0:.0f}s; {same_cls}/48 identical class partitions)")
 
     # ---------------------------------------------------------------- statistical predictions
     oof, cf = crossfit(draws, pools, cls, feats, l96, c48, M15, seed=PASSK_SEED, n_sim=n_sim, log=log)
@@ -472,113 +716,146 @@ def analyze(study_root: Path, *, n_sim: int = 2000, n_resamples: int = 10_000, o
     t200_pred.to_parquet(out_dir / "t200_m15_predictions.parquet", index=False)
     e5._require_no_fallback(cls)
     log(f"[selcmp] full L96 fit -> T200 ({time.time() - t0:.0f}s)")
-    chk = sealed.merge(t200_pred, on=["item_id", "config_id", "predictor"], suffixes=("_sealed", "_refit"))
-    reproduction = {"n_cells": int(len(chk)), "max_abs_diff_p_delivered": float(
-        (chk.p_delivered_sealed - chk.p_delivered_refit).abs().max())}
+    chk_sealed = sealed.merge(t200_pred, on=["item_id", "config_id", "predictor"], suffixes=("_sealed", "_refit"))
+    reproduction = {"n_cells": int(len(chk_sealed)), "max_abs_diff_p_delivered": float(
+        (chk_sealed.p_delivered_sealed - chk_sealed.p_delivered_refit).abs().max())}
 
-    # OOF quality against the C48 bank estimates (context for the policy results)
-    q = oof[oof.item_id.isin(c48)].merge(est[["item_id", "config", "p"]], left_on=["item_id", "config_id"],
-                                         right_on=["item_id", "config"])
-    oof_quality = {}
-    for name, g in q.groupby("predictor"):
-        rho = [pd.Series(h.p_delivered.to_numpy()).corr(pd.Series(h.p.to_numpy()), method="spearman")
-               for _, h in g.groupby("item_id") if h.p.nunique() > 1]     # constant bank p: undefined
-        oof_quality[name] = {"mae_vs_bank_p": float((g.p_delivered - g.p).abs().mean()),
-                             "brier_vs_bank_p": float(((g.p_delivered - g.p) ** 2).mean()),
-                             "mean_within_item_spearman": float(np.nanmean(rho))}
+    def oof_quality(est: pd.DataFrame) -> dict[str, Any]:
+        """OOF predictions against the C48 bank estimates (context for the policy results)."""
+        q = oof[oof.item_id.isin(c48)].merge(est[["item_id", "config", "p"]], left_on=["item_id", "config_id"],
+                                             right_on=["item_id", "config"])
+        out = {}
+        for name, g in q.groupby("predictor"):
+            rho = [pd.Series(h.p_delivered.to_numpy()).corr(pd.Series(h.p.to_numpy()), method="spearman")
+                   for _, h in g.groupby("item_id") if h.p.nunique() > 1]     # constant bank p: undefined
+            out[name] = {"mae_vs_bank_p": float((g.p_delivered - g.p).abs().mean()),
+                         "brier_vs_bank_p": float(((g.p_delivered - g.p) ** 2).mean()),
+                         "mean_within_item_spearman": float(np.nanmean(rho))}
+        return out
 
     # ---------------------------------------------------------------- C48
     c48_items = pd.DataFrame({"item_id": c48, "benchmark": [bench[i] for i in c48]})
-
-    def bank_value(i: str, c: str) -> tuple[float, float, float]:
-        r = est_idx.loc[(i, c)]
-        return float(r.p), float(r.C), float(r.latency)
-
-    lat_loo = latency_lookup(est, shard_of, leave_item_out=True)
-    frames: list[pd.DataFrame] = []
-    for c in M15 + ("1x25",):
-        frames.append(_selector_frame(c48_items, pd.Series({i: c for i in c48}), value=bank_value,
-                                      name=f"fixed:{c}", kind="fixed" if c != "1x25" else "reference",
-                                      menu=c, overhead_kind="none"))
-    for name in STAT:
-        pr = oof[(oof.predictor == name) & oof.item_id.isin(c48)]
-        ok = "none" if name == "P0" else "diag"
-        for mname, menu in MENUS.items():
-            frames.append(_selector_frame(c48_items, stat_choices(pr, menu, lat_loo), value=bank_value,
-                                          overhead=_overhead_fn(ok, diag, llm), name=f"stat:{name}/{mname}",
-                                          kind="stat", menu=mname, overhead_kind=ok))
-
-    # heuristic, cross-fitted on the same outer folds
-    ro_l96_acc, ro_l96_lat = realized_tables(root, draws, "L96")
-
     c48_set = set(c48)
-
-    def train_outcome(i: str, c: str) -> tuple[float, float, float]:
-        if i in c48_set:
-            return bank_value(i, c)
-        return ro_l96_acc.get((i, c), np.nan), np.nan, ro_l96_lat.get((i, c), np.nan)
-
-    heur_rules: dict[str, Any] = {}
-    for mname, menu in MENUS.items():
-        choice = {}
-        heur_rules[mname] = {}
-        for f, info in cf["folds"].items():
-            rule = heuristic_fit(cf["train_sets"][f], f1, bench, train_outcome, diag, menu)
-            heur_rules[mname][f"fold{f}"] = {k: v for k, v in rule.items() if k != "table"}
-            test_c48 = [i for i in info["test_items"] if i in c48_set]
-            choice.update(heuristic_apply(rule, test_c48, f1).to_dict())
-        frames.append(_selector_frame(c48_items, pd.Series(choice), value=bank_value,
-                                      overhead=_overhead_fn("diag", diag, llm), name=f"heuristic/{mname}",
-                                      kind="heuristic", menu=mname, overhead_kind="diag"))
-    for arm, ok in (("A0", "llm"), ("A1", "diag+llm")):
-        frames.append(_selector_frame(c48_items, e8a_l96[f"{arm}_choice"], value=bank_value,
-                                      overhead=_overhead_fn(ok, diag, llm, arm), name=f"LLM:{arm}", kind="llm",
-                                      menu="M5", overhead_kind=ok))
-    for mname, menu in (("M15", M15), ("M5", M5)):
-        ch = lex_choose(est[est.config.isin(menu)]).set_index("item_id")["config"]
-        frames.append(_selector_frame(c48_items, ch, value=bank_value, name=f"oracle/{mname}", kind="ceiling",
-                                      menu=mname, overhead_kind="none"))
-    frames.append(_selector_frame(c48_items, winners17, value=bank_value, name="oracle/M17", kind="ceiling",
-                                  menu="M17", overhead_kind="none"))
-    sh = c48_items.assign(choice="split-half", acc=c48_items.item_id.map(split.p), C=c48_items.item_id.map(split.C),
-                          overhead=0.0, lat=c48_items.item_id.map(split.latency), solver_A=np.nan,
-                          selector="splithalf/M17", kind="reference", menu="M17", overhead_kind="none")
-    frames.append(sh)
-    c48_long = pd.concat(frames, ignore_index=True)
-    c48_long.to_parquet(out_dir / "c48_selector_items.parquet", index=False)
-
+    ro_l96_acc, ro_l96_lat = realized_tables(root, draws, "L96")
+    lat_loo = latency_lookup(est_full, shard_of, leave_item_out=True)    # selector input: the front's latencies
+    stat_choice_c48 = {(name, mname): stat_choices(oof[(oof.predictor == name) & oof.item_id.isin(c48)], menu,
+                                                   lat_loo)
+                       for name in STAT for mname, menu in MENUS.items()}
+    dec_c48 = {arm: dec[(dec.arm == arm) & (dec.panel == "C48")] for arm in E8B_ARMS}
     st = Stats(n_resamples, SEED)
-    wide = {m: c48_long.pivot(index=["item_id", "benchmark"], columns="selector", values=m).reset_index()
-            for m in ("acc", "C", "lat")}
-    selectors = list(dict.fromkeys(c48_long.selector))
-    meta = c48_long.drop_duplicates("selector").set_index("selector")
-    deployable = [s for s in selectors if meta.loc[s, "kind"] in ("fixed", "stat", "heuristic", "llm")]
-    c48_rows = []
-    for s in selectors:
-        g = c48_long[c48_long.selector == s]
-        row = {"selector": s, "kind": meta.loc[s, "kind"], "menu": meta.loc[s, "menu"],
-               "overhead_kind": meta.loc[s, "overhead_kind"],
-               "acc": st.level(g, "acc", MACRO), "C": st.level(g, "C", MACRO), "lat": st.level(g, "lat", MACRO),
-               "mean_overhead_s": macro_mean(g.overhead, g.benchmark),
-               "mean_solver_A": macro_mean(g.solver_A, g.benchmark),
-               "choices": {str(k): int(v) for k, v in g.choice.value_counts().items()}}
-        if s != REFERENCE:
-            row["minus_1x16"] = {m: st.diff(wide[m], s, REFERENCE, MACRO) for m in ("acc", "C", "lat")}
-        c48_rows.append(row)
-    pop = pd.DataFrame([{"selector": r["selector"], "acc": r["acc"]["mean"], "C": r["C"]["mean"],
-                         "lat": r["lat"]["mean"]} for r in c48_rows])
-    order = lex_order(pop[pop.selector.isin(deployable)], acc="acc", cons="C", lat="lat")
-    order_all = lex_order(pop, acc="acc", cons="C", lat="lat")
-    share = winner_share(wide, deployable, MACRO, cons=True, n_resamples=n_resamples, seed=SEED)
-    for r in c48_rows:
-        r["lex_rank_deployable"] = order.index(r["selector"]) + 1 if r["selector"] in order else None
-        r["lex_rank_all"] = order_all.index(r["selector"]) + 1
-        r["winner_share_deployable"] = share.get(r["selector"])
-    llm_contrasts_c48 = {}
-    for s in [x for x in deployable if meta.loc[x, "kind"] in ("stat", "heuristic")]:
-        llm_contrasts_c48[s] = {arm: {m: st.diff(wide[m], s, f"LLM:{arm}", MACRO) for m in ("acc", "C", "lat")}
-                                for arm in ("A0", "A1")}
-    log(f"[selcmp] C48 scored ({time.time() - started:.0f}s)")
+
+    def bank_value_fn(est: pd.DataFrame) -> Callable[[str, str], tuple[float, float, float]]:
+        idx = est.set_index(["item_id", "config"])
+
+        def bank_value(i: str, c: str) -> tuple[float, float, float]:
+            r = idx.loc[(i, c)]
+            return float(r.p), float(r.C), float(r.latency)
+        return bank_value
+
+    def train_outcome_fn(bank_value) -> Callable[[str, str], tuple[float, float, float]]:
+        def train_outcome(i: str, c: str) -> tuple[float, float, float]:
+            if i in c48_set:
+                return bank_value(i, c)
+            return ro_l96_acc.get((i, c), np.nan), np.nan, ro_l96_lat.get((i, c), np.nan)
+        return train_outcome
+
+    def score_c48(est: pd.DataFrame, split: pd.DataFrame, winners17: pd.Series) -> tuple[pd.DataFrame, dict]:
+        """Every C48 selector scored on one bank (``est``); the heuristic is trained on the same bank's outcomes."""
+        bank_value = bank_value_fn(est)
+        train_outcome = train_outcome_fn(bank_value)
+        frames: list[pd.DataFrame] = []
+        for c in M15 + ("1x25",):
+            frames.append(_selector_frame(c48_items, pd.Series({i: c for i in c48}), value=bank_value,
+                                          name=f"fixed:{c}", kind="fixed" if c != "1x25" else "reference",
+                                          menu=c, overhead_kind="none"))
+        for name in STAT:
+            ok = "none" if name == "P0" else "diag"
+            for mname in MENUS:
+                frames.append(_selector_frame(c48_items, stat_choice_c48[(name, mname)], value=bank_value,
+                                              overhead=_overhead_fn(ok, diag, llm), name=f"stat:{name}/{mname}",
+                                              kind="stat", menu=mname, overhead_kind=ok))
+        heur_rules: dict[str, Any] = {}
+        for mname, menu in MENUS.items():          # heuristic, cross-fitted on the same outer folds
+            choice = {}
+            heur_rules[mname] = {}
+            for f, info in cf["folds"].items():
+                rule = heuristic_fit(cf["train_sets"][f], f1, bench, train_outcome, diag, menu)
+                heur_rules[mname][f"fold{f}"] = {k: v for k, v in rule.items() if k != "table"}
+                test_c48 = [i for i in info["test_items"] if i in c48_set]
+                choice.update(heuristic_apply(rule, test_c48, f1).to_dict())
+            frames.append(_selector_frame(c48_items, pd.Series(choice), value=bank_value,
+                                          overhead=_overhead_fn("diag", diag, llm), name=f"heuristic/{mname}",
+                                          kind="heuristic", menu=mname, overhead_kind="diag"))
+        for arm in E8A_ARMS:
+            ok = LLM_OVERHEAD[arm]
+            frames.append(_selector_frame(c48_items, e8a_l96[f"{arm}_choice"], value=bank_value,
+                                          overhead=_overhead_fn(ok, diag, llm, arm), name=f"LLM:{arm}", kind="llm",
+                                          menu=LLM_MENU[arm], overhead_kind=ok))
+        for arm in E8B_ARMS:
+            frames.append(llm_k_frame(c48_items, dec_c48[arm], value=bank_value,
+                                      extra_overhead=diag if arm == "B1" else None, name=f"LLM:{arm}",
+                                      menu=LLM_MENU[arm], overhead_kind=LLM_OVERHEAD[arm], consistency=True))
+        for mname, menu in (("M15", M15), ("M5", M5)):
+            ch = lex_choose(est[est.config.isin(menu)]).set_index("item_id")["config"]
+            frames.append(_selector_frame(c48_items, ch, value=bank_value, name=f"oracle/{mname}", kind="ceiling",
+                                          menu=mname, overhead_kind="none"))
+        frames.append(_selector_frame(c48_items, winners17, value=bank_value, name="oracle/M17", kind="ceiling",
+                                      menu="M17", overhead_kind="none"))
+        frames.append(c48_items.assign(choice="split-half", acc=c48_items.item_id.map(split.p),
+                                       C=c48_items.item_id.map(split.C), overhead=0.0,
+                                       lat=c48_items.item_id.map(split.latency), solver_A=np.nan,
+                                       selector="splithalf/M17", kind="reference", menu="M17",
+                                       overhead_kind="none"))
+        return pd.concat(frames, ignore_index=True), heur_rules
+
+    def summarize_c48(long: pd.DataFrame) -> dict[str, Any]:
+        wide = {m: long.pivot(index=["item_id", "benchmark"], columns="selector", values=m).reset_index()
+                for m in ("acc", "C", "lat")}
+        selectors = list(dict.fromkeys(long.selector))
+        meta = long.drop_duplicates("selector").set_index("selector")
+        deployable = [s for s in selectors if meta.loc[s, "kind"] in ("fixed", "stat", "heuristic", "llm")]
+        rows = []
+        for s in selectors:
+            g = long[long.selector == s]
+            row = {"selector": s, "kind": meta.loc[s, "kind"], "menu": meta.loc[s, "menu"],
+                   "overhead_kind": meta.loc[s, "overhead_kind"],
+                   "acc": st.level(g, "acc", MACRO), "C": st.level(g, "C", MACRO), "lat": st.level(g, "lat", MACRO),
+                   "mean_overhead_s": macro_mean(g.overhead, g.benchmark),
+                   "mean_solver_A": macro_mean(g.solver_A, g.benchmark),
+                   "choices": {str(k): int(v) for k, v in g.choice.value_counts().items()}}
+            row.update(_k_sample_fields(g))
+            if s != REFERENCE:
+                row["minus_1x16"] = {m: st.diff(wide[m], s, REFERENCE, MACRO) for m in ("acc", "C", "lat")}
+            rows.append(row)
+        pop = pd.DataFrame([{"selector": r["selector"], "acc": r["acc"]["mean"], "C": r["C"]["mean"],
+                             "lat": r["lat"]["mean"]} for r in rows])
+        order = lex_order(pop[pop.selector.isin(deployable)], acc="acc", cons="C", lat="lat")
+        order_all = lex_order(pop, acc="acc", cons="C", lat="lat")
+        share = winner_share(wide, deployable, MACRO, cons=True, n_resamples=n_resamples, seed=SEED)
+        for r in rows:
+            r["lex_rank_deployable"] = order.index(r["selector"]) + 1 if r["selector"] in order else None
+            r["lex_rank_all"] = order_all.index(r["selector"]) + 1
+            r["winner_share_deployable"] = share.get(r["selector"])
+        vs_llm = {}
+        for s in [x for x in deployable if meta.loc[x, "kind"] in ("stat", "heuristic")]:
+            arms = list(E8A_ARMS) + [a for a in E8B_ARMS if meta.loc[s, "menu"] == LLM_MENU[a]]
+            vs_llm[s] = {arm: {m: st.diff(wide[m], s, f"LLM:{arm}", MACRO) for m in ("acc", "C", "lat")}
+                         for arm in arms}
+        objective: dict[str, Any] = {}
+        for b, a in OBJECTIVE_PAIRS:
+            objective.setdefault(f"LLM:{b}", {})[f"LLM:{a}"] = {m: st.diff(wide[m], f"LLM:{b}", f"LLM:{a}", MACRO)
+                                                                 for m in ("acc", "C", "lat")}
+        return {"selectors": rows, "lex_order_deployable": order, "lex_order_all": order_all,
+                "stat_minus_llm": vs_llm, "llm_objective_effect": objective}
+
+    c48_long, heur_rules = score_c48(est_nd, split_nd, winners_nd)
+    c48_long.to_parquet(out_dir / "c48_selector_items.parquet", index=False)
+    c48_sec = summarize_c48(c48_long)
+    log(f"[selcmp] C48 scored on the no-diagnostic bank ({time.time() - started:.0f}s)")
+    c48_long_full, heur_rules_full = score_c48(est_full, split_full, winners_full)
+    c48_long_full.to_parquet(out_dir / "c48_selector_items_fullbank.parquet", index=False)
+    c48_sec_full = summarize_c48(c48_long_full)
+    log(f"[selcmp] C48 scored on the full (diagnostics-included) bank ({time.time() - started:.0f}s)")
 
     # ---------------------------------------------------------------- T200
     t_items = pd.DataFrame({"item_id": t200, "benchmark": [bench[i] for i in t200]})
@@ -587,7 +864,7 @@ def analyze(study_root: Path, *, n_sim: int = 2000, n_resamples: int = 10_000, o
     def realized_value(i: str, c: str) -> tuple[float, float, float]:
         return t_acc.get((i, c), np.nan), np.nan, t_lat.get((i, c), np.nan)
 
-    lat_c48 = latency_lookup(est, shard_of, leave_item_out=False)
+    lat_c48 = latency_lookup(est_full, shard_of, leave_item_out=False)
     tframes: list[pd.DataFrame] = []
     for c in M15:
         tframes.append(_selector_frame(t_items, pd.Series({i: c for i in t200}), value=realized_value,
@@ -604,18 +881,29 @@ def analyze(study_root: Path, *, n_sim: int = 2000, n_resamples: int = 10_000, o
                                            value=realized_value, overhead=_overhead_fn(ok, diag, llm),
                                            name=f"sealed:{name}/{mname[:2]}", kind="stat-sealed", menu=mname,
                                            overhead_kind=ok))
-    heur_t200 = {}
-    for mname, menu in MENUS.items():
-        rule = heuristic_fit(l96, f1, bench, train_outcome, diag, menu)
-        heur_t200[mname] = {k: v for k, v in rule.items() if k != "table"}
-        heur_t200[mname]["table"] = rule["table"].round(5).to_dict(orient="records")
-        tframes.append(_selector_frame(t_items, heuristic_apply(rule, t200, f1), value=realized_value,
-                                       overhead=_overhead_fn("diag", diag, llm), name=f"heuristic/{mname}",
-                                       kind="heuristic", menu=mname, overhead_kind="diag"))
-    for arm, ok in (("A0", "llm"), ("A1", "diag+llm")):
+
+    def t200_heuristic(train_outcome) -> tuple[dict[str, Any], list[pd.DataFrame]]:
+        rules, frames = {}, []
+        for mname, menu in MENUS.items():
+            rule = heuristic_fit(l96, f1, bench, train_outcome, diag, menu)
+            rules[mname] = {k: v for k, v in rule.items() if k != "table"}
+            rules[mname]["table"] = rule["table"].round(5).to_dict(orient="records")
+            frames.append(_selector_frame(t_items, heuristic_apply(rule, t200, f1), value=realized_value,
+                                          overhead=_overhead_fn("diag", diag, llm), name=f"heuristic/{mname}",
+                                          kind="heuristic", menu=mname, overhead_kind="diag"))
+        return rules, frames
+
+    heur_t200, hframes = t200_heuristic(train_outcome_fn(bank_value_fn(est_nd)))
+    tframes += hframes
+    for arm in E8A_ARMS:
+        ok = LLM_OVERHEAD[arm]
         tframes.append(_selector_frame(t_items, e8a_t200[f"{arm}_choice"], value=realized_value,
                                        overhead=_overhead_fn(ok, diag, llm, arm), name=f"LLM:{arm}", kind="llm",
-                                       menu="M5", overhead_kind=ok))
+                                       menu=LLM_MENU[arm], overhead_kind=ok))
+    for arm in E8B_ARMS:
+        tframes.append(llm_k_frame(t_items, dec[(dec.arm == arm) & (dec.panel == "T200")], value=realized_value,
+                                   extra_overhead=diag if arm == "B1" else None, name=f"LLM:{arm}",
+                                   menu=LLM_MENU[arm], overhead_kind=LLM_OVERHEAD[arm], consistency=False))
     for mname, menu in MENUS.items():         # realized in-sample ceiling: best realized outcome, then fastest
         ch = {}
         for i in t200:
@@ -633,17 +921,21 @@ def analyze(study_root: Path, *, n_sim: int = 2000, n_resamples: int = 10_000, o
     tsel = list(dict.fromkeys(t_long.selector))
     tmeta = t_long.drop_duplicates("selector").set_index("selector")
     tdeploy = [s for s in tsel if tmeta.loc[s, "kind"] in ("fixed", "stat", "stat-sealed", "heuristic", "llm")]
+
+    def t_level_row(g: pd.DataFrame) -> dict[str, Any]:
+        return {"acc_mixture": st.level(g, "acc", MIXTURE), "acc_macro": st.level(g, "acc", MACRO),
+                "lat_macro": st.level(g, "lat", MACRO), "lat_mixture": st.level(g, "lat", MIXTURE),
+                "mean_overhead_s": macro_mean(g.overhead, g.benchmark),
+                "mean_solver_A": macro_mean(g.solver_A, g.benchmark),
+                "n_unknown_acc": int(g.acc.isna().sum()),
+                "choices": {str(k): int(v) for k, v in g.choice.value_counts().items()}}
+
     t_rows = []
     for s in tsel:
         g = t_long[t_long.selector == s]
         row = {"selector": s, "kind": tmeta.loc[s, "kind"], "menu": tmeta.loc[s, "menu"],
-               "overhead_kind": tmeta.loc[s, "overhead_kind"],
-               "acc_mixture": st.level(g, "acc", MIXTURE), "acc_macro": st.level(g, "acc", MACRO),
-               "lat_macro": st.level(g, "lat", MACRO), "lat_mixture": st.level(g, "lat", MIXTURE),
-               "mean_overhead_s": macro_mean(g.overhead, g.benchmark),
-               "mean_solver_A": macro_mean(g.solver_A, g.benchmark),
-               "n_unknown_acc": int(g.acc.isna().sum()),
-               "choices": {str(k): int(v) for k, v in g.choice.value_counts().items()}}
+               "overhead_kind": tmeta.loc[s, "overhead_kind"], **t_level_row(g)}
+        row.update(_k_sample_fields(g))
         if s != REFERENCE:
             row["minus_1x16"] = {"acc_macro": st.diff(twide["acc"], s, REFERENCE, MACRO),
                                  "acc_mixture": st.diff(twide["acc"], s, REFERENCE, MIXTURE),
@@ -662,72 +954,147 @@ def analyze(study_root: Path, *, n_sim: int = 2000, n_resamples: int = 10_000, o
         r["lex_rank_mixture"] = torder_mix.index(s) + 1 if s in torder_mix else None
         r["winner_share_macro"] = tshare.get(s)
         r["winner_share_mixture"] = tshare_mix.get(s)
+
+    def t_diff(a: str, b: str) -> dict[str, Any]:
+        return {"acc_macro": st.diff(twide["acc"], a, b, MACRO), "acc_mixture": st.diff(twide["acc"], a, b, MIXTURE),
+                "lat_macro": st.diff(twide["lat"], a, b, MACRO)}
+
     llm_contrasts_t200 = {}
     for s in [x for x in tdeploy if tmeta.loc[x, "kind"] in ("stat", "stat-sealed", "heuristic")]:
-        llm_contrasts_t200[s] = {arm: {"acc_macro": st.diff(twide["acc"], s, f"LLM:{arm}", MACRO),
-                                       "acc_mixture": st.diff(twide["acc"], s, f"LLM:{arm}", MIXTURE),
-                                       "lat_macro": st.diff(twide["lat"], s, f"LLM:{arm}", MACRO)}
-                                 for arm in ("A0", "A1")}
+        arms = list(E8A_ARMS) + [a for a in E8B_ARMS if tmeta.loc[s, "menu"] == LLM_MENU[a]]
+        llm_contrasts_t200[s] = {arm: t_diff(s, f"LLM:{arm}") for arm in arms}
+    t_objective: dict[str, Any] = {}
+    for b, a in OBJECTIVE_PAIRS:
+        t_objective.setdefault(f"LLM:{b}", {})[f"LLM:{a}"] = t_diff(f"LLM:{b}", f"LLM:{a}")
+
+    # the full-bank heuristic rules (C48 training outcomes with the diagnostics) scored on T200: sensitivity only
+    heur_t200_full, hframes_full = t200_heuristic(train_outcome_fn(bank_value_fn(est_full)))
+    t200_heur_full = {}
+    for fr in hframes_full:
+        s = fr.selector.iloc[0]
+        wide_pair = fr[["item_id", "benchmark", "acc", "lat"]].merge(
+            t_long[t_long.selector == REFERENCE][["item_id", "acc", "lat"]], on="item_id", suffixes=("", "_ref"))
+        t200_heur_full[s] = {"rule": {k: v for k, v in heur_t200_full[s.split("/")[1]].items() if k != "table"},
+                             **t_level_row(fr),
+                             "minus_1x16": {"acc_macro": st.diff(wide_pair, "acc", "acc_ref", MACRO),
+                                            "acc_mixture": st.diff(wide_pair, "acc", "acc_ref", MIXTURE),
+                                            "lat_macro": st.diff(wide_pair, "lat", "lat_ref", MACRO)}}
     log(f"[selcmp] T200 scored ({time.time() - started:.0f}s)")
+
+    # ---------------------------------------------------------------- bank sensitivity (C48)
+    by_sel_full = {r["selector"]: r for r in c48_sec_full["selectors"]}
+    sensitivity_rows = []
+    for r in c48_sec["selectors"]:
+        o = by_sel_full[r["selector"]]
+        sensitivity_rows.append({
+            "selector": r["selector"], "kind": r["kind"],
+            **{f"{m}_{b}": x[m]["mean"] for b, x in (("nodiag", r), ("full", o)) for m in ("acc", "C", "lat")},
+            "rank_nodiag": r["lex_rank_deployable"], "rank_full": o["lex_rank_deployable"],
+            "share_nodiag": r["winner_share_deployable"], "share_full": o["winner_share_deployable"],
+            "same_choices": None if r["selector"].startswith("splithalf") else r["choices"] == o["choices"]})
 
     # ---------------------------------------------------------------- report
     folds_info = {str(f): {k: v for k, v in info.items()} for f, info in cf["folds"].items()}
     fold_balance = pd.crosstab(pd.Series(cf["assignment"]).rename("fold"),
                                pd.Series({i: bench[i] for i in l96}).rename("benchmark"))
+    e8b_over = dec.assign(overhead=dec.call_latency).groupby(["arm", "panel"]).agg(
+        mean_s=("overhead", "mean"), max_s=("overhead", "max"), attempts=("attempts", "sum"),
+        missing=("attempts_missing_latency", "sum")).reset_index().to_dict(orient="records")
     report = {
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "status": "post-hoc, exploratory (all labels released; not pre-registered beyond PREREG_LEX_front.md)",
+        "status": "post-hoc, exploratory (all labels released; not pre-registered beyond PREREG_LEX_front.md; the "
+                  "E8b arms follow PREREG_E8b_lex_llm.md)",
         "delta": DELTA, "menus": {"M15": list(M15), "M5": list(M5), "M9sealed": list(M9)},
         "definitions": {
-            "accuracy": "C48: bank-estimated delivered accuracy p (tie-averaged); T200: realized S_known (passk)",
-            "consistency": "C48: p^2 + (1-p)^2 from the bank p; T200: not measurable per item (one realization)",
+            "accuracy": "C48: bank-estimated delivered accuracy p (tie-averaged) on the no-diagnostic bank; T200: "
+                        "realized S_known (passk)",
+            "consistency": "C48: p^2 + (1-p)^2 from the bank p (E8b arms: from the mean p over their 5 decisions); "
+                           "T200: not measurable per item (one realization)",
             "latency": "chosen option's parallel wall-clock (C48: bank expected max of n call latencies; T200: slowest "
                        "member of the realized pool) + selector overhead",
             "overhead": {"none": "fixed options, P0, oracles, split-half",
                          "diag": "max of the item's five diagnostic call latencies",
-                         "llm": "E8a decision latency summed over every attempt",
-                         "diag+llm": "diagnostic wall-clock + decision latency (A1)"},
+                         "llm": "A0: the E8a decision latency summed over every attempt; B0: per decision, latency_s "
+                                "summed over its attempts, averaged over the item's 5 decisions",
+                         "diag+llm": "diagnostic wall-clock + decision latency (A1, B1)"},
+            "c48_bank": "no-diagnostic bank (the five diagnostic draws, legacy A slots 20-24, are removed from every "
+                        "item's A-level bank because P1-P3, the heuristic and A1/B1 read them); the full bank's "
+                        "numbers are kept under c48_bank_sensitivity",
+            "e8b": "LLM:B0/B1 = PREREG_E8b: told the LEX objective, M15 menu with typical times, 5 independent "
+                   "decisions per item (option order reshuffled); invalid after one retry -> 1x16. Per item: "
+                   "accuracy = mean over decisions of the option's accuracy; C48 consistency = p_sys^2 + "
+                   "(1-p_sys)^2 of that mean; latency = mean over decisions of (option latency + call latency "
+                   "summed over attempts [+ diagnostics wall-clock for B1]). choice = modal option; stability = "
+                   "share of the modal option among the item's decisions",
             "stat_rule": "LEX rule per item on predicted p_delivered, C = p^2+(1-p)^2 of the prediction, latency = "
-                         "C48 bank-latency mean per (shard, option) (leave-item-out on C48)",
+                         "C48 front-bank latency mean per (shard, option) (leave-item-out on C48)",
             "heuristic_rule": "if the plurality share f1 of the five diagnostic answers >= tau then X else 1x16; "
                               "(tau, X) in {0.6, 0.8, 1.0} x menu chosen on the training items by macro accuracy "
-                              "(C48 items: bank p; other L96 items: realized S_known) -> macro consistency (bank "
-                              "items only) -> macro latency incl. diagnostics -> fewer tokens -> larger tau",
-            "population_rank": "repeated LEX selection over deployable selectors (fixed M15, stat, heuristic, LLM): "
-                               "macro accuracy within 0.02 of the best -> consistency within 0.02 (C48 only) -> "
-                               "lowest macro latency",
+                              "(C48 items: no-diagnostic bank p; other L96 items: realized S_known) -> macro "
+                              "consistency (bank items only) -> macro latency incl. diagnostics -> fewer tokens -> "
+                              "larger tau",
+            "population_rank": "repeated LEX selection over deployable selectors (fixed M15, stat, heuristic, LLM "
+                               "A0/A1/B0/B1): macro accuracy within 0.02 of the best -> consistency within 0.02 "
+                               "(C48 only) -> lowest macro latency",
             "winner_share": "share of 10,000 benchmark-stratified bootstrap replicates in which the selector is the "
                             "population LEX winner among the deployable selectors (C48: macro; T200: "
                             "winner_share_macro and winner_share_mixture)",
+            "stat_minus_llm": "every statistical/heuristic row minus A0 and A1 (E8a, M5 menu); rows on the M15 menu "
+                              "also minus B0 and B1 (E8b's menu)",
+            "llm_objective_effect": "LLM:B minus LLM:A (told the objective, M15 menu, 5 decisions vs asked for "
+                                    "accuracy only, M5 menu, 1 decision) and B1 minus B0",
             "headline": "per view (C48 macro, T200 macro, T200 mixture): in_top_band = accuracy within delta of the "
                         "best deployable row; within_delta_of_1x16 = accuracy at most delta below always-1x16; "
                         "ci_side = +1/-1 if the 95% percentile CI lies above/below 0, else 0 (a bound within 1e-9 "
-                        "of 0 counts as touching); like-for-like statistical rows = C48 stat M5, T200 sealed M5",
+                        "of 0 counts as touching); like-for-like statistical rows = the LLM's own menu (A0/A1: C48 "
+                        "stat M5, T200 sealed M5; B0/B1: stat M15 on both panels)",
         },
+        "c48_bank": bank_info,
+        "e8b": e8b_info,
         "crossfit": {"outer_folds": "glm.grouped_folds(L96, 5, seed 20260925) = the E5 ridge-CV fold assignment on "
                                     "L96 (verified identical to the sealed fit's)",
                      "fold_benchmark_counts": {str(k): {str(b): int(n) for b, n in v.items()}
                                                for k, v in fold_balance.to_dict(orient="index").items()},
                      "folds": folds_info, "full_fit": full_info,
                      "sealed_reproduction": reproduction, "n_sim": n_sim,
-                     "oof_quality_vs_c48_bank": oof_quality, "class_source": cls.stats()},
+                     "oof_quality_vs_c48_bank": oof_quality(est_nd), "class_source": cls.stats()},
         "overheads": {"diag_wallclock_macro_c48": macro_mean([diag[i] for i in c48], [bench[i] for i in c48]),
                       "diag_wallclock_macro_t200": macro_mean([diag[i] for i in t200], [bench[i] for i in t200]),
                       "llm_decision": llm_tab.groupby(["arm", "panel"]).agg(
                           mean_s=("decision_latency", "mean"), max_s=("decision_latency", "max"),
                           attempts=("attempts", "sum"), missing=("attempts_missing_latency", "sum"))
-                      .reset_index().to_dict(orient="records")},
+                      .reset_index().to_dict(orient="records"),
+                      "e8b_decision": e8b_over},
         "heuristic_rules": {"c48_crossfit": heur_rules, "t200_fit_on_L96": heur_t200},
-        "c48": {"weights": "macro", "selectors": c48_rows, "lex_order_deployable": order,
-                "lex_order_all": order_all, "stat_minus_llm": llm_contrasts_c48},
+        "c48": {"weights": "macro", "bank": "nodiag", **c48_sec},
         "t200": {"selectors": t_rows, "lex_order_macro": torder_macro, "lex_order_mixture": torder_mix,
-                 "stat_minus_llm": llm_contrasts_t200},
+                 "stat_minus_llm": llm_contrasts_t200, "llm_objective_effect": t_objective},
+        "c48_bank_sensitivity": {
+            "note": "C48 scored on the full LEX-front bank (the five diagnostic draws included), everything else "
+                    "equal; the heuristic is also trained on that bank's C48 outcomes. Without LLM:B0/B1 these rows "
+                    "reproduce the previous selcmp report.",
+            "by_selector": sensitivity_rows,
+            "full_bank": {**c48_sec_full, "heuristic_rules_c48_crossfit": heur_rules_full,
+                          "oof_quality_vs_c48_bank": oof_quality(est_full)},
+            "t200_heuristic_full_bank": t200_heur_full},
         "runtime_s": round(time.time() - started, 1),
     }
     report["headline"] = headline_facts(report)
     (out_dir / "report.json").write_text(json.dumps(report, indent=1, default=float) + "\n")
     (out_dir / "report.md").write_text(render_markdown(report))
     return report
+
+
+def _k_sample_fields(g: pd.DataFrame) -> dict[str, Any]:
+    """Extra summary fields for a K-sample (E8b) selector: decision-level option counts, stability, fallbacks."""
+    if "choices_k" not in g or g.choices_k.isna().all():
+        return {}
+    opts = [c for s in g.choices_k.dropna() for c in s.split("|")]
+    return {"choices": {str(k): int(v) for k, v in pd.Series(opts).value_counts().items()},
+            "n_decisions": int(len(opts)), "n_invalid_fallback": int(g.n_fallback.sum()),
+            "n_unknown_decisions": int(g.n_unknown_decisions.sum()),
+            "choice_stability": float(g.stability.mean()),
+            "share_items_all_identical": float((g.stability == 1.0).mean())}
 
 
 # ------------------------------------------------------------------------------------------------------------------
@@ -802,8 +1169,12 @@ VIEWS = {
     "T200_mixture": ("t200", "mixture", "acc_mixture", "lex_rank_mixture", "winner_share_mixture", "acc_mixture",
                      "acc_mixture"),
 }
-# the statistical rows that share the LLM allocator's 5-option menu: cross-fitted M5 on C48, sealed M5 on T200
-LIKE_FOR_LIKE = {"c48": ("stat", "M5"), "t200": ("stat-sealed", "M5sealed")}
+# view -> (consistency key or None, latency key): the rest of the LEX ordering
+VIEW_LEX = {"C48_macro": ("C", "lat"), "T200_macro": (None, "lat_macro"), "T200_mixture": (None, "lat_mixture")}
+# panel -> LLM menu -> the statistical rows on that menu: the E8a allocator's 5 options (cross-fitted M5 on C48,
+# sealed M5 on T200) and E8b's 15 options (cross-fitted M15 on C48, the post-hoc full-L96 M15 refit on T200)
+LIKE_FOR_LIKE = {"c48": {"M5": ("stat", "M5"), "M15": ("stat", "M15")},
+                 "t200": {"M5": ("stat-sealed", "M5sealed"), "M15": ("stat", "M15")}}
 STAT_KINDS = ("stat", "stat-sealed")
 
 
@@ -818,60 +1189,113 @@ def _contrast(c: Mapping[str, Any] | None) -> dict[str, Any] | None:
             "ci_side": ci_side(c["ci95"])}
 
 
+def _mean(r: Mapping[str, Any], key: str | None) -> float | None:
+    v = r.get(key) if key else None
+    return float(v["mean"]) if isinstance(v, Mapping) and v.get("mean") is not None else None
+
+
 def headline_facts(report: Mapping[str, Any], delta: float = DELTA) -> dict[str, Any]:
     """Per view (C48 macro, T200 macro, T200 mixture): where each statistical and LLM row sits against the LEX
-    accuracy tie band, its contrast with always-1x16, its rank and win share, and the like-for-like
-    statistical-minus-LLM accuracy contrasts. ``ci_side`` is +1 / -1 when the percentile CI is above / below 0,
-    else 0; ``in_top_band`` is accuracy within ``delta`` of the best deployable row (the set latency can decide);
-    ``within_delta_of_1x16`` is accuracy no more than ``delta`` below always-1x16."""
+    accuracy tie band (and, on C48, the consistency band inside it), its contrast with always-1x16, its rank and win
+    share, and the like-for-like statistical-minus-LLM accuracy contrasts (each LLM against the statistical rows on
+    its own menu). ``ci_side`` is +1 / -1 when the percentile CI is above / below 0, else 0; ``in_top_band`` is
+    accuracy within ``delta`` of the best deployable row; ``in_lex_band`` additionally has consistency within
+    ``delta`` of the best consistency in that accuracy band (C48; on T200 it equals ``in_top_band``), i.e. the set
+    latency decides; ``within_delta_of_1x16`` is accuracy no more than ``delta`` below always-1x16."""
     out: dict[str, Any] = {}
     for view, (panel, weights, acc_k, rank_k, share_k, d_k, c_k) in VIEWS.items():
+        cons_k, lat_k = VIEW_LEX[view]
         rows = report[panel]["selectors"]
         dep = [r for r in rows if r.get(rank_k) is not None]
         best = max(r[acc_k]["mean"] for r in dep)
         ref_acc = next(r for r in rows if r["selector"] == REFERENCE)[acc_k]["mean"]
+        band = [r for r in dep if r[acc_k]["mean"] >= best - delta - EPS]
+        cvals = [_mean(r, cons_k) for r in band]
+        best_c = max(c for c in cvals if c is not None) if cons_k and any(c is not None for c in cvals) else None
+        lex_band = {r["selector"] for r, c in zip(band, cvals) if best_c is None or (c is not None and
+                                                                                     c >= best_c - delta - EPS)}
 
         def entry(r: Mapping[str, Any]) -> dict[str, Any]:
             a = float(r[acc_k]["mean"])
-            return {"selector": r["selector"], "predictor": _predictor(r["selector"]) if r["kind"] in STAT_KINDS
-                    else None, "kind": r["kind"], "menu": r["menu"], "acc": a,
-                    "in_top_band": bool(a >= best - delta - EPS),
-                    "within_delta_of_1x16": bool(a >= ref_acc - delta - EPS),
-                    "minus_1x16": _contrast(r.get("minus_1x16", {}).get(d_k)),
-                    "rank": r[rank_k], "winner_share": r[share_k]}
+            e = {"selector": r["selector"], "predictor": _predictor(r["selector"]) if r["kind"] in STAT_KINDS
+                 else None, "kind": r["kind"], "menu": r["menu"], "acc": a,
+                 "in_top_band": bool(a >= best - delta - EPS),
+                 "in_lex_band": r["selector"] in lex_band,
+                 "within_delta_of_1x16": bool(a >= ref_acc - delta - EPS),
+                 "minus_1x16": _contrast(r.get("minus_1x16", {}).get(d_k)),
+                 "rank": r[rank_k], "winner_share": r[share_k]}
+            if _mean(r, cons_k) is not None:
+                e["C"] = _mean(r, cons_k)
+            if _mean(r, lat_k) is not None:
+                e["lat"] = _mean(r, lat_k)
+            for k in ("choice_stability", "n_invalid_fallback"):
+                if k in r:
+                    e[k] = r[k]
+            return e
 
         stat = [entry(r) for r in dep if r["kind"] in STAT_KINDS]
         llm = {r["selector"]: entry(r) for r in dep if r["kind"] == "llm"}
-        best_llm_rank = min(e["rank"] for e in llm.values())
-        kind, menu = LIKE_FOR_LIKE[panel]
-        lfl = [r["selector"] for r in rows if r["kind"] == kind and r["menu"] == menu]
+        best_llm = min(llm, key=lambda s: llm[s]["rank"])
+        best_llm_rank = llm[best_llm]["rank"]
+        lfl_by_menu = {m: [r["selector"] for r in rows if r["kind"] == k and r["menu"] == mm]
+                       for m, (k, mm) in LIKE_FOR_LIKE[panel].items()}
         vs_llm = {}
-        for arm in ("A0", "A1"):
-            cs = [{"selector": s, **_contrast(report[panel]["stat_minus_llm"][s][arm][c_k])} for s in lfl]
+        sml = report[panel]["stat_minus_llm"]
+        for name, e in llm.items():
+            arm = name.split(":", 1)[1]
+            lfl = [s for s in lfl_by_menu.get(e["menu"], []) if arm in sml.get(s, {})]
+            if not lfl:
+                continue
+            cs = [{"selector": s, **_contrast(sml[s][arm][c_k])} for s in lfl]
             est = [c["estimate"] for c in cs]
-            vs_llm[f"LLM:{arm}"] = {
-                "rows": cs, "n": len(cs), "estimate_range": [min(est), max(est)],
+            vs_llm[name] = {
+                "menu": e["menu"], "rows": cs, "n": len(cs), "estimate_range": [min(est), max(est)],
                 "n_ci_above_zero": sum(c["ci_side"] > 0 for c in cs),
                 "n_ci_below_zero": sum(c["ci_side"] < 0 for c in cs),
                 "ci_includes_or_touches_zero": [c["selector"] for c in cs if c["ci_side"] == 0],
                 "p_range": [min(c["p"] for c in cs), max(c["p"] for c in cs)]}
+        objective = {}
+        for b, vs in (report[panel].get("llm_objective_effect") or {}).items():
+            for a, m in vs.items():
+                objective[f"{b} - {a}"] = {k: _contrast(m.get(k)) for k in (c_k, "C", "lat", "lat_macro") if
+                                           m.get(k)}
         stat_share = max(stat, key=lambda e: (e["winner_share"] or 0.0, -e["rank"]))
         others = {r["selector"]: entry(r) for r in dep if r["selector"] == REFERENCE or r["kind"] == "heuristic"}
+        by_rank = sorted(stat, key=lambda e: e["rank"])
         out[view] = {
             "panel": panel, "weights": weights, "delta": delta, "best_deployable_acc": float(best),
             "band_floor": float(best - delta), "acc_1x16": float(ref_acc),
+            "best_C_in_band": best_c, "lex_band": sorted(lex_band, key=lambda s: next(r[rank_k] for r in dep
+                                                                                       if r["selector"] == s)),
+            "lex_winner": min(dep, key=lambda r: r[rank_k])["selector"],
             "stat_rows": stat, "llm": llm, "reference_rows": others,
-            "stat_like_for_like": lfl,
+            "stat_like_for_like": lfl_by_menu.get("M5", []),
+            "stat_like_for_like_by_menu": lfl_by_menu,
             "stat_outside_top_band": [e["selector"] for e in stat if not e["in_top_band"]],
-            "stat_ranked_below_best_llm": [e["selector"] for e in sorted(stat, key=lambda e: e["rank"])
-                                           if e["rank"] > best_llm_rank],
-            "best_llm_rank": best_llm_rank,
+            "stat_ranked_below_best_llm": [e["selector"] for e in by_rank if e["rank"] > best_llm_rank],
+            "best_llm": best_llm, "best_llm_rank": best_llm_rank,
+            "stat_ranked_below_llm": {n: [e["selector"] for e in by_rank if e["rank"] > le["rank"]]
+                                      for n, le in llm.items()},
             "stat_ranks": [min(e["rank"] for e in stat), max(e["rank"] for e in stat)],
             "max_stat_winner_share": {"selector": stat_share["selector"],
                                       "share": float(stat_share["winner_share"] or 0.0)},
             "stat_minus_llm_like_for_like": vs_llm,
+            "llm_objective_effect": objective,
         }
     return out
+
+
+def _pv(p: float) -> str:
+    """A bootstrap p for display: below 0.0005 (none of 10,000 replicates as extreme) prints as <0.001."""
+    return "<0.001" if p < 0.0005 else f"{p:.3f}"
+
+
+def _p_eq(p: float) -> str:
+    return "p < 0.001" if p < 0.0005 else f"p = {p:.3f}"
+
+
+def _p_range(lo: float, hi: float) -> str:
+    return f"p {_pv(lo)}" if _pv(lo) == _pv(hi) else f"p {_pv(lo)}-{_pv(hi)}"
 
 
 def _side_text(c: Mapping[str, Any]) -> str:
@@ -889,56 +1313,104 @@ def _fmt_c(c: Mapping[str, Any] | None) -> str:
     if all(abs(x) <= CI_TOL for x in (c["estimate"], lo, hi)):
         return "no difference on any item"
     return (f"{_z(c['estimate']) * 100:+.1f} pts [{_z(lo) * 100:+.1f}, {_z(hi) * 100:+.1f}], {_side_text(c)}, "
-            f"p = {c['p']:.3f}")
+            f"{_p_eq(c['p'])}")
 
 
 def _fmt_entry(s: str, e: Mapping[str, Any]) -> str:
+    extra = ""
+    if e.get("C") is not None:
+        extra += f", C {e['C']:.3f}"
+    if e.get("lat") is not None:
+        extra += f", latency {e['lat']:.0f} s"
+    if e.get("choice_stability") is not None:
+        extra += (f", choice stability {e['choice_stability']:.2f}, {e.get('n_invalid_fallback', 0)} invalid -> "
+                  "1x16")
     return (f"{s} {e['acc']:.3f}, vs 1x16 {_fmt_c(e['minus_1x16'])}, "
-            f"{'inside' if e['in_top_band'] else 'outside'} the top band, rank {e['rank']}, "
-            f"P(win) {e['winner_share']:.3f}")
+            f"{'inside' if e['in_top_band'] else 'outside'} the top band"
+            + (" and the LEX band" if e.get("in_lex_band") and e.get("C") is not None else "")
+            + f", rank {e['rank']}, P(win) {e['winner_share']:.3f}" + extra)
+
+
+MENU_WORDS = {"M5": "the E8a allocator's 5-option menu", "M15": "E8b's 15-option menu"}
 
 
 def render_findings(facts: Mapping[str, Any]) -> list[str]:
     """Markdown bullets for :func:`headline_facts`, one block per view."""
-    titles = {"C48_macro": "C48, macro weights (expected per-item values; ranking uses accuracy -> consistency -> "
-                           "latency)",
+    titles = {"C48_macro": "C48, macro weights (expected per-item values on the no-diagnostic bank; ranking uses "
+                           "accuracy -> consistency -> latency)",
               "T200_macro": "T200, macro weights (one realized outcome per item; accuracy -> latency)",
               "T200_mixture": "T200, mixture weights (aime .10, hmmt .10, omni .50, gpqa .30: the study's primary "
                               "T200 estimand and E8a's pre-registered test; accuracy -> latency)"}
     lines: list[str] = []
     for view, f in facts.items():
-        lines += [f"**{titles.get(view, view)}.** Best deployable accuracy {f['best_deployable_acc']:.3f}, so the "
-                  f"LEX tie band starts at {f['band_floor']:.3f}; always-1x16 is {f['acc_1x16']:.3f}.", ""]
+        head = (f"**{titles.get(view, view)}.** Best deployable accuracy {f['best_deployable_acc']:.3f}, so the "
+                f"LEX tie band starts at {f['band_floor']:.3f}; always-1x16 is {f['acc_1x16']:.3f}.")
+        if f.get("best_C_in_band") is not None:
+            head += (f" Inside that band the best consistency is {f['best_C_in_band']:.3f}, so latency decides among "
+                     f"{len(f['lex_band'])} rows: {', '.join(f['lex_band'])}.")
+        elif f.get("lex_band"):
+            head += f" Latency decides among the {len(f['lex_band'])} rows in the band."
+        if f.get("lex_winner"):
+            head += f" LEX winner: {f['lex_winner']}."
+        lines += [head, ""]
         by_pred: dict[str, list[dict]] = {}
         for e in f["stat_rows"]:
             by_pred.setdefault(e["predictor"], []).append(e)
-        lfl = set(f["stat_like_for_like"])
-        lines.append("- Statistical models (accuracy and contrast shown for the row on the LLM's 5-option menu; "
-                     "band counts and ranks over all of the predictor's rows):")
+        lfl_menus = f.get("stat_like_for_like_by_menu") or {"M5": f["stat_like_for_like"]}
+        lfl = [s for m in ("M5", "M15") for s in lfl_menus.get(m, [])]
+        lines.append("- Statistical models (accuracy and contrast shown for the rows on the LLMs' menus; band counts "
+                     "and ranks over all of the predictor's rows):")
         for p, es in by_pred.items():
-            rep = next((e for e in es if e["selector"] in lfl), es[0])
+            reps = [e for s in lfl for e in es if e["selector"] == s] or es[:1]
             n_in = sum(e["in_top_band"] for e in es)
             n_1x16 = sum(e["within_delta_of_1x16"] for e in es)
             lo_r, hi_r = min(e["rank"] for e in es), max(e["rank"] for e in es)
-            lines.append(f"  - {p}: {n_in} of {len(es)} rows inside the top band, {n_1x16} of {len(es)} within 0.02 "
-                         f"of 1x16; {rep['selector']} {rep['acc']:.3f}, vs 1x16 {_fmt_c(rep['minus_1x16'])}; "
-                         f"rank{'s' if lo_r != hi_r else ''} {lo_r}{f'-{hi_r}' if lo_r != hi_r else ''}.")
-        lines.append("- LLM selectors: " + "; ".join(_fmt_entry(s, e) for s, e in f["llm"].items()) + ".")
+            shown = "; ".join(f"{e['selector']} {e['acc']:.3f}" + (f" (C {e['C']:.3f})" if e.get("C") is not None
+                                                                    else "")
+                              + f", vs 1x16 {_fmt_c(e['minus_1x16'])}" for e in reps)
+            n_lex = (f", {sum(e['in_lex_band'] for e in es)} in the LEX band"
+                     if any(e.get("C") is not None for e in es) else "")
+            lines.append(f"  - {p}: {n_in} of {len(es)} rows inside the top band{n_lex}, {n_1x16} of {len(es)} within "
+                         f"0.02 of 1x16; {shown}; rank{'s' if lo_r != hi_r else ''} "
+                         f"{lo_r}{f'-{hi_r}' if lo_r != hi_r else ''}.")
+        lines.append("- LLM selectors (E8a A0/A1: asked for accuracy, M5, one decision; E8b B0/B1: told the LEX "
+                     "objective, M15, mean of 5 decisions):")
+        for s, e in f["llm"].items():
+            lines.append(f"  - {_fmt_entry(s, e)}.")
         lines.append("- Reference rows: " + "; ".join(_fmt_entry(s, e) for s, e in f["reference_rows"].items())
                      + ".")
-        vs = []
-        for arm, v in f["stat_minus_llm_like_for_like"].items():
+        by_menu: dict[str, list[str]] = {}
+        for name, v in f["stat_minus_llm_like_for_like"].items():
             lo, hi = v["estimate_range"]
             inc = v["ci_includes_or_touches_zero"]
-            vs.append(f"vs {arm} {lo * 100:+.1f} to {hi * 100:+.1f} pts, CI above 0 for {v['n_ci_above_zero']} of "
-                      f"{v['n']}" + (f" (includes or touches 0: {', '.join(inc)})" if inc else "")
-                      + f", p {v['p_range'][0]:.3f}-{v['p_range'][1]:.3f}")
-        lines.append(f"- Statistical minus LLM accuracy on the LLM's own 5-option menu "
-                     f"({', '.join(f['stat_like_for_like'])}): " + "; ".join(vs) + ".")
+            by_menu.setdefault(v.get("menu", "M5"), []).append(
+                f"vs {name} {lo * 100:+.1f} to {hi * 100:+.1f} pts, CI above 0 for {v['n_ci_above_zero']} of "
+                f"{v['n']}, below 0 for {v.get('n_ci_below_zero', 0)}"
+                + (f" (includes or touches 0: {', '.join(inc)})" if inc else "")
+                + f", {_p_range(*v['p_range'])}")
+        for m, vs in by_menu.items():
+            rows = lfl_menus.get(m, [])
+            lines.append(f"- Statistical minus LLM accuracy on {MENU_WORDS.get(m, m)} ({', '.join(rows)}): "
+                         + "; ".join(vs) + ".")
+        obj = f.get("llm_objective_effect") or {}
+        if obj:
+            parts = []
+            for pair, m in obj.items():
+                acc = next((v for k, v in m.items() if k.startswith("acc")), None)
+                txt = f"{pair}: accuracy {_fmt_c(acc)}"
+                if m.get("C"):
+                    txt += f"; C {_fmt_c(m['C'])}"
+                lat = m.get("lat") or m.get("lat_macro")
+                if lat:
+                    txt += f"; latency {_fmt_diff(lat, 1, 0)} s"
+                parts.append(txt)
+            lines.append("- Telling the LLM the objective (B minus A; B also has the 15-option menu with typical times "
+                         "and averages 5 decisions): " + " | ".join(parts) + ".")
         below = f["stat_ranked_below_best_llm"]
-        lines.append(f"- Ranking: statistical rows rank {f['stat_ranks'][0]}-{f['stat_ranks'][1]}; the better LLM "
-                     f"ranks {f['best_llm_rank']}; statistical rows ranked below it: "
-                     + (", ".join(below) if below else "none") + ".")
+        llm_ranks = ", ".join(f"{s} {e['rank']}" for s, e in sorted(f["llm"].items(), key=lambda kv: kv[1]["rank"]))
+        lines.append(f"- Ranking: statistical rows rank {f['stat_ranks'][0]}-{f['stat_ranks'][1]}; LLM rows rank "
+                     f"{llm_ranks}; the best LLM row ({f.get('best_llm', 'LLM')}) ranks {f['best_llm_rank']}; "
+                     "statistical rows ranked below it: " + (", ".join(below) if below else "none") + ".")
         ms = f["max_stat_winner_share"]
         lines += [f"- Bootstrap win share: " + ", ".join(f"{s} {e['winner_share']:.3f}" for s, e in f["llm"].items())
                   + f"; highest statistical row {ms['selector']} {ms['share']:.3f}.", ""]
@@ -950,36 +1422,126 @@ def render_findings(facts: Mapping[str, Any]) -> list[str]:
 
 
 HEADLINE_C48 = ("fixed:1x16", "fixed:1x8", "fixed:1x25", "stat:P0/M5", "stat:P1/M5", "stat:P1-conc/M5", "stat:P2/M5",
-                "stat:P2-conc/M5", "stat:P3/M5", "stat:P2/M15", "stat:P3/M15", "heuristic/M5", "heuristic/M15",
-                "LLM:A0", "LLM:A1", "oracle/M5", "oracle/M15")
+                "stat:P2-conc/M5", "stat:P3/M5", "stat:P0/M15", "stat:P1/M15", "stat:P1-conc/M15", "stat:P2/M15",
+                "stat:P2-conc/M15", "stat:P3/M15", "heuristic/M5", "heuristic/M15", "LLM:A0", "LLM:A1", "LLM:B0",
+                "LLM:B1", "oracle/M5", "oracle/M15")
 HEADLINE_T200 = ("fixed:1x16", "fixed:2x8", "sealed:P0/M5", "sealed:P1/M5", "sealed:P1-conc/M5", "sealed:P2/M5",
-                 "sealed:P2-conc/M5", "sealed:P3/M5", "sealed:P3/M9", "stat:P3/M15", "heuristic/M5", "heuristic/M15",
-                 "LLM:A0", "LLM:A1", "oracle/M5")
+                 "sealed:P2-conc/M5", "sealed:P3/M5", "sealed:P3/M9", "stat:P0/M15", "stat:P1/M15",
+                 "stat:P1-conc/M15", "stat:P2/M15", "stat:P2-conc/M15", "stat:P3/M15", "heuristic/M5",
+                 "heuristic/M15", "LLM:A0", "LLM:A1", "LLM:B0", "LLM:B1", "oracle/M5")
+
+
+def _fmt_lat_diff(r: Mapping[str, Any] | None) -> str:
+    return _fmt_diff(r, 1, 0)
+
+
+def e8b_table(report: Mapping[str, Any]) -> str:
+    out = ["| arm | panel | decisions | invalid -> 1x16 | decisions retried | choice stability | items with all 5 "
+           "identical | distinct options per item | mean call latency s | options chosen |",
+           "|---|---|---|---|---|---|---|---|---|---|"]
+    for r in report["e8b"]["by_arm_panel"].values():
+        out.append(f"| {r['arm']} | {r['panel']} | {r['n_decisions']} | {r['n_invalid_fallback']} | "
+                   f"{r['n_decisions_retried']} | {r['choice_stability']:.2f} | {r['share_items_all_identical']:.2f} | "
+                   f"{r['mean_distinct_options_per_item']:.2f} | {r['call_latency_mean_s']:.1f} | "
+                   f"{_choices_str(r['option_counts'], 15)} |")
+    return "\n".join(out)
+
+
+def objective_tables(report: Mapping[str, Any]) -> list[str]:
+    lines = ["C48 (no-diagnostic bank, macro):", "", "| contrast | Δacc (pts) | p (acc) | ΔC (pts) | Δlat (s) |",
+             "|---|---|---|---|---|"]
+    for b, vs in report["c48"]["llm_objective_effect"].items():
+        for a, m in vs.items():
+            lines.append(f"| {b} minus {a} | {_fmt_diff(m['acc'], 100)} | {_pv(m['acc']['p'])} | "
+                         f"{_fmt_diff(m['C'], 100)} | {_fmt_lat_diff(m['lat'])} |")
+    lines += ["", "T200 (realized):", "",
+              "| contrast | Δacc mixture (pts) | p mixture | Δacc macro (pts) | p macro | Δlat macro (s) |",
+              "|---|---|---|---|---|---|"]
+    for b, vs in report["t200"]["llm_objective_effect"].items():
+        for a, m in vs.items():
+            lines.append(f"| {b} minus {a} | {_fmt_diff(m['acc_mixture'], 100)} | {_pv(m['acc_mixture']['p'])} | "
+                         f"{_fmt_diff(m['acc_macro'], 100)} | {_pv(m['acc_macro']['p'])} | "
+                         f"{_fmt_lat_diff(m['lat_macro'])} |")
+    return lines
+
+
+def sensitivity_lines(report: Mapping[str, Any]) -> list[str]:
+    sens = report["c48_bank_sensitivity"]
+    bank = report["c48_bank"]
+    lines = [f"Primary C48 scoring bank = the LEX front bank minus each item's five diagnostic draws "
+             f"({bank['diag_rows_removed']} rows; A-level bank {bank['a_bank_size']['full']} -> "
+             f"{bank['a_bank_size']['nodiag']} draws); only the n x 1 options change. Class labels: "
+             f"{bank['class_labels']}. Selector inputs: {bank['selector_inputs_unchanged']}.", "",
+             "| A-level option | mean p, full bank | mean p, no-diagnostic bank | max per-item abs Δp |",
+             "|---|---|---|---|"]
+    for c, v in bank["a_level_mean_p"].items():
+        lines.append(f"| {c} | {v['full']:.3f} | {v['nodiag']:.3f} | {v['max_abs_item_diff']:.3f} |")
+    lines += ["", "Every C48 selector under both banks (full = the previous report's scoring; ranks and P(win) over "
+              "the deployable selectors including LLM:B0/B1):", "",
+              "| selector | acc no-diag | acc full | Δacc (pts) | C no-diag | C full | lat no-diag | lat full | "
+              "rank no-diag | rank full | P(win) no-diag | P(win) full | same choices |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    rows = sorted(sens["by_selector"], key=lambda r: (r["rank_nodiag"] is None, r["rank_nodiag"] or 0))
+    for r in rows:
+        sh = lambda x: f"{x:.2f}" if x is not None else "--"          # noqa: E731
+        rk = lambda x: x if x is not None else "ref"                  # noqa: E731
+        lines.append(f"| {r['selector']} | {r['acc_nodiag']:.3f} | {r['acc_full']:.3f} | "
+                     f"{_z(r['acc_nodiag'] - r['acc_full']) * 100:+.1f} | {r['C_nodiag']:.3f} | {r['C_full']:.3f} | "
+                     f"{r['lat_nodiag']:.0f} | {r['lat_full']:.0f} | {rk(r['rank_nodiag'])} | {rk(r['rank_full'])} | "
+                     f"{sh(r['share_nodiag'])} | {sh(r['share_full'])} | "
+                     f"{'--' if r['same_choices'] is None else 'yes' if r['same_choices'] else 'no'} |")
+    lines += ["", "Heuristic rules (full bank, C48 cross-fit): " + "; ".join(
+        f"{m} " + ", ".join(f"{f} tau={r['tau']:g} X={r['X']}" for f, r in folds.items())
+        for m, folds in sens["full_bank"]["heuristic_rules_c48_crossfit"].items()) + ".", "",
+        "T200 heuristic fitted on L96 with the full-bank C48 outcomes (the previous report's rows) vs the primary "
+        "no-diagnostic fit:", "",
+        "| selector | fit | tau | X | acc mixture | acc macro | latency s (macro) | Δacc mixture vs 1x16 (pts) |",
+        "|---|---|---|---|---|---|---|---|"]
+    t_rows = {r["selector"]: r for r in report["t200"]["selectors"]}
+    for s, r in sens["t200_heuristic_full_bank"].items():
+        prim = t_rows[s]
+        rule = report["heuristic_rules"]["t200_fit_on_L96"][s.split("/")[1]]
+        for fit, rr, ru in (("no-diagnostic (primary)", prim, rule), ("full bank", r, r["rule"])):
+            lines.append(f"| {s} | {fit} | {ru['tau']:g} | {ru['X']} | {_fmt_lvl(rr['acc_mixture'])} | "
+                         f"{_fmt_lvl(rr['acc_macro'])} | {_fmt_lvl(rr['lat_macro'], digits=0)} | "
+                         f"{_fmt_diff(rr.get('minus_1x16', {}).get('acc_mixture'), 100)} |")
+    return lines
 
 
 def render_markdown(report: Mapping[str, Any]) -> str:
     cf = report["crossfit"]
+    e8b = report["e8b"]
     lines = [
         "# passk_cont_v1 LEX selector comparison (post-hoc, exploratory)",
         "",
         f"Generated {report['created_at']} by `python -m agent_allocation.passk.selcmp`. Objective: accuracy -> "
         "consistency -> latency (incl. selector overhead), ties within 0.02. C48 is scored with the per-item bank "
-        "estimates (expected values, macro over benchmarks); T200 with realized outcomes (one realization per item, "
-        "so consistency is not measurable and the ranking is accuracy -> latency).",
+        "estimates on the **no-diagnostic bank** (each item's five diagnostic draws, which P1-P3, the heuristic and "
+        "the A1/B1 LLM arms read, are removed from its A-level bank; the previous full-bank numbers are kept in the "
+        "bank-sensitivity section) as expected values, macro over benchmarks; T200 with realized outcomes (one "
+        "realization per item, so consistency is not measurable and the ranking is accuracy -> latency).",
         "",
         "Overheads: `diag` = max of the item's five diagnostic call latencies "
         f"(macro mean {report['overheads']['diag_wallclock_macro_c48']:.0f} s on C48, "
-        f"{report['overheads']['diag_wallclock_macro_t200']:.0f} s on T200); `llm` = the E8a decision call latency "
-        "summed over retries; `diag+llm` = both (A1). LLM mean decision latency: " + ", ".join(
-            f"{r['arm']}/{r['panel']} {r['mean_s']:.0f} s" for r in report["overheads"]["llm_decision"]) + ".",
+        f"{report['overheads']['diag_wallclock_macro_t200']:.0f} s on T200); `llm` = the decision call latency "
+        "summed over retries (E8a A0: one decision; E8b B0: averaged over the item's 5 decisions); `diag+llm` = both "
+        "(A1, B1). Mean decision latency: " + ", ".join(
+            f"{r['arm']}/{r['panel']} {r['mean_s']:.0f} s" for r in report["overheads"]["llm_decision"]
+            + report["overheads"]["e8b_decision"]) + ".",
+        "",
+        "LLM selectors: `LLM:A0/A1` = E8a (asked for the most accurate of the 5 M5 options, one decision per item). "
+        "`LLM:B0/B1` = E8b (PREREG_E8b_lex_llm.md: told the LEX objective, the 15-option M15 menu with typical "
+        f"times, {e8b['k']} decisions per item; each item's score is the mean over its decisions, and on C48 its "
+        "consistency is p_sys^2 + (1 - p_sys)^2 of that mean; invalid after one retry -> 1x16). Prompt sha256 "
+        f"{', '.join(x[:12] for x in e8b['prompt_sha256'])}; {e8b['n_call_attempts']} call attempts.",
         "",
         "Statistical selectors are cross-fitted (5 problem-grouped folds over L96 = the E5 CV fold assignment; each "
         "C48 item's predictions come from a fit that never saw it). The refit on all of L96 reproduces the sealed "
         f"T200 predictions (max |diff| = {cf['sealed_reproduction']['max_abs_diff_p_delivered']:.2g} over "
         f"{cf['sealed_reproduction']['n_cells']} cells).",
         "",
-        "`LEX rank` ranks the deployable selectors (fixed M15 options, statistical, heuristic, LLM); `ref` rows "
-        "(1x25, oracles, split-half) are references outside that competition. `P(win)` = share of bootstrap "
+        "`LEX rank` ranks the deployable selectors (fixed M15 options, statistical, heuristic, LLM A0/A1/B0/B1); `ref` "
+        "rows (1x25, oracles, split-half) are references outside that competition. `P(win)` = share of bootstrap "
         "replicates in which the selector is the population LEX winner; on T200 it is given under both the mixture "
         "and the macro weights, and the two rankings differ.",
         "",
@@ -990,7 +1552,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
         *render_findings(report["headline"]),
         "",
-        "C48 (bank estimates, macro; M5 rows are like-for-like with the LLM allocator's menu):",
+        "C48 (no-diagnostic bank estimates, macro; M5 rows are like-for-like with A0/A1, M15 rows with B0/B1):",
         "",
         c48_table(report, only=HEADLINE_C48),
         "",
@@ -999,36 +1561,55 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
         t200_table(report, only=HEADLINE_T200, order="mixture"),
         "",
-        "## C48 (bank estimates, macro), all selectors",
+        "## E8b LLM selectors: choices, stability, fallbacks",
+        "",
+        "Choice stability = mean over items of the modal option's share of the item's 5 decisions (1.0 = the same "
+        "option every time).",
+        "",
+        e8b_table(report),
+        "",
+        "## Telling the LLM the objective: E8b minus E8a",
+        "",
+        *objective_tables(report),
+        "",
+        "## C48 (no-diagnostic bank, macro), all selectors",
         "",
         c48_table(report),
         "",
         "## C48: statistical and heuristic selectors minus the LLM selectors",
+        "",
+        "A0/A1 against every row; B0/B1 against the rows on their own M15 menu.",
         "",
         "| selector | vs | Δacc (pts) | p (acc) | ΔC (pts) | Δlat (s) |",
         "|---|---|---|---|---|---|",
     ]
     for s, d in report["c48"]["stat_minus_llm"].items():
         for arm, m in d.items():
-            lines.append(f"| {s} | LLM:{arm} | {_fmt_diff(m['acc'], 100)} | {m['acc']['p']:.3f} | "
+            lines.append(f"| {s} | LLM:{arm} | {_fmt_diff(m['acc'], 100)} | {_pv(m['acc']['p'])} | "
                          f"{_fmt_diff(m['C'], 100)} | {_fmt_diff(m['lat'], 1, 0)} |")
-    lines += ["", "## C48 option distributions", "", "| selector | choices |", "|---|---|"]
+    lines += ["", "## C48 option distributions", "", "E8b rows count decisions (5 per item); the others count items.",
+              "", "| selector | choices |", "|---|---|"]
     for r in report["c48"]["selectors"]:
         lines.append(f"| {r['selector']} | {_choices_str(r['choices'], 6)} |")
     lines += ["", "## T200 (realized outcomes), all selectors, sorted by the macro rank", "", t200_table(report), "",
               "## T200: statistical and heuristic selectors minus the LLM selectors", "",
+              "A0/A1 against every row; B0/B1 against the rows on their own M15 menu (the post-hoc full-L96 M15 "
+              "refit and heuristic/M15).", "",
               "| selector | vs | Δacc mixture (pts) | p mixture | Δacc macro (pts) | p macro | Δlat (s) |",
               "|---|---|---|---|---|---|---|"]
     for s, d in report["t200"]["stat_minus_llm"].items():
         for arm, m in d.items():
-            lines.append(f"| {s} | LLM:{arm} | {_fmt_diff(m['acc_mixture'], 100)} | {m['acc_mixture']['p']:.3f} | "
-                         f"{_fmt_diff(m['acc_macro'], 100)} | {m['acc_macro']['p']:.3f} | "
+            lines.append(f"| {s} | LLM:{arm} | {_fmt_diff(m['acc_mixture'], 100)} | {_pv(m['acc_mixture']['p'])} | "
+                         f"{_fmt_diff(m['acc_macro'], 100)} | {_pv(m['acc_macro']['p'])} | "
                          f"{_fmt_diff(m['lat_macro'], 1, 0)} |")
-    lines += ["", "## T200 option distributions", "", "| selector | choices |", "|---|---|"]
+    lines += ["", "## T200 option distributions", "", "E8b rows count decisions (5 per item); the others count items.",
+              "", "| selector | choices |", "|---|---|"]
     for r in report["t200"]["selectors"]:
         lines.append(f"| {r['selector']} | {_choices_str(r['choices'], 6)} |")
-    lines += ["", "## Heuristic rules chosen", "", "| fit | menu | tau | X | train acc | train C | train latency |",
-              "|---|---|---|---|---|---|---|"]
+    lines += ["", "## C48 bank sensitivity: diagnostics removed (primary) vs included (previous report)", "",
+              *sensitivity_lines(report), ""]
+    lines += ["", "## Heuristic rules chosen (primary: no-diagnostic C48 outcomes)", "",
+              "| fit | menu | tau | X | train acc | train C | train latency |", "|---|---|---|---|---|---|---|"]
     for menu, folds in report["heuristic_rules"]["c48_crossfit"].items():
         for f, r in folds.items():
             lines.append(f"| {f} | {menu} | {r['tau']:g} | {r['X']} | {r['train_acc']:.3f} | {r['train_C']:.3f} | "
@@ -1044,7 +1625,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         lines.append(f"| {f} | {info['n_train_items']} | {info['n_test_items']} | {info['n_train_pools']} | "
                      f"{info['latency_choice']['use_latency']} | {r['P1']['delivered']:g} | "
                      f"{r['P2']['response']:g}/{r['P2']['eta']:g} |")
-    lines += ["", "Out-of-fold predictions vs the C48 bank p (all 15 M15 cells per item):", "",
+    lines += ["", "Out-of-fold predictions vs the C48 no-diagnostic bank p (all 15 M15 cells per item):", "",
               "| predictor | MAE | squared error | mean within-item Spearman |", "|---|---|---|---|"]
     for name, q in cf["oof_quality_vs_c48_bank"].items():
         lines.append(f"| {name} | {q['mae_vs_bank_p']:.3f} | {q['brier_vs_bank_p']:.3f} | "
