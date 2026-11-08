@@ -60,6 +60,18 @@ forced client tags each call's coordinates with ``phase`` (``think`` / ``answer`
 
 Shortcuts: ``fake_generation_outcome(spec, reply=FakeReply(...))`` (async) and ``fake_generation_outcome_sync`` return
 one realistic ``GenerationOutcome`` through the real client, for tests that only need result records.
+
+dynorch (capped, unforced ``/completions`` calls; additive): a THINK prompt without ``logit_bias`` thinks
+``FakeReply.think_tokens`` (else ``natural_think_tokens``) tokens -- ``max_tokens`` below that realises exactly
+``max_tokens`` with finish ``length`` and no ``</think>``; above it the model closes and answers, and an answer cut by
+``max_tokens`` after the close reports ``length`` with the text actually returned. A prompt that already closed the
+reasoning (``...\n</think>\n\n``, the proxy's ANSWER / terminal continuation) returns the scripted content.
+``Fault.NO_USAGE`` omits the usage object from a 200; ``fake_tool_call_text`` builds the template's XML tool-call
+block for scripted content. ``Fault.STREAM_INTERRUPTED`` (raw ``/completions`` only) returns what a provider sends
+when its stream to OpenRouter breaks mid-generation (captured live, dynorch main 2026-09-24): HTTP 200, a fifth of
+the call's tokens as partial text, ``finish_reason "error"``, ``native_finish_reason null`` and
+``choices[0].error = {code: 502, message: "Upstream error from Parasail: Stream interrupted: ...",
+metadata: {error_type: provider_unavailable}}``, usage with ``cost 0``.
 """
 from __future__ import annotations
 
@@ -126,6 +138,10 @@ class Fault(str, Enum):
     CONNECT_TIMEOUT = "connect_timeout"      # never reached the server: httpx.ConnectTimeout, nothing billed
     SHORT_THINK = "short_think"              # forced THINK cut by the provider: finish null, max_tokens // 3; billed
     BIAS_IGNORED = "bias_ignored"            # forced call whose logit_bias the endpoint silently drops; billed
+    NO_USAGE = "no_usage"                    # HTTP 200 completion whose body carries no usage object; billed (dynorch)
+    STREAM_INTERRUPTED = "stream_interrupted"  # dynorch, raw /completions: HTTP 200 whose choice carries partial text,
+                                             # finish "error" and a choice-level error {code 502, "Stream
+                                             # interrupted: ..."} -- the live Parasail shape of 2026-09-24; usage cost 0
 
 
 _HTTP_ERROR_STATUS = {
@@ -172,6 +188,7 @@ class FakeReply:
     body: bytes | None = None              # raw response body override (status_code or 200)
     mismatch_provider: str = "Google"
     mismatch_model: str = "google/gemini-2.5-flash-lite-preview-09-2025"
+    think_tokens: int | None = None        # dynorch: this reply's natural THINK length (None -> script.natural_think_tokens)
 
 
 ReplySpec = FakeReply | Sequence[FakeReply]
@@ -856,6 +873,8 @@ class FakeScript:
         cost = prompt_cost + completion_cost
 
         usage = reply.usage
+        if usage is AUTO and fault is Fault.NO_USAGE:
+            usage = OMIT
         if usage is AUTO:
             if fault is Fault.MALFORMED_USAGE:
                 usage = {"prompt_tokens": "12", "completion_tokens": -3, "total_tokens": None, "cost": "n/a",
@@ -935,6 +954,20 @@ class FakeScript:
         return generation_id, payload, cost
 
 
+def fake_tool_call_text(name: str, arguments: Mapping[str, Any] | None = None, *, prefix: str = "") -> str:
+    """dynorch: the Qwen3.8 XML tool-call block the pinned template teaches (``<tool_call>\n<function=NAME>\n
+    <parameter=P>\nV\n</parameter>...</function>\n</tool_call>``) for a scripted ``FakeReply.content``; string
+    values are written raw, everything else as JSON (the template's own rule). ``prefix`` is optional text before
+    the call (allowed by the grammar); nothing may follow it."""
+    lines = [f"<tool_call>\n<function={name}>\n"]
+    for key, value in (arguments or {}).items():
+        rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        lines.append(f"<parameter={key}>\n{rendered}\n</parameter>\n")
+    lines.append("</function>\n</tool_call>")
+    block = "".join(lines)
+    return (prefix.rstrip() + "\n\n" + block) if prefix.strip() else block
+
+
 def _is_text_route(path: str) -> bool:
     return path.endswith("/completions") and not path.endswith("/chat/completions")
 
@@ -984,15 +1017,24 @@ def _generate_text_impl(script: "FakeScript", call: FakeCall, reply: FakeReply, 
         banned = honoured and bias.get(script.think_close_token_id, 0) <= -100
         if fault is Fault.SHORT_THINK:
             think_tokens, closed, finish = max(1, max_tokens // 3), False, None
+        elif fault is Fault.STREAM_INTERRUPTED:
+            think_tokens, closed, finish = max(1, max_tokens // 5), False, "error"
         elif banned:
             think_tokens, closed, finish = max_tokens, False, "length"
         else:
-            think_tokens = min(max_tokens, script.natural_think_tokens)
+            natural = script.natural_think_tokens if reply.think_tokens is None else int(reply.think_tokens)
+            think_tokens = min(max_tokens, natural)
             closed = think_tokens < max_tokens
             finish = "stop" if closed else "length"
         thinking = _thinking_text(think_tokens, seed)
         answer = content if closed else ""
         answer_tokens = -(-len(answer) // 4) if closed else 0
+        if closed and think_tokens + answer_tokens > max_tokens:
+            # dynorch (capped natural call): the visible answer is cut by max_tokens after a natural close --
+            # the reported tokens and the finish reason stay consistent with the text actually returned.
+            answer_tokens = max_tokens - think_tokens
+            answer = answer[:4 * answer_tokens]
+            finish = "length"
         tokens = min(max_tokens, think_tokens + answer_tokens) if closed else think_tokens
         if style == "inline":
             text = thinking + (close + "\n\n" + answer if closed else "")
@@ -1002,6 +1044,8 @@ def _generate_text_impl(script: "FakeScript", call: FakeCall, reply: FakeReply, 
         text = content if isinstance(content, str) else ""
         tokens = max(1, min(max_tokens, -(-len(text) // 4)))
         finish = "stop" if -(-len(text) // 4) <= max_tokens else "length"
+        if fault is Fault.STREAM_INTERRUPTED:
+            text, tokens, finish = text[: max(1, len(text) // 2)], max(1, tokens // 2), "error"
         if style == "parser_answer_in_reasoning":
             reasoning, text = text, ""
     if reply.finish_reason is not AUTO:
@@ -1012,6 +1056,7 @@ def _generate_text_impl(script: "FakeScript", call: FakeCall, reply: FakeReply, 
     if reply.reasoning is not AUTO:
         reasoning = reply.reasoning
     only = ((body.get("provider") or {}).get("only") or [""])[0]
+    interrupted = fault is Fault.STREAM_INTERRUPTED
     provider = reply.provider
     if provider is AUTO:
         provider = reply.mismatch_provider if fault is Fault.PROVIDER_MISMATCH else (
@@ -1027,18 +1072,29 @@ def _generate_text_impl(script: "FakeScript", call: FakeCall, reply: FakeReply, 
     prompt_cost = prompt_tokens * in_price
     completion_cost = tokens * out_price
     cost = prompt_cost + completion_cost
+    upstream_cost = None
+    if interrupted:
+        # the live shape: the account is not charged (usage.cost 0); the provider's cost is only reported
+        upstream_cost, cost = _money_json(cost), Decimal("0")
     usage = reply.usage
+    if usage is AUTO and fault is Fault.NO_USAGE:
+        usage = OMIT
     if usage is AUTO:
         usage = {"prompt_tokens": prompt_tokens, "completion_tokens": tokens, "total_tokens": prompt_tokens + tokens,
                  "cost": _money_json(cost), "is_byok": False,
                  "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 0},
-                 "cost_details": {"upstream_inference_cost": None,
+                 "cost_details": {"upstream_inference_cost": upstream_cost,
                                   "upstream_inference_prompt_cost": _money_json(prompt_cost),
                                   "upstream_inference_completions_cost": _money_json(completion_cost)},
                  "completion_tokens_details": {"reasoning_tokens": 0, "image_tokens": 0}}
         usage.update(reply.usage_overrides)
     choice: dict[str, Any] = {"text": text, "index": 0, "logprobs": None, "finish_reason": finish,
                               "native_finish_reason": native}
+    if interrupted:
+        provider_label = provider if isinstance(provider, str) else script.provider_name
+        choice["error"] = {"code": 502, "message": reply.error_message or (
+            f"Upstream error from {provider_label}: Stream interrupted: the connection to the upstream model server "
+            f"was lost before the response completed."), "metadata": {"error_type": "provider_unavailable"}}
     if reasoning is not None:
         choice["reasoning"] = reasoning
     payload: dict[str, Any] = {"id": generation_id}

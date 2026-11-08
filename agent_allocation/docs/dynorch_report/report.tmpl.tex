@@ -1,0 +1,541 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{caption}
+\usepackage[hidelinks]{hyperref}
+\usepackage{times}
+\usepackage{longtable}
+\usepackage{adjustbox}
+\usepackage{microtype}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.72em}
+\captionsetup{font=small,labelfont=bf,skip=4pt}
+\renewcommand{\arraystretch}{1.08}
+\setlength{\emergencystretch}{2em}
+
+\title{\vspace{-2em}A Dynamic Orchestrator under a Forced Compute Ladder:\\
+Off-the-shelf Agent Harnesses against the Fixed Rule}
+\author{Study {{study.id|tt}} (ladder: {{study.ladder_study|tt}})}
+\date{\today}
+
+\begin{document}
+\maketitle
+\vspace{-1.5em}
+
+\section*{Abstract}
+
+The forced-budget ladder found that, at equal generated tokens $C = kA$, one deep call beats every structured
+multi-call allocation: deep/16 delivers {{headline.deep16|3}} macro accuracy against {{headline.sample16|3}} for
+sample/16 and an oracle pass@16 of {{headline.oracle16|3}}. This study asks whether a dynamic orchestrator beats
+that fixed rule: an off-the-shelf agent harness that decides for itself whether to spawn sub-agents, revise or
+synthesise, using the same model ({{design.model|s}}) under the same total completion budget. Two harnesses,
+{{harness_display.H1|s}} (H1) and {{harness_display.H3|s}} (H3), and a harness-free control (H0) ran on the
+ladder's {{n_items|d}} items at rungs $C/A \in \{1, 2, 4, 8, 16, 25\}$. A metering proxy caps every call at the
+remaining budget and grants one grace of at most {{design.grace_tokens|d}} tokens outside $C$, as the ladder's
+uncounted answer call did.
+
+The harnesses did not orchestrate. No harness run spawned a sub-agent: {{behaviour.core_harness_spawn_runs|d}} of the {{behaviour.core_harness_runs|d}}
+harness runs in the core, and {{behaviour.all_stages_harness_spawn_runs|d}} of all {{behaviour.all_stages_harness_runs|d}} harness runs across canary, pilot,
+main and reruns. OpenClaude made exactly one model call in each of its {{behaviour.by_arm.H1.runs|d}} runs; Codex
+made a second call in {{behaviour.H3_second_call.runs|d}} of {{behaviour.by_arm.H3.runs|d}} runs, each time after
+a planning call, never a delegation.
+
+At $C = 16A$ H1 delivers {{headline.H1.acc16|3}} [{{headline.H1.lo16|3}}, {{headline.H1.hi16|3}}], H3
+{{headline.H3.acc16|3}} [{{headline.H3.lo16|3}}, {{headline.H3.hi16|3}}], and the same-week, same-host control H0
+{{headline.H0.acc16|3}}. In the pre-registered primary family (Holm over four, macro, {{n_items|d}} paired items),
+H1/16 $-$ deep/16 = {{primary.H1/16-deep/16.est_pts|+1}} points [{{primary.H1/16-deep/16.lo_pts|+1}},
+{{primary.H1/16-deep/16.hi_pts|+1}}] and H3/16 $-$ deep/16 = {{primary.H3/16-deep/16.est_pts|+1}} points
+[{{primary.H3/16-deep/16.lo_pts|+1}}, {{primary.H3/16-deep/16.hi_pts|+1}}]. The frozen reading rule gives the
+same verdict for both harnesses: {{primary_reading_both.deep|s}}. Both are {{primary_reading_both.sample|s}}:
+H1/16 $-$ sample/16 = {{primary.H1/16-sample/16.est_pts|+1}} and H3/16 $-$ sample/16 =
+{{primary.H3/16-sample/16.est_pts|+1}} points.
+
+The shortfall against deep/16 is not evidence against orchestration, because none took place. The harnesses' one
+call stops on its own at about {{headline.H1.realized_share16|2}} of the cap at $16A$, while the ladder forced
+deep/16 to spend all {{design.cap16|d}} tokens. Per realized token, the harness cells lie on or near the deep-call curve.
+
+\section{Design}
+
+\subsection{Arms, cells and budget}
+
+Figure~\ref{fig:design} shows the cells. Every run of every arm is served by the same metering proxy against the
+same pinned model, template and sampling as the ladder. The budget unit is completion tokens (reasoning and
+visible text of every call the proxy serves under the run's key, sub-agents included); the harness is told its
+budget in one sentence of the task prompt and receives HTTP 402 once it is exhausted. Calls of one run are served
+one at a time, each granted $\max\_tokens = C - \text{spent}$, so the cap is exact by construction: no run in this
+report exceeded its cap ({{cap_overrun_runs_total|d}} cap overruns among {{n_runs_core|d}} runs). A root call that
+hits its grant mid-reasoning is closed with one answer continuation of at most {{design.grace_tokens|d}} tokens outside $C$
+(``grace''), mirroring the ladder's answer call, which was also outside $C$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/d1_design.pdf}
+\caption{Cells of the core (numbers: runs with a terminal record per arm and rung) and the budget semantics
+every arm shares.}
+\label{fig:design}
+\end{figure}
+
+\subsection{Comparison frames}
+
+F1 (primary) pairs each harness cell at nominal cap $C$ with the ladder configurations at $C = B\cdot R\cdot A$.
+The ladder's $C$ counted reasoning only, so F1 is conservative against the harness by one uncounted answer per
+ladder call: on average {{f1_bias_answer_tokens.deep/16|d}} tokens for deep/16 and
+{{f1_bias_answer_tokens.sample/16|d}} for sample/16. F2 (descriptive) puts both sides at realized total
+completion tokens; the dollar frontier uses charged USD and the standardized uncached price.
+
+\subsection{Population and statistics}
+
+Every interval is a paired, item-clustered bootstrap over the fixed population of {{n_items|d}} main items
+({{study.replicates|d}} replicates, seed {{study.seed|s}}), one population per contrast, items kept together
+across columns. A row exists for every planned cell before a run starts, so no item is ever dropped by the
+population builder; {{n_partial_cells|d}} cells fall below {{design.completeness_min|%}} completeness. The ladder's own point estimates
+are reproduced from the merged frame (deep/16 = {{ladder_check.deep/16.here|3}} against the sealed
+{{ladder_check.deep/16.sealed|3}}; sample/16 = {{ladder_check.sample/16.here|3}} against
+{{ladder_check.sample/16.sealed|3}}); the ladder's intervals are re-drawn per contrast and differ slightly from
+the sealed report's joint-population intervals.
+
+\section{Results}
+
+\subsection{Headline at $C = 16A$}
+
+\begin{table}[htbp]
+\centering\small
+\adjustbox{max width=\textwidth}{\input{tables/headline.tex}}
+\caption{Delivered accuracy at $C = 16A$ per benchmark and macro: the sampling baseline and its oracle, the
+ladder's revision chain, its best non-deep configuration ({{headline.best_non_deep16|tt}}), the deep call, and
+the three arms.}
+\label{tab:headline}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/d2_ladder_f1.pdf}
+\caption{The ladder curves with the harness cells at nominal $C$ (F1). Error bars: 95\% paired item bootstrap.}
+\label{fig:f1}
+\end{figure}
+
+\subsection{Primary family}
+
+Anchor first: H0/16 $-$ deep/16 = {{primary.H0/16-deep/16.est_pts|+1}} points
+[{{primary.H0/16-deep/16.lo_pts|+1}}, {{primary.H0/16-deep/16.hi_pts|+1}}] on the same host in the same week, which
+is the part of any harness shortfall that is not orchestration. Table~\ref{tab:primary} gives the four
+pre-registered contrasts with Holm-adjusted $p$-values over exactly four.
+
+\begin{table}[htbp]
+\centering\small
+\adjustbox{max width=\textwidth}{\input{tables/primary.tex}}
+\caption{Anchor and the primary family ({{n_items|d}} items, macro; studentized item-cluster bootstrap; Holm
+over four). Reading rule, frozen before collection: CI below 0 against deep/16 means dynamic orchestration loses
+to the fixed rule at $16A$; CI containing 0 is inconclusive at $n$ = {{n_items|d}}; CI above 0 means the rule is
+incomplete.}
+\label{tab:primary}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/d5_per_benchmark.pdf}
+\caption{Per benchmark at $C = 16A$ ($n$ = {{design.items_per_bench|d}} each, descriptive).}
+\label{fig:bench}
+\end{figure}
+
+\subsection{Descriptive set, realized frontier and dollars}
+
+Slope per doubling of $C$ (macro points): H1 {{slopes.H1|+1}}, H3 {{slopes.H3|+1}}, H0 {{slopes.H0|+1}}, against
+the ladder's deep {{slopes.deep|+1}}, revision {{slopes.private_single|+1}} and vote {{slopes.sample|+1}}.
+Against the paired per-item oracle pass@16, H1/16 is {{descriptive.H1/16.vs_oracle.pts|+1}} points
+[{{descriptive.H1/16.vs_oracle.lo|+1}}, {{descriptive.H1/16.vs_oracle.hi|+1}}] and H3/16
+{{descriptive.H3/16.vs_oracle.pts|+1}} points. The full arm $\times$ rung set, with every comparator, is in
+\texttt{tables/rung\_table.csv} and \texttt{tables/descriptive.csv}.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.48\textwidth]{figures/d3_realized_f2.pdf}\hfill
+\includegraphics[width=0.48\textwidth]{figures/d4_dollars.pdf}
+\caption{Left: F2, both sides at realized completion tokens per item. Right: charged USD per item. Descriptive
+frontiers among evaluated configurations.}
+\label{fig:frontiers}
+\end{figure}
+
+\begin{table}[htbp]
+\centering\small
+\adjustbox{max width=\textwidth}{\input{tables/cost.tex}}
+\caption{Realized tokens and dollars per item for the comparators and the harness cells.}
+\label{tab:cost}
+\end{table}
+
+\subsection{Realized budget and harness diagnostics}
+
+\begin{table}[htbp]
+\centering\small
+\adjustbox{max width=\textwidth}{\input{tables/realized.tex}}
+\caption{Nominal cap beside realized completion (mean, median), realized share, mean grace, share of runs with a
+cap-bound call and share closed by the terminal answer.}
+\label{tab:realized}
+\end{table}
+
+\begin{table}[htbp]
+\centering\small
+\adjustbox{max width=\textwidth}{\input{tables/diagnostics.tex}}
+\caption{Harness diagnostics per cell: calls by conversation class, spawns, orchestrator token share, abstention
+(no valid \texttt{<final>}), tool-call parse failures and wall time.}
+\label{tab:diag}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/d6_diagnostics.pdf}
+\caption{Calls per run, spawn share and orchestrator token share against $C/A$.}
+\label{fig:diag}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/d7_cap_binding.pdf}
+\caption{Realized share of the cap per run, by rung and arm.}
+\label{fig:cap}
+\end{figure}
+
+Scaffolding: the first root call of H1 carries {{harness_prompt_tokens.H1.mean|d}} more prompt tokens than the H0
+call on the same item and rung (SD {{harness_prompt_tokens.H1.sd|d}}, $n$ = {{harness_prompt_tokens.H1.n|d}});
+H3 {{harness_prompt_tokens.H3.mean|d}} (SD {{harness_prompt_tokens.H3.sd|d}}). Spend: {{spend.core_usd|$}} on the
+current attempts, {{spend.all_attempts_usd|$}} over every attempt ({{n_reruns|d}} reruns).
+
+\subsection{Provider sensitivity}
+
+{{ladder_provider_assignment.mancer|d}} of the ladder's items were generated on Mancer and
+{{ladder_provider_assignment.parasail|d}} on Parasail; {{same_provider_share|%}} of the harness cells ran on the
+same provider as their ladder rows ({{same_provider_items|d}} items).
+
+\begin{table}[htbp]
+\centering\small
+\adjustbox{max width=\textwidth}{\input{tables/provider_sensitivity.tex}}
+\caption{Every primary contrast restricted to the Mancer items, the Parasail items, and the items whose harness
+run and ladder rows share a provider.}
+\label{tab:provider}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/d8_provider_sensitivity.pdf}
+\caption{Provider-stratified estimates of the anchor and the primary family.}
+\label{fig:provider}
+\end{figure}
+
+\subsection{Repeat agreement}
+
+%%IF repeat_agreement.available
+Extension E1 re-ran every H1 and H3 core cell once more ({{repeat_agreement.runs|d}} runs,
+{{repeat_agreement.spend_usd|$}}; per-cell numbers in
+\texttt{tables/repeat\_agreement.csv}). The second repeat behaved like the first:
+{{repeat_agreement.spawn_runs|d}} of {{repeat_agreement.runs|d}} runs spawned a sub-agent and
+{{repeat_agreement.multi_call_runs|d}} made more than one call. Per item, the two repeats agree on correctness in
+{{repeat_agreement.agree_min|%}} to {{repeat_agreement.agree_max|%}} of items (Cohen's $\kappa$
+{{repeat_agreement.kappa_min|2}} to {{repeat_agreement.kappa_max|2}}). In {{repeat_agreement.n_delta_ci_covers_zero|d}} of
+{{repeat_agreement.n_cells|d}} cells the interval for repeat 2 $-$ repeat 1 includes zero
+(Figure~\ref{fig:repeat}); the exception is H3/1 ({{repeat_agreement.cells.H3/1.delta_pts|+1}} points).
+
+\paragraph{The primary result replicates.} Averaging the two repeats at $16A$ gives H1 $-$ deep/16 =
+{{repeat_agreement.cells.H1/16.mean2_vs_deep.pts|+1}} points [{{repeat_agreement.cells.H1/16.mean2_vs_deep.lo|+1}},
+{{repeat_agreement.cells.H1/16.mean2_vs_deep.hi|+1}}] and H3 $-$ deep/16 =
+{{repeat_agreement.cells.H3/16.mean2_vs_deep.pts|+1}} [{{repeat_agreement.cells.H3/16.mean2_vs_deep.lo|+1}},
+{{repeat_agreement.cells.H3/16.mean2_vs_deep.hi|+1}}] (descriptive, paired item bootstrap). Repeat 2 alone
+scored {{repeat_agreement.cells.H1/16.acc_r2|3}} (H1/16) and {{repeat_agreement.cells.H3/16.acc_r2|3}} (H3/16). Even
+the harness's own pass@2 at $16A$, correct in either repeat, which spends twice the budget and needs an oracle to
+pick, is {{repeat_agreement.cells.H1/16.pass2|3}} (H1) and {{repeat_agreement.cells.H3/16.pass2|3}} (H3), below
+deep/16 at {{headline.deep16|3}}.
+%%ELSE
+No second repeat (E1) in this run.
+%%ENDIF
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.6\textwidth]{figures/d9_repeat_agreement.pdf}
+\caption{Repeat 2 minus repeat 1 per cell with the empirical run-to-run interval, when E1 ran.}
+\label{fig:repeat}
+\end{figure}
+
+\section{Interpretation}
+\label{sec:interp}
+
+\paragraph{The orchestrators did not orchestrate.} Across all {{behaviour.core_runs|d}} main runs,
+{{behaviour.core_spawn_runs|d}} spawned a sub-agent, at any budget. OpenClaude made exactly one model call in each of
+its {{behaviour.by_arm.H1.one_call|d}} runs. Codex made one call in {{behaviour.by_arm.H3.one_call|d}} runs and a
+second in {{behaviour.H3_second_call.runs|d}} ({{behaviour.H3_second_call.share|%}}). In every one of those, the
+first call had invoked {{behaviour.H3_second_call.first_tool|tt}}, Codex's planning tool, and the second call
+wrote the answer; none delegated. Both harnesses exposed delegation tools ({{design.allowed_tools.H1.0|tt}} in
+OpenClaude; {{design.allowed_tools.H3.1|tt}} and its companions in Codex), and the task prompt stated the budget.
+The model spent the budget thinking in one call. Behaviourally, the ``dynamic orchestrator'' in this study is one
+natural-length call inside the harness's scaffolding.
+
+\paragraph{At the nominal budget the fixed rule wins.} H1/16 $-$ deep/16 = {{primary.H1/16-deep/16.est_pts|+1}}
+points [{{primary.H1/16-deep/16.lo_pts|+1}}, {{primary.H1/16-deep/16.hi_pts|+1}}], $p_{\text{Holm}}
+{{primary.H1/16-deep/16.p_holm_tex|s}}$; H3/16 $-$ deep/16 = {{primary.H3/16-deep/16.est_pts|+1}} points
+[{{primary.H3/16-deep/16.lo_pts|+1}}, {{primary.H3/16-deep/16.hi_pts|+1}}], $p_{\text{Holm}}
+{{primary.H3/16-deep/16.p_holm_tex|s}}$. The anchor splits each gap into two parts (Table~\ref{tab:decomp}).
+H0/16 $-$ deep/16 = {{primary.H0/16-deep/16.est_pts|+1}} points [{{primary.H0/16-deep/16.lo_pts|+1}},
+{{primary.H0/16-deep/16.hi_pts|+1}}] is the cost of a natural stop against a forced, exact spend; it is common to
+both harnesses. H/16 $-$ H0/16 is the scaffolding part: {{decomposition.H1.scaffold_pts|+1}} points
+[{{decomposition.H1.scaffold_lo|+1}}, {{decomposition.H1.scaffold_hi|+1}}] for H1 and
+{{decomposition.H3.scaffold_pts|+1}} points [{{decomposition.H3.scaffold_lo|+1}},
+{{decomposition.H3.scaffold_hi|+1}}] for H3. The harness adds about {{decomposition.H1.prompt_tokens_k|1}}k (H1)
+and {{decomposition.H3.prompt_tokens_k|1}}k (H3) prompt tokens of tool schemas and wrappers that no run used, and
+the point estimates say this costs accuracy. Both intervals include zero, so at {{n_items|d}} items the size of
+the scaffolding cost is not pinned down. The decomposition is descriptive, with no $p$-values: it was not in the
+primary family.
+
+\begin{table}[htbp]
+\centering\small
+\begin{tabular}{lrrrr}
+\toprule
+ & total & natural stop & scaffolding & prompt tokens \\
+harness & H/16 $-$ deep/16 & H0/16 $-$ deep/16 & H/16 $-$ H0/16 & added \\
+\midrule
+H1 & {{decomposition.H1.total_pts|+1}} [{{decomposition.H1.total_lo|+1}}, {{decomposition.H1.total_hi|+1}}]
+   & {{decomposition.H1.anchor_pts|+1}} [{{decomposition.H1.anchor_lo|+1}}, {{decomposition.H1.anchor_hi|+1}}]
+   & {{decomposition.H1.scaffold_pts|+1}} [{{decomposition.H1.scaffold_lo|+1}}, {{decomposition.H1.scaffold_hi|+1}}]
+   & {{decomposition.H1.prompt_tokens|d}} \\
+H3 & {{decomposition.H3.total_pts|+1}} [{{decomposition.H3.total_lo|+1}}, {{decomposition.H3.total_hi|+1}}]
+   & {{decomposition.H3.anchor_pts|+1}} [{{decomposition.H3.anchor_lo|+1}}, {{decomposition.H3.anchor_hi|+1}}]
+   & {{decomposition.H3.scaffold_pts|+1}} [{{decomposition.H3.scaffold_lo|+1}}, {{decomposition.H3.scaffold_hi|+1}}]
+   & {{decomposition.H3.prompt_tokens|d}} \\
+\bottomrule
+\end{tabular}
+\caption{The gap to deep/16 at $C = 16A$ split by the anchor (macro points, 95\% studentized item-cluster
+bootstrap CIs, {{n_items|d}} paired items). The two parts add up to the total. The first column is the primary
+contrast; the scaffolding column is descriptive. Prompt tokens added: the first root call's prompt minus the H0
+call's prompt on the same item and rung, mean over all rungs.}
+\label{tab:decomp}
+\end{table}
+
+\paragraph{Why the natural call loses at nominal $C$: it stops early.} At $16A$ the mean realized share of the cap
+is {{headline.H1.realized_share16|2}} for H1, {{headline.H3.realized_share16|2}} for H3 and
+{{headline.H0.realized_share16|2}} for H0 (Table~\ref{tab:realized}); only {{realized.H1/16.share_cap_bound|%}} of
+H1/16 runs and {{realized.H3/16.share_cap_bound|%}} of H3/16 runs reached the cap. The ladder forced deep/16 to spend
+exactly {{design.cap16|d}} reasoning tokens. Per realized token (F2, Figure~\ref{fig:frontiers}, left), the harness
+points lie on or near the deep-call curve. Table~\ref{tab:rvd} makes this exact: each cell against the deep-call
+accuracy interpolated at the same realized completion tokens. For the {{realized_vs_deep.harness_n|d}} harness
+cells the difference runs from {{realized_vs_deep.harness_min_pts|+1}} to {{realized_vs_deep.harness_max_pts|+1}}
+points (mean {{realized_vs_deep.by_arm.H1.mean_pts|+1}} for H1, {{realized_vs_deep.by_arm.H3.mean_pts|+1}} for
+H3), and {{realized_vs_deep.harness_ci_excludes_zero|d}} of the {{realized_vs_deep.harness_n|d}} intervals exclude zero. H0 sits above the curve
+in all {{realized_vs_deep.by_arm.H0.n|d}} cells, by {{realized_vs_deep.by_arm.H0.min_pts|+1}} to
+{{realized_vs_deep.by_arm.H0.max_pts|+1}} points; the interval excludes zero at
+{{realized_vs_deep.ci_above_first|tt}}.
+
+The implication is narrow. The rule's advantage at the nominal budget comes from making the model spend its whole
+budget. The ladder did that by forcing decoding, and no off-the-shelf harness offers it. It is not evidence that
+orchestration decisions are worse: no orchestration decision was made.
+
+\begin{table}[htbp]
+\centering\small
+\adjustbox{max width=\textwidth}{\input{tables/realized_vs_deep.tex}}
+\caption{Each cell against the deep call at the same realized completion tokens per item (F2, macro,
+descriptive). The deep accuracy is interpolated log-linearly in realized tokens between the two adjacent deep
+rungs. The difference and its 95\% CI are one paired linear contrast (cell minus the weighted pair of deep
+columns) over the items known in all three columns, so it can differ by a point from the difference of the two
+printed accuracies. The rung-1 cells realized fewer tokens than deep/1
+({{realized_vs_deep.deep_min_x|d}}) and are left out.}
+\label{tab:rvd}
+\end{table}
+
+\paragraph{Against the naive baseline and the oracle.} Both harnesses beat sample/16 with vote by a wide
+margin: H1/16 $-$ sample/16 = {{primary.H1/16-sample/16.est_pts|+1}} points
+[{{primary.H1/16-sample/16.lo_pts|+1}}, {{primary.H1/16-sample/16.hi_pts|+1}}], $p_{\text{Holm}}
+{{primary.H1/16-sample/16.p_holm_tex|s}}$; H3/16 $-$ sample/16 = {{primary.H3/16-sample/16.est_pts|+1}} points
+[{{primary.H3/16-sample/16.lo_pts|+1}}, {{primary.H3/16-sample/16.hi_pts|+1}}], $p_{\text{Holm}}
+{{primary.H3/16-sample/16.p_holm_tex|s}}$. Both also exceed the paired per-item oracle pass@16
+({{headline.oracle16|3}}): H1/16 by {{descriptive.H1/16.vs_oracle.pts|+1}} points
+[{{descriptive.H1/16.vs_oracle.lo|+1}}, {{descriptive.H1/16.vs_oracle.hi|+1}}] and H3/16 by
+{{descriptive.H3/16.vs_oracle.pts|+1}} points [{{descriptive.H3/16.vs_oracle.lo|+1}},
+{{descriptive.H3/16.vs_oracle.hi|+1}}]. Those two intervals include zero. In point estimate, one unforced call at $16A$ does better than a
+perfect selector over the samples of sample/16 would.
+
+\paragraph{Scope.} One model ({{design.model|s}}); {{n_items|d}} items on {{design.n_benchmarks|d}} hard math and
+science benchmarks; orchestration-only tools (no code execution, no search); one realisation per cell.
+Orchestration itself was not exercised, so this does not show that orchestration is useless. It shows that these
+two harnesses, as shipped, did not choose to orchestrate this model on these tasks.
+%%IF e0.present
+Section~\ref{sec:e0} tests whether forcing the root to stop early makes it delegate.
+%%ENDIF
+
+%%IF e0.present
+\section{Extension E0: capping the orchestrator's own calls}\label{sec:e0}
+
+In the core, both harnesses almost always answered in one long call and never delegated. E0 takes away the
+single long call. Each root call is granted at most {{design.e0_root_ceiling|tt}} tokens: {{design.A|d}} at $4A$ and {{e0.ceil16|d}}
+at $16A$. A root call that reaches this ceiling is closed with an answer continuation charged inside $C$. The
+harness can then accept that answer, or keep going with the rest of the budget: think again, or spawn a
+sub-agent. The same {{n_items|d}} items were run for H1c and H3c at rungs 4 and 16, one realisation per cell
+({{e0.runs|d}} runs, {{e0.spend_usd|$}}). Every contrast below is a descriptive paired item bootstrap, and E0
+carries no p-values.
+
+\begin{table}[h]
+\centering\small
+\resizebox{\textwidth}{!}{\begin{tabular}{lrrrrrr}
+\toprule
+cell & accuracy & $-$ uncapped & $-$ deep/$k$ & $-$ deep at ceiling & spawn runs & ceiling close, then end \\
+\midrule
+H1c/4  & {{e0.acc.H1c/4.acc|3}}  & {{e0.vs.H1c/4.H1_4.pts|+1}}   & {{e0.vs.H1c/4.deep_4.pts|+1}}   & {{e0.vs.H1c/4.deep_1.pts|+1}} (deep/1)  & {{e0.by_arm.H1c/4.spawn_share|%}}  & {{e0.by_arm.H1c/4.ceiling_close_then_end_share|%}} \\
+H1c/16 & {{e0.acc.H1c/16.acc|3}} & {{e0.vs.H1c/16.H1_16.pts|+1}} & {{e0.vs.H1c/16.deep_16.pts|+1}} & {{e0.vs.H1c/16.deep_4.pts|+1}} (deep/4) & {{e0.by_arm.H1c/16.spawn_share|%}} & {{e0.by_arm.H1c/16.ceiling_close_then_end_share|%}} \\
+H3c/4  & {{e0.acc.H3c/4.acc|3}}  & {{e0.vs.H3c/4.H3_4.pts|+1}}   & {{e0.vs.H3c/4.deep_4.pts|+1}}   & {{e0.vs.H3c/4.deep_1.pts|+1}} (deep/1)  & {{e0.by_arm.H3c/4.spawn_share|%}}  & {{e0.by_arm.H3c/4.ceiling_close_then_end_share|%}} \\
+H3c/16 & {{e0.acc.H3c/16.acc|3}} & {{e0.vs.H3c/16.H3_16.pts|+1}} & {{e0.vs.H3c/16.deep_16.pts|+1}} & {{e0.vs.H3c/16.deep_4.pts|+1}} (deep/4) & {{e0.by_arm.H3c/16.spawn_share|%}} & {{e0.by_arm.H3c/16.ceiling_close_then_end_share|%}} \\
+\bottomrule
+\end{tabular}}
+\caption{E0 cells: macro accuracy and paired differences in points. ``Deep at ceiling'' is one forced deep call
+with the root ceiling as its budget. The last column is the share of ceiling-closed runs in which the harness
+made no further call.}
+\label{tab:e0}
+\end{table}
+
+\paragraph{The cap made the harnesses delegate, sometimes.} {{e0.spawn_runs|d}} of {{e0.runs|d}} E0 runs
+spawned a sub-agent, against none of the core harness runs. The share was highest for H1c/16
+({{e0.by_arm.H1c/16.spawn_share|%}}) and lowest for H3c/16 ({{e0.by_arm.H3c/16.spawn_share|%}}).
+
+\paragraph{Mostly they accepted the capped answer and stopped.} The root reached its ceiling in
+{{e0.by_arm.H3c/16.ceiling_close_share|%}} (H3c/16) to {{e0.by_arm.H1c/4.ceiling_close_share|%}} (H1c/4) of runs.
+In {{e0.by_arm.H3c/16.ceiling_close_then_end_share|%}} to {{e0.by_arm.H1c/4.ceiling_close_then_end_share|%}} of
+those, the harness made no further call and delivered the answer written under the ceiling. The unspent budget was
+simply left unused: realised share of the cap is {{e0.by_arm.H3c/16.realized_share|2}} to
+{{e0.by_arm.H3c/4.realized_share|2}}. So a capped cell at rung $k$ behaves much like one deep call at the ceiling. H1c/4 is
+{{e0.vs.H1c/4.deep_1.pts|+1}} points [{{e0.vs.H1c/4.deep_1.lo|+1}}, {{e0.vs.H1c/4.deep_1.hi|+1}}] from deep/1, and
+H3c/16 is {{e0.vs.H3c/16.deep_4.pts|+1}} [{{e0.vs.H3c/16.deep_4.lo|+1}}, {{e0.vs.H3c/16.deep_4.hi|+1}}] from deep/4.
+
+\paragraph{Capping cost accuracy.} Every capped cell is below its uncapped cell in point estimate, and three of the four intervals exclude zero. H1c/16 is lower by
+{{e0.vs.H1c/16.H1_16.pts|a1}} points [{{e0.vs.H1c/16.H1_16.lo|+1}}, {{e0.vs.H1c/16.H1_16.hi|+1}}] and H3c/16 by
+{{e0.vs.H3c/16.H3_16.pts|a1}} [{{e0.vs.H3c/16.H3_16.lo|+1}}, {{e0.vs.H3c/16.H3_16.hi|+1}}]. Against deep/16 the gap
+widens to {{e0.vs.H1c/16.deep_16.pts|+1}} and {{e0.vs.H3c/16.deep_16.pts|+1}} points. Runs whose root never hit
+the ceiling were right {{e0.by_arm.H1c/16.acc_not_closed|%}} (H1c/16) and {{e0.by_arm.H3c/16.acc_not_closed|%}}
+(H3c/16) of the time; ceiling-closed runs were right {{e0.by_arm.H1c/16.acc_ceiling_closed|%}} and
+{{e0.by_arm.H3c/16.acc_ceiling_closed|%}}. That split is selection by difficulty, not an effect of capping. Runs
+that spawned did no better (H1c/16: {{e0.by_arm.H1c/16.acc_spawned|%}} with a spawn,
+{{e0.by_arm.H1c/16.acc_not_spawned|%}} without). This is also selection, and the counts are small.
+
+\paragraph{Reading.} Forcing the orchestrator off its first call did not produce useful orchestration. When
+the harnesses were pushed to split the work, they mostly turned the budget they had into a shorter single answer,
+and the delegation they did perform did not recover the lost depth. E0 strengthens the core reading: for this
+model at these budgets, the rule ``one deep call, forced to the budget'' is not beaten by dynamic orchestration,
+capped or uncapped.
+%%ENDIF
+
+%%IF e2.present
+\section{Extension E2: the same harnesses without the spawn tool}\label{sec:e2}
+
+No core run delegated, yet both harnesses fell below the harness-free call H0 at $16A$. E2 asks whether merely
+offering the delegation tool is part of that cost. It re-ran both harnesses at rungs 4 and 16 with spawning
+disabled: OpenClaude with no tools at all, and Codex without its \texttt{multi\_agent\_v1} tools, keeping only
+\texttt{update\_plan}. That is {{e2.runs|d}} runs for {{e2.spend_usd|$}}; {{e2.spawn_runs|d}} spawned, as designed.
+Without the spawn tool the first root prompt is shorter: {{e2.by_arm.H1n/16.prompt_tokens_first_root|d}} against
+{{e2.by_arm.H1n/16_core_prompt_tokens_first_root|d}} tokens (OpenClaude, $16A$), and
+{{e2.by_arm.H3n/16.prompt_tokens_first_root|d}} against {{e2.by_arm.H3n/16_core_prompt_tokens_first_root|d}} (Codex).
+
+\begin{table}[h]
+\centering\small
+\resizebox{\textwidth}{!}{\begin{tabular}{lrrrr}
+\toprule
+cell & accuracy & $-$ spawn offered (both repeats) & $-$ H0/$k$ & $-$ deep/$k$ \\
+\midrule
+H1n/4  & {{e2.acc.H1n/4.acc|3}}  & {{e2.vs.H1n/4.mean2.pts|+1}} [{{e2.vs.H1n/4.mean2.lo|+1}}, {{e2.vs.H1n/4.mean2.hi|+1}}] & {{e2.vs.H1n/4.H0_4.pts|+1}} [{{e2.vs.H1n/4.H0_4.lo|+1}}, {{e2.vs.H1n/4.H0_4.hi|+1}}] & {{e2.vs.H1n/4.deep_4.pts|+1}} [{{e2.vs.H1n/4.deep_4.lo|+1}}, {{e2.vs.H1n/4.deep_4.hi|+1}}] \\
+H1n/16 & {{e2.acc.H1n/16.acc|3}} & {{e2.vs.H1n/16.mean2.pts|+1}} [{{e2.vs.H1n/16.mean2.lo|+1}}, {{e2.vs.H1n/16.mean2.hi|+1}}] & {{e2.vs.H1n/16.H0_16.pts|+1}} [{{e2.vs.H1n/16.H0_16.lo|+1}}, {{e2.vs.H1n/16.H0_16.hi|+1}}] & {{e2.vs.H1n/16.deep_16.pts|+1}} [{{e2.vs.H1n/16.deep_16.lo|+1}}, {{e2.vs.H1n/16.deep_16.hi|+1}}] \\
+H3n/4  & {{e2.acc.H3n/4.acc|3}}  & {{e2.vs.H3n/4.mean2.pts|+1}} [{{e2.vs.H3n/4.mean2.lo|+1}}, {{e2.vs.H3n/4.mean2.hi|+1}}] & {{e2.vs.H3n/4.H0_4.pts|+1}} [{{e2.vs.H3n/4.H0_4.lo|+1}}, {{e2.vs.H3n/4.H0_4.hi|+1}}] & {{e2.vs.H3n/4.deep_4.pts|+1}} [{{e2.vs.H3n/4.deep_4.lo|+1}}, {{e2.vs.H3n/4.deep_4.hi|+1}}] \\
+H3n/16 & {{e2.acc.H3n/16.acc|3}} & {{e2.vs.H3n/16.mean2.pts|+1}} [{{e2.vs.H3n/16.mean2.lo|+1}}, {{e2.vs.H3n/16.mean2.hi|+1}}] & {{e2.vs.H3n/16.H0_16.pts|+1}} [{{e2.vs.H3n/16.H0_16.lo|+1}}, {{e2.vs.H3n/16.H0_16.hi|+1}}] & {{e2.vs.H3n/16.deep_16.pts|+1}} [{{e2.vs.H3n/16.deep_16.lo|+1}}, {{e2.vs.H3n/16.deep_16.hi|+1}}] \\
+\bottomrule
+\end{tabular}}
+\caption{E2 cells: macro accuracy and paired differences in points (95\% item bootstrap, descriptive). ``Spawn
+offered'' is the mean of the core cell and its E1 repeat.}
+\label{tab:e2}
+\end{table}
+
+\paragraph{Removing the unused tool helped, mostly.} Against the mean of both spawn-offered repeats, three of the
+four cells gained {{e2.vs.H1n/16.mean2.pts|+1}} (H1n/16), {{e2.vs.H3n/16.mean2.pts|+1}} (H3n/16) and
+{{e2.vs.H3n/4.mean2.pts|+1}} (H3n/4) points. The fourth, H1n/4, moved {{e2.vs.H1n/4.mean2.pts|+1}}.
+Of the {{e2.n_cells|d}} intervals, {{e2.n_vs_mean2_ci_covers_zero|d}} include zero. Every spawn-disabled cell
+is within a few points of the harness-free call H0/$k$, and every one of those intervals includes zero. At $16A$
+both lie {{e2.vs.H1n/16.deep_16.pts|a1}} points below deep/16, and those intervals include zero as well.
+
+\paragraph{Reading.} The core's gap between the harnesses and H0 (Table~\ref{tab:decomp}) looks like the cost of
+offering a delegation tool that is never used: a longer system prompt and multi-agent instructions, with nothing
+gained. Without it, a harness performs like one unforced call. The remaining gap to deep/$k$ is the
+natural-stop gap of H0: the model stops before spending the budget, which the ladder's forced call does not allow.
+These are descriptive contrasts from one realisation per E2 cell, run later than the core, so read them as
+consistent with that account, not as proof of it.
+%%ENDIF
+
+\section{What to do with this}
+
+For this model on these tasks, spend the budget on one deep call and force it to use the whole budget; neither
+harness adds anything over that, and each adds unused prompt overhead. If a harness is used for other reasons,
+expect it to behave like one unforced call that stops at about {{headline.H1.realized_share16|2}} of the cap.
+%%IF e2.present
+If the task does not need delegation, do not offer the tool: in E2 removing it recovered most of the gap to the
+harness-free call.
+%%ENDIF
+The
+rule would change with a harness that actually delegates, with tools that add information a single call cannot
+produce (code execution, search), or with a model that spends a long budget without being forced.
+
+\section{Cost re-fit}
+
+Re-fitted from the measured runs (Parasail prices, {{design.contingency_share|%}} contingency), the core would cost
+{{refit_total_core_usd|$}}; per-cell figures are in \texttt{tables/forecast\_refit.csv}.
+
+\appendix
+\section{Run facts and deviations}
+\label{app:facts}
+
+\paragraph{Spend.} The current attempts of the core cost {{spend.core_usd|$}}. The ledger charges every main attempt together
+{{spend.all_attempts_usd|$}}: {{run_facts.ledger.main.settled_usd|$}} settled by the provider plus
+{{run_facts.ledger.main.charged_max_usd|$}} charged at the full reservation for the
+{{run_facts.main_failed_calls|d}} calls the provider cut mid-stream, which the provider billed at close to
+nothing (contract \S10.39). The {{n_reruns|d}} attempts that reruns replaced cost {{spend.retry_usd|$}}. The canary cost
+{{run_facts.ledger.canary.settled_usd|$}} over both executions (the superseded first one
+{{run_facts.canary_g1.settled_usd|$}}), and the pilot {{run_facts.ledger.pilot.settled_usd|$}}. The study total,
+canary and pilot included and E0 excluded, is {{run_facts.study_settled_usd|$}} settled, at most
+{{run_facts.study_upper_usd|$}} with the conservative charges. The OpenRouter key agreed with the ledger at every
+gate.
+
+\paragraph{Gates.} Gate~1 (canary) and Gate~2 (pilot) advanced with owner-waived delegation criteria (contract
+\S10.37). The canary's $16A$ probe had {{run_facts.gate1_probe.spawning|d}} of {{run_facts.gate1_probe.of|d}}
+runs spawning, which trips the pre-registered stop-and-ask. At Gate~2, {{run_facts.gate2_k16.H1.spawning|d}} of
+{{run_facts.gate2_k16.H1.runs|d}} H1 runs and {{run_facts.gate2_k16.H3.spawning|d}} of {{run_facts.gate2_k16.H3.runs|d}}
+H3 runs at $16A$ spawned. The owner's decision, recorded in
+\texttt{run\_decisions.jsonl}: ``{{run_facts.owner_waiver_quote|s}}'', because ``{{run_facts.owner_waiver_rationale|s}}''.
+The waived criteria stay recorded as failed, and nothing else was waivable: money, accounting, grants, provider
+pinning, answers and forecast criteria stayed binding. The final Gate~4 passed every criterion.
+
+\paragraph{Defects found and fixed during the run.}
+\begin{itemize}
+\item \textbf{The grace offered tools (\S10.28).} In the first canary the answer continuation after a cap-bound
+call still carried the tool schemas, so some harness runs spent their one grace on a tool call and had no budget left
+to answer. Every spawn recorded anywhere in the study ({{run_facts.canary_g1.spawns|d}} in all) was issued inside
+such a grace. The grace now carries no tools, as the plan said; the {{run_facts.canary_g1.records|d}} canary cells were
+superseded and re-run (\S10.35).
+\item \textbf{The upstream-failure latch (\S10.38).} The provider cut {{run_facts.main_failed_calls|d}} main-stage
+calls mid-stream ({{run_facts.main_failed_envelopes|d}} error envelopes, {{run_facts.main_failed_timeouts|d}}
+ambiguous timeouts). H0 recorded these as transport failures and re-ran them
+({{run_facts.reruns_transport|d}} reruns). Both harnesses instead retried the failed call into the proxy's
+no-thinking terminal answer, which was scored as a model outcome. The first upstream failure now ends the run as an
+infrastructure rerun, and the {{run_facts.infra_invalidation.cells|d}} main cells completed under the defect
+({{run_facts.infra_invalidation.by_arm.H1|d}} H1, {{run_facts.infra_invalidation.by_arm.H3|d}} H3) were
+invalidated and re-executed.
+\item \textbf{Reconciliation rules (\S10.36, \S10.39, \S10.41).} The key's usage lags the ledger, so the dollar
+check now waits for it to converge; it compares the key with the ledger's bounds (settled, settled plus
+conservative charges) rather than the upper figure; and a failed call charged at its full grant is checked as an
+upper bound. No recorded dollar changed.
+\item \textbf{Gate~4's grader re-run (\S10.40).} The first Gate~4 counted
+{{run_facts.gate4_invalid_valid_final|d}} mismatches, all the same \texttt{INVALID\_OUTPUT} verdict both times: a
+well-formed final answer the grader cannot parse, scored 0. The check compared the raw verdict instead of the
+scored value. It now uses the scoring rule; stored scores were already right and did not change.
+\end{itemize}
+
+\paragraph{The first main launch.} It was submitted without the account auto-reload flag, so its active ceiling
+was {{run_facts.first_launch.active_ceiling_usd|$}} instead of the approved {{run_facts.first_launch.max_usd|$}}.
+It was drained after {{run_facts.first_launch.drained_after_min|1}} minutes and resubmitted with the flag; its
+{{run_facts.first_launch.cells_kept|d}} finished cells were kept.
+
+None of these changed a pre-registered scientific rule. Each made the code match the plan or fixed a check.
+
+\end{document}

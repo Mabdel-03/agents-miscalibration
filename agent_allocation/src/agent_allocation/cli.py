@@ -26,6 +26,14 @@ VERBS: dict[str, str] = {
     "calibrate": "agent_allocation.calibrate:cmd_calibrate",
     "passk-run": "agent_allocation.passk.run:cmd_passk_run",
     "passk-analyze": "agent_allocation.passk.analyze:cmd_passk_analyze",
+    # dynorch_v1 (WP-D, docs/dynorch/00_contract.md section 8)
+    "dynorch-plan": "agent_allocation.dynorch.cli:cmd_dynorch_plan",
+    "dynorch-run": "agent_allocation.dynorch.cli:cmd_dynorch_run",
+    "dynorch-tables": "agent_allocation.dynorch.cli:cmd_dynorch_tables",
+    "dynorch-gates": "agent_allocation.dynorch.cli:cmd_dynorch_gates",
+    "dynorch-reconcile": "agent_allocation.dynorch.cli:cmd_dynorch_reconcile",
+    "dynorch-doctor": "agent_allocation.dynorch.cli:cmd_dynorch_doctor",
+    "dynorch-invalidate": "agent_allocation.dynorch.cli:cmd_dynorch_invalidate",
 }
 EXIT_BLOCKED = 2
 

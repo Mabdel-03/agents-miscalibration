@@ -1,0 +1,96 @@
+{
+ "note": "Input cases for tests/unit/dynorch/gen_oracle_goldens.py (contract section 4). Messages are template-facing dicts exactly as dynorch.template.message_dicts produces them; tools are OpenAI function objects as ToolSpec.as_openai produces them.",
+ "cases": [
+  {
+   "name": "tools_system_user",
+   "reasoning_effort": "xhigh",
+   "enable_thinking": true,
+   "tools": [
+    {"type": "function", "function": {"name": "Agent", "description": "Launch a sub-agent <solver> & wait for its result; 'quotes' stay raw.", "parameters": {"type": "object", "properties": {"prompt": {"type": "string", "description": "The task for the sub-agent"}, "subagent_type": {"type": "string", "enum": ["solver"]}, "description": {"type": "string"}}, "required": ["prompt", "subagent_type"]}}}
+   ],
+   "messages": [
+    {"role": "system", "content": "Solve the supplied task accurately. You may delegate work to sub-agents.\n"},
+    {"role": "user", "content": "TASK\nHow many divisors does 7200 have?\n\nOUTPUT REQUIREMENT\nPut exactly one integer inside <final>.\n\nCOMPUTE BUDGET: you have a total budget of 4096 completion tokens for this task.\n"}
+   ]
+  },
+  {
+   "name": "tool_calls_and_tool_response",
+   "reasoning_effort": "xhigh",
+   "enable_thinking": true,
+   "tools": [
+    {"type": "function", "function": {"name": "Agent", "description": "Launch a sub-agent.", "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}, "subagent_type": {"type": "string"}, "n": {"type": "integer"}, "options": {"type": "object"}}, "required": ["prompt", "subagent_type"]}}},
+    {"type": "function", "function": {"name": "update_plan", "description": "Update the plan.", "parameters": {"type": "object", "properties": {"plan": {"type": "array", "items": {"type": "string"}}}}}}
+   ],
+   "messages": [
+    {"role": "system", "content": "System text."},
+    {"role": "user", "content": "Solve 1+1."},
+    {"role": "assistant", "content": "I will delegate two checks.", "reasoning_content": "Let me think about\nthe plan first.", "tool_calls": [
+      {"id": "call_1_0", "type": "function", "function": {"name": "Agent", "arguments": {"prompt": "Compute 1+1.\nReply inside <final>.", "subagent_type": "solver", "n": 2, "options": {"depth": 1, "tags": ["a", "b"], "note": "x < y & z"}}}},
+      {"id": "call_1_1", "type": "function", "function": {"name": "update_plan", "arguments": {"plan": ["delegate", "synthesise"]}}}
+    ]},
+    {"role": "tool", "content": "<final>2</final>", "tool_call_id": "call_1_0"},
+    {"role": "tool", "content": "ok", "tool_call_id": "call_1_1"}
+   ]
+  },
+  {
+   "name": "empty_reasoning_and_content_only_calls",
+   "reasoning_effort": "xhigh",
+   "enable_thinking": true,
+   "tools": [
+    {"type": "function", "function": {"name": "Agent", "description": "Launch a sub-agent.", "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}}}}
+   ],
+   "messages": [
+    {"role": "system", "content": "System text."},
+    {"role": "user", "content": "Solve 2+2."},
+    {"role": "assistant", "content": "", "reasoning_content": "", "tool_calls": [
+      {"id": "call_1_0", "type": "function", "function": {"name": "Agent", "arguments": {"prompt": "Compute 2+2."}}}
+    ]},
+    {"role": "tool", "content": "<final>4</final>", "tool_call_id": "call_1_0"},
+    {"role": "assistant", "content": "Second check.", "tool_calls": [
+      {"id": "call_2_0", "type": "function", "function": {"name": "Agent", "arguments": {"prompt": ""}}}
+    ]},
+    {"role": "tool", "content": "<final>4</final>", "tool_call_id": "call_2_0"},
+    {"role": "user", "content": "Are you sure?"},
+    {"role": "assistant", "content": "Yes.", "reasoning_content": "Re-checking."}
+   ]
+  },
+  {
+   "name": "terminal_thinking_disabled",
+   "reasoning_effort": "xhigh",
+   "enable_thinking": false,
+   "tools": null,
+   "messages": [
+    {"role": "system", "content": "System text."},
+    {"role": "user", "content": "Solve 3+3."},
+    {"role": "assistant", "content": "Delegating.", "reasoning_content": "Some reasoning.", "tool_calls": [
+      {"id": "call_1_0", "type": "function", "function": {"name": "Agent", "arguments": {"prompt": "Compute 3+3."}}}
+    ]},
+    {"role": "tool", "content": "<final>6</final>", "tool_call_id": "call_1_0"},
+    {"role": "user", "content": "Your completion-token budget for this task is exhausted. Reply now with only your final answer using <final>...</final>; no further reasoning or tool calls are possible."}
+   ]
+  },
+  {
+   "name": "no_system_with_tools_unicode",
+   "reasoning_effort": "xhigh",
+   "enable_thinking": true,
+   "tools": [
+    {"type": "function", "function": {"name": "spawn_agent", "description": "Démarre un agent — «ünïcödé» & <tags>", "parameters": {"type": "object", "properties": {"message": {"type": "string"}, "fork_context": {"type": "boolean"}}, "required": ["message"]}}}
+   ],
+   "messages": [
+    {"role": "user", "content": "Résous π ≈ 3.14 ; x < y"}
+   ]
+  },
+  {
+   "name": "raw_assistant_text_no_calls",
+   "reasoning_effort": "xhigh",
+   "enable_thinking": true,
+   "tools": null,
+   "messages": [
+    {"role": "system", "content": "System text."},
+    {"role": "user", "content": "Q1"},
+    {"role": "assistant", "content": "A1 with a <tool_call> that failed to parse\n<function=Agent>\n</tool_call>", "reasoning_content": "R1"},
+    {"role": "user", "content": "Q2"}
+   ]
+  }
+ ]
+}
