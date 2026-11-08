@@ -1,0 +1,7 @@
+TASK
+{task_prompt}
+
+OUTPUT REQUIREMENT
+{output_requirement}
+
+Solve the task. Return a concise rationale and one final answer using the required tags.

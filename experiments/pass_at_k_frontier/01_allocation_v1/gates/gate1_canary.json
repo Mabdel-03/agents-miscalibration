@@ -1,0 +1,66 @@
+{
+ "__record__": "GateResult",
+ "criteria": [
+  {
+   "evidence": "state/canary_rows.jsonl",
+   "name": "all_transport_ok",
+   "observed": "{\"n\": 22, \"not_ok\": []}",
+   "passed": true,
+   "threshold": "every canary call TransportStatus.ok"
+  },
+  {
+   "evidence": "state/canary_rows.jsonl",
+   "name": "zero_cache_hits",
+   "observed": "0",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "state/canary_rows.jsonl",
+   "name": "provider_identity",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "100% served by the locked provider"
+  },
+  {
+   "evidence": "state/canary_rows.jsonl",
+   "name": "standard_tier_by_metadata_and_price",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "service_tier standard/absent and billed/standard price in (Decimal('0.90'), Decimal('1.10'))"
+  },
+  {
+   "evidence": "state/canary_rows.jsonl",
+   "name": "reasoning_tokens_reported",
+   "observed": "1.0",
+   "passed": true,
+   "threshold": ">= 0.9"
+  },
+  {
+   "evidence": "state/canary_rows.jsonl",
+   "name": "numeric_budget_applied",
+   "observed": "{\"1024\": {\"max\": 886, \"median\": 805.5, \"n\": 4}, \"16384\": {\"max\": 9228, \"median\": 5193, \"n\": 3}, \"2048\": {\"max\": 1397, \"median\": 1395, \"n\": 3}, \"4096\": {\"max\": 3448, \"median\": 2374.5, \"n\": 4}, \"512\": {\"max\": 391, \"median\": 363, \"n\": 3}, \"8192\": {\"max\": 8189, \"median\": 5058, \"n\": 3}}",
+   "passed": true,
+   "threshold": "max reasoning at A>=4096 exceeds max at A=512, and A=512 never exceeds 2048"
+  },
+  {
+   "evidence": "state/canary_rows.jsonl",
+   "name": "no_rejected_budget",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "no 4xx for any configured A"
+  },
+  {
+   "evidence": "state/provider_snapshots.jsonl",
+   "name": "ledger_reconciles_with_key_usage",
+   "observed": "{\"key_delta\": \"0.0321442\", \"ledger_settled\": \"0.0321442\"}",
+   "passed": true,
+   "threshold": "ledger settled >= key delta - 0.01"
+  }
+ ],
+ "decision": "advance",
+ "evaluated_at": "2026-09-17T07:39:50Z",
+ "gate": "gate1",
+ "passed": true,
+ "stage": "canary"
+}

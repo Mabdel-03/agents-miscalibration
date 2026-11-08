@@ -1,0 +1,42 @@
+{
+ "A_tokens": 1024,
+ "answer_call": "prompt = THINK prompt + the realized reasoning + think_close_text; max_tokens = headroom (4,096); no logit_bias; up to answer_attempts attempts",
+ "chat_template": "qwen3.8-27b",
+ "chat_template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+ "completion_headroom_answer": 4096,
+ "forced": {
+  "answer_attempts": 3,
+  "ban_bias": -100,
+  "ban_token_ids": [
+   248069,
+   248046,
+   248044
+  ],
+  "bias_probe_token_id": 41674,
+  "enabled": true,
+  "endpoint": "completions",
+  "note": "THINK: raw prompt ending '<think>\\n', logit_bias ban, max_tokens=reasoning_budget; realized must equal budget with finish_reason=length. ANSWER: prompt+reasoning+think_close_text, max_tokens=headroom.",
+  "template": "qwen3.8-27b",
+  "think_close_text": "\n</think>\n\n"
+ },
+ "generation_prompt_suffix": "<|im_start|>assistant\n<think>\n",
+ "provider": {
+  "allow_fallbacks": false,
+  "only": [
+   "mancer/fp8 or parasail/fp8 (item's shard)"
+  ],
+  "require_parameters": true
+ },
+ "response_cache": false,
+ "sampling": {
+  "api_seed_enabled": false,
+  "n_per_request": 1,
+  "response_cache": false,
+  "temperature": 1.0,
+  "top_k": 20,
+  "top_p": 0.95
+ },
+ "seed_sent": false,
+ "think_call": "completions endpoint; prompt = rendered chat prompt ending '<think>\\n'; max_tokens = allowance; logit_bias -100 on </think>, <|im_end|>, <|endoftext|> so the call ends exactly at the budget (finish_reason length)",
+ "xhigh_instruction": "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer."
+}

@@ -1,0 +1,230 @@
+{
+ "checks": [
+  {
+   "detail": {
+    "files": {
+     "locks/datasets.json": "48e8d8647fc009cff85bf827879b389c59f383cb385a47d47f75c74d3e0c8266",
+     "manifests/duplicate_groups.json": "bb4d0a97d0ca5675b5a7c72b09d1f82018e8617387d0f4187666c2e3ee47e684",
+     "manifests/exclusions.json": "5f6464c57c7081ecbcc6713116088a541a1ebdab233b70058d79b8d201ad6c1c",
+     "manifests/panels.json": "514217fa8552b9e7c827e4f87dd9c07be2ba2bd23ab4c251f1ff8f8cd4510e53",
+     "manifests/public/aime.jsonl": "ff112cdb4dcb4a8cc218266da7c53f44aea6f89764db32e3d515caa191166e61",
+     "manifests/public/gpqa_diamond.jsonl": "590f18f5b4fbc3e0e85bd757d2c6e0958ba5b56d9dc0a4d5be6ba66db8b36c60",
+     "manifests/public/hmmt.jsonl": "615f779fee5f0e08700720902f6e788b62b7d32e95cfff85e4db4c12a410f471",
+     "manifests/public/omni_math_hard.jsonl": "669752fa7cdf9e58580a6bc8df875fdff75986c5c91254667ffde4d1180dd9a5",
+     "manifests/reserve_pool.json": "165fa3951fc4aec4b2d27ab6e8b153b4a23ad63f9a261216a731a6a847e89f92",
+     "manifests/splits.json": "c6384ba1d4c3ff8e0aeeae4fcfed7c8904fd020cc37c19ae170e9a84a6528d3c",
+     "manifests/waves.json": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+     "private/aime.jsonl": "bc97eaadb38f95ab55fd9944952f7870e6a6f0e05ff1f93f728be57eb1465565",
+     "private/gpqa_diamond.jsonl": "f4fa7c30140e6ae2601d00aa58a3dc08556672ae61afbcb1d30c15d379b22535",
+     "private/hmmt.jsonl": "da0ba62754d0e837043c49f14a0186889c6f4c6c91c43ea0e47399f740638d9f",
+     "private/omni_math_hard.jsonl": "9f8950f4bfe23c68f19f9cb4d1340b1d2cdabc9f14709a278b11f9576ace5617"
+    }
+   },
+   "name": "write_once_sha256",
+   "passed": true
+  },
+  {
+   "detail": {
+    "aime": "982460f2504707a7c94f7e73ad46270767696a4e9f03d58d37e10ff8b4d9af2a",
+    "gpqa_diamond": "68494524412ad07a4c6e9e4bc53f46f68ae9787725dc89547145d279b25d6c26",
+    "hmmt": "83e816c7d4b93916cfa0ac8fb241a1d15f9b76d25620346035d4410a616ac7e3",
+    "omni_math_hard": "f83806452d9d57a5dce447993c9032181c5076391099b90c04ed367242279b3b"
+   },
+   "name": "inventories_match_legacy_lock",
+   "passed": true
+  },
+  {
+   "detail": {
+    "excluded_partners": 14,
+    "overlap": [],
+    "t200": 200
+   },
+   "name": "t200_disjoint_main_dev_duplicates",
+   "passed": true
+  },
+  {
+   "detail": {
+    "ineligible": []
+   },
+   "name": "t200_eligible",
+   "passed": true
+  },
+  {
+   "detail": {
+    "aime": 20,
+    "gpqa_diamond": 60,
+    "hmmt": 20,
+    "omni_math_hard": 100
+   },
+   "name": "t200_composition_20_20_100_60",
+   "passed": true
+  },
+  {
+   "detail": {
+    "aime": 8,
+    "gpqa_diamond": 24,
+    "hmmt": 8,
+    "omni_math_hard": 40
+   },
+   "name": "x80_subset_8_8_40_24",
+   "passed": true
+  },
+  {
+   "detail": {
+    "conflicting_ok": true,
+    "excluded": {
+     "omni_math_hard/162": "partner_of_used:omni_math_hard/3962",
+     "omni_math_hard/308": "conflicting_gold",
+     "omni_math_hard/3563": "duplicate_of:omni_math_hard/1617",
+     "omni_math_hard/3566": "conflicting_gold",
+     "omni_math_hard/3575": "duplicate_of:omni_math_hard/244",
+     "omni_math_hard/3597": "duplicate_of:omni_math_hard/391",
+     "omni_math_hard/3611": "partner_of_used:omni_math_hard/336",
+     "omni_math_hard/3612": "duplicate_of:omni_math_hard/258",
+     "omni_math_hard/3617": "duplicate_of:omni_math_hard/1464",
+     "omni_math_hard/3670": "duplicate_of:omni_math_hard/316",
+     "omni_math_hard/3724": "duplicate_of:omni_math_hard/328",
+     "omni_math_hard/3806": "duplicate_of:omni_math_hard/1476",
+     "omni_math_hard/4070": "duplicate_of:omni_math_hard/2408",
+     "omni_math_hard/4379": "duplicate_of:omni_math_hard/3295"
+    },
+    "flagged_not_duplicate": 43,
+    "omni_pool_after_dedup": 455,
+    "partner_exclusions_ok": true,
+    "reviewed_gold_relation": {
+     "omni_math_hard/1464|omni_math_hard/3617": "equal",
+     "omni_math_hard/1476|omni_math_hard/3806": "equal",
+     "omni_math_hard/1617|omni_math_hard/3563": "equal",
+     "omni_math_hard/162|omni_math_hard/3962": "equal",
+     "omni_math_hard/2408|omni_math_hard/4070": "equal",
+     "omni_math_hard/244|omni_math_hard/3575": "equal",
+     "omni_math_hard/258|omni_math_hard/3612": "equal",
+     "omni_math_hard/308|omni_math_hard/3566": "conflict",
+     "omni_math_hard/316|omni_math_hard/3670": "equal",
+     "omni_math_hard/328|omni_math_hard/3724": "one_way",
+     "omni_math_hard/3295|omni_math_hard/4379": "equal",
+     "omni_math_hard/336|omni_math_hard/3611": "equal",
+     "omni_math_hard/3597|omni_math_hard/391": "equal"
+    }
+   },
+   "name": "duplicate_registry_review",
+   "passed": true
+  },
+  {
+   "detail": {
+    "bank_known": 94,
+    "c48": 48,
+    "table": [
+     "benchmark                 0       1-5      6-15     16-25     total",
+     "aime                 4/12      3/3       1/1       4/8      12/24  ",
+     "hmmt                 6/16      3/3       0/0       3/4      12/23  ",
+     "omni_math_hard       4/9       4/7       3/6       1/1      12/23  ",
+     "gpqa_diamond         0/0       2/2       4/6       6/16     12/24  "
+    ]
+   },
+   "name": "c48_subset_bank_known_with_inclusion_probs",
+   "passed": true
+  },
+  {
+   "detail": {
+    "aime": {
+     "mancer": 10,
+     "parasail": 10
+    },
+    "gpqa_diamond": {
+     "mancer": 30,
+     "parasail": 30
+    },
+    "hmmt": {
+     "mancer": 10,
+     "parasail": 10
+    },
+    "omni_math_hard": {
+     "mancer": 50,
+     "parasail": 50
+    }
+   },
+   "name": "t200_assignment_1to1",
+   "passed": true
+  },
+  {
+   "detail": {
+    "counts_equal": {
+     "dev": true,
+     "main": true
+    },
+    "items_compared": 128,
+    "mismatches": [],
+    "note": "unchanged shards.root_assignment gives the reserve (T200) panel the 3:2 config shares; the frozen T200 assignment is splits.json assignment_t200 (1:1), which WP-G's per-panel override must reproduce verbatim",
+    "root_assignment_reserve_counts": {
+     "mancer": {
+      "aime": 12,
+      "gpqa_diamond": 36,
+      "hmmt": 12,
+      "omni_math_hard": 60
+     },
+     "parasail": {
+      "aime": 8,
+      "gpqa_diamond": 24,
+      "hmmt": 8,
+      "omni_math_hard": 40
+     }
+    },
+    "seed": 20260917,
+    "shares": {
+     "mancer": 3,
+     "parasail": 2
+    },
+    "t200_1to1_equals_root_assignment_reserve": false
+   },
+   "name": "legacy_assignment_reproduced_l96_d32",
+   "passed": true
+  },
+  {
+   "detail": {
+    "copied_legacy_rows": 256,
+    "regenerated_legacy_rows": 320,
+    "regenerated_mismatches": []
+   },
+   "name": "manifest_rows_legacy_byte_identical",
+   "passed": true
+  },
+  {
+   "detail": {
+    "expected": 328,
+    "rows": 328
+   },
+   "name": "manifests_cover_l96_d32_t200",
+   "passed": true
+  },
+  {
+   "detail": "PREREG.md at e781c34 sha256 fe0c7d1d9570898771f4563c356868bc1802d12bd8eab7eac96325e2cc5f8d44; HEAD equal=True; working tree equal=True; ancestor=True",
+   "name": "prereg_committed_e781c34",
+   "passed": true
+  }
+ ],
+ "code_commit": "93c19cf979d27bf6e4766fd525b3e275ef19b655",
+ "evaluated_at": "2026-09-25T18:34:20Z",
+ "files": {
+  "locks/datasets.json": "48e8d8647fc009cff85bf827879b389c59f383cb385a47d47f75c74d3e0c8266",
+  "manifests/duplicate_groups.json": "bb4d0a97d0ca5675b5a7c72b09d1f82018e8617387d0f4187666c2e3ee47e684",
+  "manifests/exclusions.json": "5f6464c57c7081ecbcc6713116088a541a1ebdab233b70058d79b8d201ad6c1c",
+  "manifests/panels.json": "514217fa8552b9e7c827e4f87dd9c07be2ba2bd23ab4c251f1ff8f8cd4510e53",
+  "manifests/public/aime.jsonl": "ff112cdb4dcb4a8cc218266da7c53f44aea6f89764db32e3d515caa191166e61",
+  "manifests/public/gpqa_diamond.jsonl": "590f18f5b4fbc3e0e85bd757d2c6e0958ba5b56d9dc0a4d5be6ba66db8b36c60",
+  "manifests/public/hmmt.jsonl": "615f779fee5f0e08700720902f6e788b62b7d32e95cfff85e4db4c12a410f471",
+  "manifests/public/omni_math_hard.jsonl": "669752fa7cdf9e58580a6bc8df875fdff75986c5c91254667ffde4d1180dd9a5",
+  "manifests/reserve_pool.json": "165fa3951fc4aec4b2d27ab6e8b153b4a23ad63f9a261216a731a6a847e89f92",
+  "manifests/splits.json": "c6384ba1d4c3ff8e0aeeae4fcfed7c8904fd020cc37c19ae170e9a84a6528d3c",
+  "manifests/waves.json": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "private/aime.jsonl": "bc97eaadb38f95ab55fd9944952f7870e6a6f0e05ff1f93f728be57eb1465565",
+  "private/gpqa_diamond.jsonl": "f4fa7c30140e6ae2601d00aa58a3dc08556672ae61afbcb1d30c15d379b22535",
+  "private/hmmt.jsonl": "da0ba62754d0e837043c49f14a0186889c6f4c6c91c43ea0e47399f740638d9f",
+  "private/omni_math_hard.jsonl": "9f8950f4bfe23c68f19f9cb4d1340b1d2cdabc9f14709a278b11f9576ace5617"
+ },
+ "gate": "gate_s",
+ "passed": true,
+ "splits_sha256": "c6384ba1d4c3ff8e0aeeae4fcfed7c8904fd020cc37c19ae170e9a84a6528d3c",
+ "study_id": "openrouter_passk_cont_v1",
+ "version": "passk-splits-v1"
+}

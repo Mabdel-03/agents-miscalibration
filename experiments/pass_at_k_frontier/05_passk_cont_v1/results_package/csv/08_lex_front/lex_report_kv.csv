@@ -1,0 +1,345 @@
+key,value
+delta,0.02
+menu,"[""1x1"", ""1x2"", ""1x4"", ""1x8"", ""1x16"", ""1x25"", ""2x1"", ""2x2"", ""2x4"", ""2x8"", ""4x1"", ""4x2"", ""4x4"", ""8x1"", ""8x2"", ""16x1"", ""25x1""]"
+bank_census_by_allowance.1.draws,1968
+bank_census_by_allowance.1.unknown,0
+bank_census_by_allowance.2.draws,768
+bank_census_by_allowance.2.unknown,0
+bank_census_by_allowance.4.draws,576
+bank_census_by_allowance.4.unknown,0
+bank_census_by_allowance.8.draws,480
+bank_census_by_allowance.8.unknown,1
+bank_census_by_allowance.16.draws,432
+bank_census_by_allowance.16.unknown,0
+bank_census_by_allowance.25.draws,432
+bank_census_by_allowance.25.unknown,0
+winner_distribution.1x16,7
+winner_distribution.1x25,7
+winner_distribution.1x1,6
+winner_distribution.1x8,5
+winner_distribution.8x2,4
+winner_distribution.4x1,3
+winner_distribution.1x4,3
+winner_distribution.25x1,3
+winner_distribution.16x1,3
+winner_distribution.1x2,2
+winner_distribution.4x2,2
+winner_distribution.4x4,2
+winner_distribution.8x1,1
+winner_by_benchmark.aime.16x1,0
+winner_by_benchmark.aime.1x1,1
+winner_by_benchmark.aime.1x16,2
+winner_by_benchmark.aime.1x2,1
+winner_by_benchmark.aime.1x25,2
+winner_by_benchmark.aime.1x4,2
+winner_by_benchmark.aime.1x8,1
+winner_by_benchmark.aime.25x1,0
+winner_by_benchmark.aime.4x1,2
+winner_by_benchmark.aime.4x2,1
+winner_by_benchmark.aime.4x4,0
+winner_by_benchmark.aime.8x1,0
+winner_by_benchmark.aime.8x2,0
+winner_by_benchmark.gpqa_diamond.16x1,1
+winner_by_benchmark.gpqa_diamond.1x1,3
+winner_by_benchmark.gpqa_diamond.1x16,1
+winner_by_benchmark.gpqa_diamond.1x2,1
+winner_by_benchmark.gpqa_diamond.1x25,1
+winner_by_benchmark.gpqa_diamond.1x4,0
+winner_by_benchmark.gpqa_diamond.1x8,2
+winner_by_benchmark.gpqa_diamond.25x1,2
+winner_by_benchmark.gpqa_diamond.4x1,0
+winner_by_benchmark.gpqa_diamond.4x2,1
+winner_by_benchmark.gpqa_diamond.4x4,0
+winner_by_benchmark.gpqa_diamond.8x1,0
+winner_by_benchmark.gpqa_diamond.8x2,0
+winner_by_benchmark.hmmt.16x1,0
+winner_by_benchmark.hmmt.1x1,1
+winner_by_benchmark.hmmt.1x16,1
+winner_by_benchmark.hmmt.1x2,0
+winner_by_benchmark.hmmt.1x25,4
+winner_by_benchmark.hmmt.1x4,0
+winner_by_benchmark.hmmt.1x8,2
+winner_by_benchmark.hmmt.25x1,0
+winner_by_benchmark.hmmt.4x1,1
+winner_by_benchmark.hmmt.4x2,0
+winner_by_benchmark.hmmt.4x4,1
+winner_by_benchmark.hmmt.8x1,1
+winner_by_benchmark.hmmt.8x2,1
+winner_by_benchmark.omni_math_hard.16x1,2
+winner_by_benchmark.omni_math_hard.1x1,1
+winner_by_benchmark.omni_math_hard.1x16,3
+winner_by_benchmark.omni_math_hard.1x2,0
+winner_by_benchmark.omni_math_hard.1x25,0
+winner_by_benchmark.omni_math_hard.1x4,1
+winner_by_benchmark.omni_math_hard.1x8,0
+winner_by_benchmark.omni_math_hard.25x1,1
+winner_by_benchmark.omni_math_hard.4x1,0
+winner_by_benchmark.omni_math_hard.4x2,0
+winner_by_benchmark.omni_math_hard.4x4,1
+winner_by_benchmark.omni_math_hard.8x1,0
+winner_by_benchmark.omni_math_hard.8x2,3
+fixed_options[0].config,16x1
+fixed_options[0].p,0.4766
+fixed_options[0].C,0.9151
+fixed_options[0].latency,59.226
+fixed_options[0].n_items,48.0
+fixed_options[1].config,1x1
+fixed_options[1].p,0.3664
+fixed_options[1].C,0.8245
+fixed_options[1].latency,31.4369
+fixed_options[1].n_items,48.0
+fixed_options[2].config,1x16
+fixed_options[2].p,0.7847
+fixed_options[2].C,0.8858
+fixed_options[2].latency,276.5513
+fixed_options[2].n_items,48.0
+fixed_options[3].config,1x2
+fixed_options[3].p,0.4688
+fixed_options[3].C,0.8005
+fixed_options[3].latency,45.1589
+fixed_options[3].n_items,48.0
+fixed_options[4].config,1x25
+fixed_options[4].p,0.8356
+fixed_options[4].C,0.894
+fixed_options[4].latency,417.5825
+fixed_options[4].n_items,48.0
+fixed_options[5].config,1x4
+fixed_options[5].p,0.6024
+fixed_options[5].C,0.862
+fixed_options[5].latency,82.0329
+fixed_options[5].n_items,48.0
+fixed_options[6].config,1x8
+fixed_options[6].p,0.6875
+fixed_options[6].C,0.87
+fixed_options[6].latency,150.8037
+fixed_options[6].n_items,48.0
+fixed_options[7].config,25x1
+fixed_options[7].p,0.4941
+fixed_options[7].C,0.9306
+fixed_options[7].latency,63.2676
+fixed_options[7].n_items,48.0
+fixed_options[8].config,2x1
+fixed_options[8].p,0.3662
+fixed_options[8].C,0.8247
+fixed_options[8].latency,37.4611
+fixed_options[8].n_items,48.0
+fixed_options[9].config,2x2
+fixed_options[9].p,0.4688
+fixed_options[9].C,0.8005
+fixed_options[9].latency,49.9519
+fixed_options[9].n_items,48.0
+fixed_options[10].config,2x4
+fixed_options[10].p,0.6024
+fixed_options[10].C,0.862
+fixed_options[10].latency,91.3304
+fixed_options[10].n_items,48.0
+fixed_options[11].config,2x8
+fixed_options[11].p,0.6875
+fixed_options[11].C,0.87
+fixed_options[11].latency,165.8236
+fixed_options[11].n_items,48.0
+fixed_options[12].config,4x1
+fixed_options[12].p,0.4131
+fixed_options[12].C,0.8698
+fixed_options[12].latency,44.6283
+fixed_options[12].n_items,48.0
+fixed_options[13].config,4x2
+fixed_options[13].p,0.5323
+fixed_options[13].C,0.8466
+fixed_options[13].latency,54.8503
+fixed_options[13].n_items,48.0
+fixed_options[14].config,4x4
+fixed_options[14].p,0.6447
+fixed_options[14].C,0.9185
+fixed_options[14].latency,102.0071
+fixed_options[14].n_items,48.0
+fixed_options[15].config,8x1
+fixed_options[15].p,0.4472
+fixed_options[15].C,0.8995
+fixed_options[15].latency,52.2038
+fixed_options[15].n_items,48.0
+fixed_options[16].config,8x2
+fixed_options[16].p,0.5973
+fixed_options[16].C,0.9041
+fixed_options[16].latency,59.9115
+fixed_options[16].n_items,48.0
+population_lex_choice,1x25
+in_sample.lex.p.mean,0.8792368402777777
+in_sample.lex.p.ci95,"[0.811714699074074, 0.9402082566550927]"
+in_sample.lex.C.mean,0.9045242481166281
+in_sample.lex.C.ci95,"[0.8540617651452335, 0.9495246520355054]"
+in_sample.lex.latency.mean,154.87586879029172
+in_sample.lex.latency.ci95,"[115.13343308429477, 198.85495735340194]"
+in_sample.1x16.p.mean,0.7847222222222221
+in_sample.1x16.p.ci95,"[0.6875, 0.875]"
+in_sample.1x16.C.mean,0.8858024691358024
+in_sample.1x16.C.ci95,"[0.8312757201646092, 0.9362139917695472]"
+in_sample.1x16.latency.mean,276.5513213036374
+in_sample.1x16.latency.ci95,"[261.939294203875, 290.747616702494]"
+in_sample.1x25.p.mean,0.8356481481481481
+in_sample.1x25.p.ci95,"[0.7546296296296297, 0.9097222222222221]"
+in_sample.1x25.C.mean,0.8940329218106995
+in_sample.1x25.C.ci95,"[0.845679012345679, 0.9382716049382717]"
+in_sample.1x25.latency.mean,417.5824559024967
+in_sample.1x25.latency.ci95,"[394.3140222793427, 440.36367981523244]"
+in_sample.lex_minus_1x16.p.estimate,0.09451461805555555
+in_sample.lex_minus_1x16.p.ci95,"[0.046618062789351856, 0.15116495399305555]"
+in_sample.lex_minus_1x16.p.p,0.014298570142985701
+in_sample.lex_minus_1x16.C.estimate,0.01872177898082562
+in_sample.lex_minus_1x16.C.ci95,"[-0.02326851762059222, 0.06082054433045138]"
+in_sample.lex_minus_1x16.C.p,0.41485851414858516
+in_sample.lex_minus_1x16.latency.estimate,-121.67545251334565
+in_sample.lex_minus_1x16.latency.ci95,"[-157.36051708312255, -82.47285533332469]"
+in_sample.lex_minus_1x16.latency.p,9.999000099990002e-05
+in_sample.lex_minus_1x25.p.estimate,0.04358869212962963
+in_sample.lex_minus_1x25.p.ci95,"[0.01304291579861111, 0.08595092071759255]"
+in_sample.lex_minus_1x25.p.p,0.15178482151784822
+in_sample.lex_minus_1x25.C.estimate,0.010491326305928502
+in_sample.lex_minus_1x25.C.ci95,"[-0.012908473777284596, 0.03659853917469616]"
+in_sample.lex_minus_1x25.C.p,0.44075592440755923
+in_sample.lex_minus_1x25.latency.estimate,-262.706587112205
+in_sample.lex_minus_1x25.latency.ci95,"[-298.72508752885284, -224.93600205570084]"
+in_sample.lex_minus_1x25.latency.p,9.999000099990002e-05
+split_half.feasible_menu,"[""16x1"", ""1x1"", ""1x16"", ""1x2"", ""1x25"", ""1x4"", ""1x8"", ""25x1"", ""2x1"", ""2x2"", ""2x4"", ""2x8"", ""4x1"", ""4x2"", ""4x4"", ""8x1"", ""8x2""]"
+split_half.lex.p.mean,0.7775244392302624
+split_half.lex.p.ci95,"[0.693725871328632, 0.8546304073845062]"
+split_half.lex.C.mean,0.8555229356835141
+split_half.lex.C.ci95,"[0.8089755004036818, 0.8995679162765844]"
+split_half.lex.latency.mean,145.92106419101333
+split_half.lex.latency.ci95,"[106.93821479907878, 190.33913709018847]"
+split_half.deep_1x16.p.mean,0.7838789682539683
+split_half.deep_1x16.p.ci95,"[0.6868545386904763, 0.875]"
+split_half.deep_1x16.C.mean,0.9058408919123204
+split_half.deep_1x16.C.ci95,"[0.8584077410478079, 0.9485942283163266]"
+split_half.deep_1x16.latency.mean,277.92782110356524
+split_half.deep_1x16.latency.ci95,"[263.50323622220805, 291.78483185900825]"
+split_half.deep_1x25.p.mean,0.8347966269841269
+split_half.deep_1x25.p.ci95,"[0.7539663938492064, 0.9081349206349206]"
+split_half.deep_1x25.C.mean,0.9098968962585035
+split_half.deep_1x25.C.ci95,"[0.8660183088860545, 0.9497013209797808]"
+split_half.deep_1x25.latency.mean,418.16626857567553
+split_half.deep_1x25.latency.ci95,"[394.6521044031109, 441.1934463761228]"
+split_half.lex_minus_1x16.p.estimate,-0.006354529023705899
+split_half.lex_minus_1x16.p.ci95,"[-0.06444558957659864, 0.05113985012869093]"
+split_half.lex_minus_1x16.p.p,0.8372162783721628
+split_half.lex_minus_1x16.C.estimate,-0.050317956228806394
+split_half.lex_minus_1x16.C.ci95,"[-0.08645604404255658, -0.010946852906974744]"
+split_half.lex_minus_1x16.C.p,0.0206979302069793
+split_half.lex_minus_1x16.latency.estimate,-132.0067569125519
+split_half.lex_minus_1x16.latency.ci95,"[-168.1666230204818, -91.7253220610885]"
+split_half.lex_minus_1x16.latency.p,0.00019998000199980003
+split_half.lex_minus_1x25.p.estimate,-0.057272187753864626
+split_half.lex_minus_1x25.p.ci95,"[-0.10340447241140119, -0.017208059635024496]"
+split_half.lex_minus_1x25.p.p,0.025797420257974202
+split_half.lex_minus_1x25.C.estimate,-0.05437396057498932
+split_half.lex_minus_1x25.C.ci95,"[-0.08018337085901894, -0.02994714530460783]"
+split_half.lex_minus_1x25.C.p,0.001999800019998
+split_half.lex_minus_1x25.latency.estimate,-272.24520438466226
+split_half.lex_minus_1x25.latency.ci95,"[-309.50170722363544, -232.47088470133065]"
+split_half.lex_minus_1x25.latency.p,9.999000099990002e-05
+t200_policy.P0.choices.1x16,200
+t200_policy.P0.acc.mean,0.7941666666666667
+t200_policy.P0.acc.ci95,"[0.7325, 0.8508333333333333]"
+t200_policy.P0.latency.mean,284.85649284374335
+t200_policy.P0.latency.ci95,"[270.7479225120943, 299.6871611832746]"
+t200_policy.P0.deep_acc.mean,0.7941666666666667
+t200_policy.P0.deep_acc.ci95,"[0.7325, 0.8508333333333333]"
+t200_policy.P0.deep_latency.mean,284.85649284374335
+t200_policy.P0.deep_latency.ci95,"[270.7479225120943, 299.6871611832746]"
+t200_policy.P0.acc_minus_deep.estimate,0.0
+t200_policy.P0.acc_minus_deep.ci95,"[0.0, 0.0]"
+t200_policy.P0.acc_minus_deep.p,1.0
+t200_policy.P0.latency_minus_deep.estimate,0.0
+t200_policy.P0.latency_minus_deep.ci95,"[0.0, 0.0]"
+t200_policy.P0.latency_minus_deep.p,1.0
+t200_policy.P1.choices.1x16,189
+t200_policy.P1.choices.2x8,11
+t200_policy.P1.acc.mean,0.7941666666666667
+t200_policy.P1.acc.ci95,"[0.7325, 0.8508333333333333]"
+t200_policy.P1.latency.mean,280.4020638635912
+t200_policy.P1.latency.ci95,"[265.5424877678878, 295.46175176124575]"
+t200_policy.P1.deep_acc.mean,0.7941666666666667
+t200_policy.P1.deep_acc.ci95,"[0.7325, 0.8508333333333333]"
+t200_policy.P1.deep_latency.mean,284.85649284374335
+t200_policy.P1.deep_latency.ci95,"[270.7479225120943, 299.6871611832746]"
+t200_policy.P1.acc_minus_deep.estimate,0.0
+t200_policy.P1.acc_minus_deep.ci95,"[0.0, 0.0]"
+t200_policy.P1.acc_minus_deep.p,1.0
+t200_policy.P1.latency_minus_deep.estimate,-4.4544289801522
+t200_policy.P1.latency_minus_deep.ci95,"[-8.688995938744483, -1.0949503652831734]"
+t200_policy.P1.latency_minus_deep.p,0.06369363063693631
+t200_policy.P1-conc.choices.1x16,194
+t200_policy.P1-conc.choices.1x8,2
+t200_policy.P1-conc.choices.2x8,2
+t200_policy.P1-conc.choices.4x4,1
+t200_policy.P1-conc.choices.4x2,1
+t200_policy.P1-conc.acc.mean,0.7983333333333333
+t200_policy.P1-conc.acc.ci95,"[0.7374791666666666, 0.8541666666666667]"
+t200_policy.P1-conc.latency.mean,281.1956170658377
+t200_policy.P1-conc.latency.ci95,"[266.6195821754499, 296.286494719664]"
+t200_policy.P1-conc.deep_acc.mean,0.7941666666666667
+t200_policy.P1-conc.deep_acc.ci95,"[0.7325, 0.8508333333333333]"
+t200_policy.P1-conc.deep_latency.mean,284.85649284374335
+t200_policy.P1-conc.deep_latency.ci95,"[270.7479225120943, 299.6871611832746]"
+t200_policy.P1-conc.acc_minus_deep.estimate,0.004166666666666667
+t200_policy.P1-conc.acc_minus_deep.ci95,"[0.0, 0.0125]"
+t200_policy.P1-conc.acc_minus_deep.p,0.0776922307769223
+t200_policy.P1-conc.latency_minus_deep.estimate,-3.6608757779056518
+t200_policy.P1-conc.latency_minus_deep.ci95,"[-7.444983235994412, -0.7892863890278385]"
+t200_policy.P1-conc.latency_minus_deep.p,0.10998900109989002
+t200_policy.P2.choices.1x16,123
+t200_policy.P2.choices.4x4,43
+t200_policy.P2.choices.8x2,29
+t200_policy.P2.choices.1x8,5
+t200_policy.P2.acc.mean,0.7758333333333334
+t200_policy.P2.acc.ci95,"[0.7133333333333334, 0.8325]"
+t200_policy.P2.latency.mean,234.57616896204806
+t200_policy.P2.latency.ci95,"[220.27356922303397, 249.3659474913699]"
+t200_policy.P2.deep_acc.mean,0.7941666666666667
+t200_policy.P2.deep_acc.ci95,"[0.7325, 0.8508333333333333]"
+t200_policy.P2.deep_latency.mean,284.85649284374335
+t200_policy.P2.deep_latency.ci95,"[270.7479225120943, 299.6871611832746]"
+t200_policy.P2.acc_minus_deep.estimate,-0.018333333333333333
+t200_policy.P2.acc_minus_deep.ci95,"[-0.03833333333333333, -0.0008333333333333335]"
+t200_policy.P2.acc_minus_deep.p,0.07189281071892811
+t200_policy.P2.latency_minus_deep.estimate,-50.280323881695324
+t200_policy.P2.latency_minus_deep.ci95,"[-57.76691178387616, -42.69913380251794]"
+t200_policy.P2.latency_minus_deep.p,9.999000099990002e-05
+t200_policy.P2-conc.choices.1x16,187
+t200_policy.P2-conc.choices.1x8,10
+t200_policy.P2-conc.choices.8x2,3
+t200_policy.P2-conc.acc.mean,0.7941666666666667
+t200_policy.P2-conc.acc.ci95,"[0.7325, 0.8508333333333333]"
+t200_policy.P2-conc.latency.mean,276.2887004867328
+t200_policy.P2-conc.latency.ci95,"[261.31606629423237, 291.59649709820974]"
+t200_policy.P2-conc.deep_acc.mean,0.7941666666666667
+t200_policy.P2-conc.deep_acc.ci95,"[0.7325, 0.8508333333333333]"
+t200_policy.P2-conc.deep_latency.mean,284.85649284374335
+t200_policy.P2-conc.deep_latency.ci95,"[270.7479225120943, 299.6871611832746]"
+t200_policy.P2-conc.acc_minus_deep.estimate,0.0
+t200_policy.P2-conc.acc_minus_deep.ci95,"[0.0, 0.0]"
+t200_policy.P2-conc.acc_minus_deep.p,1.0
+t200_policy.P2-conc.latency_minus_deep.estimate,-8.567792357010573
+t200_policy.P2-conc.latency_minus_deep.ci95,"[-13.624776566894385, -4.148146753250483]"
+t200_policy.P2-conc.latency_minus_deep.p,0.008899110088991101
+t200_policy.P3.choices.1x16,151
+t200_policy.P3.choices.4x2,20
+t200_policy.P3.choices.8x1,19
+t200_policy.P3.choices.16x1,5
+t200_policy.P3.choices.8x2,3
+t200_policy.P3.choices.1x8,1
+t200_policy.P3.choices.2x8,1
+t200_policy.P3.acc.mean,0.79
+t200_policy.P3.acc.ci95,"[0.7283333333333334, 0.8466874999999997]"
+t200_policy.P3.latency.mean,234.49909041448169
+t200_policy.P3.latency.ci95,"[213.3557936098554, 254.72768452666384]"
+t200_policy.P3.deep_acc.mean,0.7941666666666667
+t200_policy.P3.deep_acc.ci95,"[0.7325, 0.8508333333333333]"
+t200_policy.P3.deep_latency.mean,284.85649284374335
+t200_policy.P3.deep_latency.ci95,"[270.7479225120943, 299.6871611832746]"
+t200_policy.P3.acc_minus_deep.estimate,-0.004166666666666667
+t200_policy.P3.acc_minus_deep.ci95,"[-0.0125, 0.0]"
+t200_policy.P3.acc_minus_deep.p,0.0776922307769223
+t200_policy.P3.latency_minus_deep.estimate,-50.35740242926171
+t200_policy.P3.latency_minus_deep.ci95,"[-63.91774828801902, -37.620760678054886]"
+t200_policy.P3.latency_minus_deep.p,9.999000099990002e-05

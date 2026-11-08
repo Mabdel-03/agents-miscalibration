@@ -1,0 +1,36 @@
+{
+ "partition_rows": {
+  "dynorch_calls": {
+   "canary": "2a2ae7259110f8f34b80950ce356d8293e6249c2327833f2d7b520c037d11956",
+   "ext_e0": "5e2dc6c85a22db993a9639b5d0d630e3c3802c7226653034a599ec4e835d230f",
+   "main": "9bcf7382452778de7f06cefc5a8bb65b47a647a84f6e6b8dbef86487e5fe9e19",
+   "pilot": "b8604763591fea880faad85fc366ff2436fcc8857ff49f8134ff822cb8ddd78d"
+  },
+  "dynorch_runs": {
+   "canary": "3f8f49176b4675d5786ff0c42c81526094801e2566d4048b8e3624ac7cc27859",
+   "ext_e0": "adfc9a84335cdd7a88f010d918218d889d9619a5c4cdcb042cdadf4607327d3d",
+   "main": "7212ce6272ac993770e437ce837d0de186d0526416c64c8a7f84d5c5dfe31749",
+   "pilot": "c0a7a8b5f47b0ced3d9fc6fb5198fcc5a084de6bdd5f49f02656308574d81d59"
+  },
+  "policy_costs_dynorch": {
+   "canary": "e2c95761e61921e8e99ab9ebb2ff60967420c9d1fa7e8296ecefdb030a4f91fb",
+   "ext_e0": "22e3800551e0e2ba32b1cb4f9d7246f843706d7de2624aaac538bda7005312d2",
+   "main": "f04442a625f066ba6d0fe06db911d4052729ef0e67d31f4456a859cf4631ebe0",
+   "pilot": "7f098545e9e0e2bf4e0f7795b0329b0f11e05fb794ab9a58adc18df54eac5264"
+  },
+  "policy_outcomes_dynorch": {
+   "canary": "01c7967d5fe36df195331d08430e4f687a8263ed5c14181b559ecad12c10b59c",
+   "ext_e0": "de496c516a779d9f64c6258f633198beff78bb1f28ab6e2f8f199a4b87a75cd3",
+   "main": "1be0419ec56eab0c347a4dd5d7230287075fb66bc1d3c3e48f11d9473f37566b",
+   "pilot": "aa8fb5989e7eb88ed85a95e5392eec6fa7f9d43810509005843f609a29894de3"
+  }
+ },
+ "sealed_at": "2026-09-24T12:19:40Z",
+ "sha256": {
+  "dynorch_calls.parquet": "c4a737de889e3695b90c7b22823687eb5b59820728442680405ebd36e985ca9d",
+  "dynorch_runs.parquet": "56643d166e18bccebb9dee628dc2c8e4c1ca2d6f7766989645997135c8fac950",
+  "policy_costs_dynorch.parquet": "168929095c0fd2a7de0e83386569b961346a57b2a41588966f1c87e99fc22eb3",
+  "policy_outcomes_dynorch.parquet": "c8817997be0ad9d5b2ac78f54f59911e38bbb28228a1390e4cfec57a1bc2923d"
+ },
+ "stage": "ext_e0"
+}

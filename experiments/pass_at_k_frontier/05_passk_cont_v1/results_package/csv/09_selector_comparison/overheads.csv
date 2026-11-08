@@ -1,0 +1,7 @@
+quantity,arm,panel,mean_s,max_s,attempts,missing
+llm_decision_latency_s,A0,L96,15.816560801773448,30.154529022518545,97,0
+llm_decision_latency_s,A0,T200,16.26882553550415,80.32267350889742,204,0
+llm_decision_latency_s,A1,L96,16.452857500315684,88.31546617625281,97,0
+llm_decision_latency_s,A1,T200,16.23444253398571,74.16296530235559,202,0
+diag_wallclock_macro_c48,,,46.02980514869462,,,
+diag_wallclock_macro_t200,,,32.76633839194197,,,

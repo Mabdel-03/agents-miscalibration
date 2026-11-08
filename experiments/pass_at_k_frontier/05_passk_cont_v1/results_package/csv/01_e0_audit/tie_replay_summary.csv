@@ -1,0 +1,8 @@
+key,value
+checkpoints,2976
+clean_checkpoints,2817
+clean_match_rate,1.0
+drift_eligible,159
+drift_mismatches,0
+gate_100pct_clean,true
+match_rate,1.0

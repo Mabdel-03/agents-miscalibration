@@ -1,0 +1,38 @@
+{
+ "__record__": "GateResult",
+ "criteria": [
+  {
+   "evidence": "reports/GATE0_FORCED_ENDPOINT.json",
+   "name": "logit_bias_honoured_banana",
+   "observed": "{\"status\": \"ok\", \"banana_count\": 12, \"text\": \" banana banana banana banana banana banana banana banana banana banana banana ba\"}",
+   "passed": true,
+   "threshold": ">= 5 'banana' in 12 tokens with +100 on 41674"
+  },
+  {
+   "evidence": "reports/GATE0_FORCED_ENDPOINT.json",
+   "name": "think_close_token_id",
+   "observed": "{\"status\": \"ok\", \"reasoning\": \"\", \"text\": \"</think></think></think></think></think></think></think></think></think></think>\"}",
+   "passed": true,
+   "threshold": "+100 on 248069 closes the reasoning immediately"
+  },
+  {
+   "evidence": "reports/GATE0_FORCED_ENDPOINT.json",
+   "name": "forced_think_exact_length",
+   "observed": "{\"status\": \"ok\", \"completion_tokens\": 2048, \"finish_reason\": \"length\", \"leaked_close\": false}",
+   "passed": true,
+   "threshold": "completion_tokens == 2048, finish_reason length, no </think>"
+  },
+  {
+   "evidence": "reports/GATE0_FORCED_ENDPOINT.json",
+   "name": "answer_returns_final",
+   "observed": "{\"status\": \"ok\", \"has_final\": true}",
+   "passed": true,
+   "threshold": "ANSWER after the forced THINK contains <final>...</final>"
+  }
+ ],
+ "decision": "advance",
+ "evaluated_at": "2026-09-18T14:28:04Z",
+ "gate": "gate0",
+ "passed": true,
+ "stage": "preflight"
+}

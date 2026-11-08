@@ -1,0 +1,85 @@
+{
+  "answer_served_models": [
+    "qwen/qwen3.8-27b"
+  ],
+  "cohorts": {
+    "93": 93,
+    "94": 94,
+    "96": 96
+  },
+  "created_at": "2026-09-25T19:13:20+00:00",
+  "generation_ids_unique": true,
+  "headlines": {
+    "deep/16 (79.2 / 78.5)": {
+      "macro_94": 0.7853260869565217,
+      "macro_96": 0.7916666666666666,
+      "micro_96": 0.7916666666666666,
+      "mixture_96": 0.75
+    },
+    "sample/16 vote (41.7)": {
+      "macro_94": 0.4221014492753623,
+      "macro_96": 0.41666666666666663,
+      "micro_96": 0.4166666666666667,
+      "mixture_96": 0.44166666666666665
+    },
+    "vote@25 (42.7 / 43.3)": {
+      "macro_94": 0.4329710144927536,
+      "macro_96": 0.42708333333333337,
+      "micro_96": 0.4270833333333333,
+      "mixture_96": 0.4625
+    }
+  },
+  "legacy_bank_cost_usd": 23.42975514,
+  "legacy_bank_requests": 2976,
+  "legacy_root": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts",
+  "mixture_weights": {
+    "aime": 0.1,
+    "gpqa_diamond": 0.3,
+    "hmmt": 0.1,
+    "omni_math_hard": 0.5
+  },
+  "n_by_partition_kind": {
+    "legacy_main/deep/16A": 96,
+    "legacy_main/deep/25A": 96,
+    "legacy_main/deep/2A": 96,
+    "legacy_main/deep/4A": 96,
+    "legacy_main/deep/8A": 96,
+    "legacy_main/root/1A": 2400,
+    "legacy_pilot/root/1A": 96
+  },
+  "n_candidates": 2976,
+  "n_generation_ids": 5952,
+  "observed_model_all_pinned": true,
+  "observed_models": [
+    "qwen/qwen3.8-27b"
+  ],
+  "observed_providers": [
+    "Mancer 2",
+    "Parasail"
+  ],
+  "pair_cache_path": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/passk_cont_v1/catalog_scratch_wpa/pair_verdicts_legacy_4cpu.parquet",
+  "pair_cache_rows": 15158,
+  "plots": [
+    "decomposition_sample_k.png",
+    "decomposition_deep_m.png",
+    "decomposition_b16_by_benchmark.png"
+  ],
+  "provider_only_matches_shard_pin": true,
+  "replay": {
+    "checkpoints": 2976,
+    "clean_checkpoints": 2817,
+    "clean_match_rate": 1.0,
+    "drift_eligible": 159,
+    "drift_mismatches": 0,
+    "gate_100pct_clean": true,
+    "match_rate": 1.0
+  },
+  "think_body_sha_distinct_nodes": 128,
+  "think_served_models": [
+    "qwen/qwen3.8-27b"
+  ],
+  "think_text_duplicates": 0,
+  "think_text_sha_n": 2976,
+  "think_tokens_exact": true,
+  "version": "passk-e0-v1"
+}

@@ -1,0 +1,54 @@
+{
+ "version": "passk-e5-v1",
+ "created_at": "2026-09-25T22:14:25+00:00",
+ "classes_source": "analysis_inputs/classes.parquet",
+ "classes": {
+  "source": "analysis_inputs/classes.parquet",
+  "scopes_from_table": 1493,
+  "scopes_exact_fallback": 3
+ },
+ "n_train_pools": 1192,
+ "latency": {
+  "use_latency": false,
+  "cv_log_loss_without": 0.5126733466041993,
+  "cv_log_loss_with": 0.5147491117829144
+ },
+ "train_configs_present": [
+  "16x1",
+  "1x1",
+  "1x16",
+  "1x2",
+  "1x4",
+  "1x8",
+  "2x1",
+  "2x16",
+  "2x2",
+  "2x8",
+  "4x1",
+  "4x8",
+  "8x2",
+  "8x4"
+ ],
+ "n_train_draws": 4160,
+ "train_partitions": [
+  "c48_extra",
+  "e1_fill",
+  "legacy_main"
+ ],
+ "n_items_predicted": 200,
+ "n_items_imputed": 0,
+ "sha256": {
+  "features.parquet": "8398da71918ab226878cca11b82381028c10d596d70bc3b39ad7844cde63e59d",
+  "models/P0.json": "415d7c5964cee21cd9ffa31985dc555ad9b50c974564d4102e85e680bc002ae7",
+  "models/P1-conc.json": "b17d424fa1b1eb0eeb7e253504c679d729f130ecf9bd5ce65a346e045701a400",
+  "models/P1.json": "749ffa66fdda4bdf7b61e2629a6f5e81f31a4e1bd8136b0e7f560d2d744438e4",
+  "models/P2-conc.json": "3b4ffeb3dfc980448acd8031992f3c2c811383e1194c900cdea3b51e18668d2e",
+  "models/P2.json": "97d78ed3499679c252827260baf9b1815a8822caef511d24f7c2ea8babaabf0c",
+  "models/P3.json": "2dc7b703d288c69b12eada2a35887008915eb9f0c15563a4a8267c0e5d664ee7",
+  "models/dev_draw_frame.parquet": "304d53896c9ad49dc3e39a9f4f54dad9db910352f8bbfb2fd9db5502f0a9eca4",
+  "models/dev_pool_table.parquet": "4eab4be3a8635bac823eabf5534f640fc90d8049c893d627e01f8285bc87fce3",
+  "models/latency.json": "5a58a42d36830d2717b4dad174b5354200f59093550a4e636a6201a0a235b134",
+  "predictions.parquet": "56f5e961149168ac1a3eac835812f7c328a74ab7733e6d555533d439abbebff7",
+  "seeds.json": "b8d381cd5969c50e89ee79bdb6a99826a148a5a12c45612612eee84c1848bac4"
+ }
+}

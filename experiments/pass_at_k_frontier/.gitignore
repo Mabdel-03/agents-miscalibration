@@ -1,0 +1,4 @@
+# The repository ignores these globally because run outputs do not belong in git.
+# This folder is the deliberate, curated exception.
+!*.parquet
+!*.jsonl

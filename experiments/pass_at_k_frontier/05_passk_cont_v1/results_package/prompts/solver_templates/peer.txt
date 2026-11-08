@@ -1,0 +1,13 @@
+TASK
+{task_prompt}
+
+OUTPUT REQUIREMENT
+{output_requirement}
+
+YOUR PREVIOUS WRITTEN SOLUTION
+{own_packet}
+
+OTHER CANDIDATE SOLUTIONS
+{peer_packets}
+
+Reconsider your previous solution in light of the other candidates. Check their assumptions and decisive steps rather than following agreement alone. Correct any error you find, but retain your answer when the reasoning remains valid. Return an updated concise rationale and one complete final answer using the required tags.

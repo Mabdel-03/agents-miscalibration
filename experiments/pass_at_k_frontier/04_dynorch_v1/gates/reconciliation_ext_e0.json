@@ -1,0 +1,326 @@
+{
+ "after": {
+  "credits": {
+   "total_credits": "9610",
+   "total_usage": "9593.675276932"
+  },
+  "key": {
+   "is_free_tier": false,
+   "limit": "300",
+   "limit_remaining": "143.09694288",
+   "usage": "156.90305712"
+  },
+  "payment_required": false,
+  "recorded_at": "2026-09-24T12:15:17Z"
+ },
+ "before": {
+  "credits": {
+   "total_credits": "9610",
+   "total_usage": "9589.770144252"
+  },
+  "key": {
+   "is_free_tier": false,
+   "limit": "300",
+   "limit_remaining": "147.00207556",
+   "usage": "152.99792444"
+  },
+  "payment_required": false,
+  "recorded_at": "2026-09-24T11:45:40Z"
+ },
+ "decision": "clean",
+ "generation_sample": {
+  "population": 523,
+  "population_source": "tables",
+  "rows": [
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790251200-w0cP1GjUG75kOSMOMEAN",
+     "gen-1790251217-Wc9prjeWNPNU6hp234Qx"
+    ],
+    "journaled_completion_tokens": 1281,
+    "journaled_cost_usd": "0.0050475",
+    "metadata_completion_tokens": 1281,
+    "metadata_cost_usd": "0.0050475",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "0c7aa215ab642f2d20ab202c",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790251369-0OVVwhaKkpwjUZYYUi5t",
+     "gen-1790251406-5Y6OioMhSH0XRDjuWJnD"
+    ],
+    "journaled_completion_tokens": 4688,
+    "journaled_cost_usd": "0.01206200",
+    "metadata_completion_tokens": 4688,
+    "metadata_cost_usd": "0.01206200",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "10544937d60167bf6cbde893",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 2,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790250432-MtjDSMvdiYiaZ37Ynv8Z"
+    ],
+    "journaled_completion_tokens": 2717,
+    "journaled_cost_usd": "0.0069675",
+    "metadata_completion_tokens": 2717,
+    "metadata_cost_usd": "0.0069675",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "650615e719dfc16398632f8e",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 2,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790251235-QHm9E7Q66AepS0QetA3U"
+    ],
+    "journaled_completion_tokens": 11653,
+    "journaled_cost_usd": "0.029365",
+    "metadata_completion_tokens": 11653,
+    "metadata_cost_usd": "0.029365",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "7873848da1d7fb478fa30fd0",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 3,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790251386-WQCJlucPivxh89k1eN9d"
+    ],
+    "journaled_completion_tokens": 7,
+    "journaled_cost_usd": "0.0011625",
+    "metadata_completion_tokens": 7,
+    "metadata_cost_usd": "0.0011625",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "7873848da1d7fb478fa30fd0",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790251193-KGzdZt6nAcM0ID8WI5sW",
+     "gen-1790251254-glmWfiyx71dgE3vBORVJ"
+    ],
+    "journaled_completion_tokens": 4652,
+    "journaled_cost_usd": "0.01345",
+    "metadata_completion_tokens": 4652,
+    "metadata_cost_usd": "0.01345",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "937682548e36dc1fadd9efcf",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 5,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790251798-luzVJcktOjJNVoHV8ygu",
+     "gen-1790251803-spacdZbDidmeryVgcwKY"
+    ],
+    "journaled_completion_tokens": 393,
+    "journaled_cost_usd": "0.0038175",
+    "metadata_completion_tokens": 393,
+    "metadata_cost_usd": "0.0038175",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "a47c527c9dde79bfd4e0cb46",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 2,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790250753-ueq82Ealdr1RF4a0bCMe",
+     "gen-1790250769-A8i8HsAMsWY8jCeU9vjd"
+    ],
+    "journaled_completion_tokens": 1129,
+    "journaled_cost_usd": "0.005100",
+    "metadata_completion_tokens": 1129,
+    "metadata_cost_usd": "0.005100",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "b0ffae47d2ab87c28f8b6f6b",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790251461-0kNLCEOvhVgJFQikREUk",
+     "gen-1790251514-PxL4DugDbPmCQy8KrdlW"
+    ],
+    "journaled_completion_tokens": 4555,
+    "journaled_cost_usd": "0.0131875",
+    "metadata_completion_tokens": 4555,
+    "metadata_cost_usd": "0.0131875",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "ccb08ac142e387cd0bd8c661",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790250412-zLKbR4RZ5kSgaDQaGcWS"
+    ],
+    "journaled_completion_tokens": 2463,
+    "journaled_cost_usd": "0.006645",
+    "metadata_completion_tokens": 2463,
+    "metadata_cost_usd": "0.006645",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "f393b73569fa25bb12fd16aa",
+    "tokens_match": true,
+    "transport_status": "ok"
+   }
+  ],
+  "sampled": 10,
+  "seed": 20260923,
+  "share": "0.02"
+ },
+ "key_delta_usd": "3.90513268",
+ "key_minus_ledger_usd": "-0.061530000",
+ "key_minus_settled_usd": "-0.06153000",
+ "key_settle": {
+  "interval_s": 30.0,
+  "matched": true,
+  "max_wait_s": 300.0,
+  "outcome": "converged",
+  "polls": [
+   {
+    "key_usage_usd": "156.90305712",
+    "recorded_at": "2026-09-24T12:14:47Z",
+    "waited_s": 0.0
+   },
+   {
+    "key_usage_usd": "156.90305712",
+    "recorded_at": "2026-09-24T12:15:17Z",
+    "waited_s": 30.0
+   }
+  ],
+  "settled": true,
+  "waited_s": 30.0
+ },
+ "key_tolerance_usd": "0.50",
+ "key_within_ledger_bounds": true,
+ "layout": "dynorch/reconciliation/v1",
+ "ledger_after": {
+  "attempts": 3914,
+  "charged_max_usd": "0.691284352",
+  "open_attempts": [],
+  "open_reservations_usd": "0",
+  "released_unsent_usd": "0",
+  "settled_usd": "34.55638324"
+ },
+ "ledger_before": {
+  "attempts": 3053,
+  "charged_max_usd": "0.691284352",
+  "open_attempts": [],
+  "open_reservations_usd": "0",
+  "released_unsent_usd": "0",
+  "settled_usd": "30.58972056"
+ },
+ "ledger_charged_max_delta_usd": "0E-9",
+ "ledger_delta_usd": "3.966662680",
+ "ledger_settled_delta_usd": "3.96666268",
+ "phase": "after",
+ "problems": [],
+ "recorded_at": "2026-09-24T12:15:17Z",
+ "stage": "ext_e0",
+ "upstream_402": false
+}

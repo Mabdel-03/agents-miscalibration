@@ -1,0 +1,50 @@
+{
+ "conclusive": true,
+ "drift": false,
+ "evaluated_at": "2026-09-25T23:31:45Z",
+ "gate": "gate3_sample",
+ "passed": true,
+ "samples": [
+  {
+   "generation_id": "gen-1790378683-cu3onmSBK6emFIWD8Ln1",
+   "ok": true,
+   "provider": "Parasail",
+   "slugs": [
+    "qwen/qwen3.8-27b-20260814"
+   ]
+  },
+  {
+   "generation_id": "gen-1790378713-DmthGL1r3kzVmx1vthWr",
+   "ok": true,
+   "provider": "Parasail",
+   "slugs": [
+    "qwen/qwen3.8-27b-20260814"
+   ]
+  },
+  {
+   "generation_id": "gen-1790378751-Kq5N7VkD5Xiyi6wBzSz3",
+   "ok": true,
+   "provider": "Parasail",
+   "slugs": [
+    "qwen/qwen3.8-27b-20260814"
+   ]
+  },
+  {
+   "generation_id": "gen-1790378767-MYfLJuzoHbywGIAwdZ3F",
+   "ok": true,
+   "provider": "Parasail",
+   "slugs": [
+    "qwen/qwen3.8-27b-20260814"
+   ]
+  },
+  {
+   "generation_id": "gen-1790378786-KN2H81JJACapl4J7KI1a",
+   "ok": true,
+   "provider": "Parasail",
+   "slugs": [
+    "qwen/qwen3.8-27b-20260814"
+   ]
+  }
+ ],
+ "unavailable": []
+}

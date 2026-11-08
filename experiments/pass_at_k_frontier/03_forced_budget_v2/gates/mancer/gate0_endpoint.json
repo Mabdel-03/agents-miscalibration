@@ -1,0 +1,8 @@
+{
+ "detail": "GateResult(gate='gate0', stage='preflight', passed=True, decision='advance', criteria=(GateCriterion(name='logit_bias_honoured_banana', observed='{\"status\": \"ok\", \"banana_count\": 12, \"text\": \" banana banana banana banana banana banana banana banana banana banana banana ba\"}', threshold=\">= 5 'banana' in 12 tokens with +100 on 41674\", passed=True, evidence='reports/GATE0_FORCED_ENDPOINT.json'), GateCriterion(name='think_close_token_id', observed='{\"status\": \"ok\", \"reasoning\": \"\", \"text\": \"</think></think></think></think></think></think></think></think></think></think>\"}', threshold='+100 on 248069 closes the reasoning immediately', passed=True, evidence='reports/GATE0_FORCED_ENDPOINT.json'), GateCriterion(name='forced_think_exact_length', observed='{\"status\": \"ok\", \"completion_tokens\": 2048, \"finish_reason\": \"length\", \"leaked_close\": false}', threshold='completion_tokens == 2048, finish_reason length, no </think>', passed=True, evidence='reports/GATE0_FORCED_ENDPOINT.json'), GateCriterion(name='answer_returns_final', observed='{\"status\": \"ok\", \"has_final\": true}', threshold='ANSWER after the forced THINK contains <final>...</final>', passed=True, evidence='reports/GATE0_FORCED_ENDPOINT.json')), evaluated_at='2026-09-18T09:22:14Z')",
+ "endpoint_tag": "mancer/fp8",
+ "evaluated_at": "2026-09-18T09:22:14.106185Z",
+ "model": "qwen/qwen3.8-27b",
+ "passed": true,
+ "shard": "mancer"
+}

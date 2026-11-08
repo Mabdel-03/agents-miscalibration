@@ -1,0 +1,834 @@
+{
+ "excluded_from_pool": {
+  "omni_math_hard/162": "partner_of_used:omni_math_hard/3962",
+  "omni_math_hard/308": "conflicting_gold",
+  "omni_math_hard/3563": "duplicate_of:omni_math_hard/1617",
+  "omni_math_hard/3566": "conflicting_gold",
+  "omni_math_hard/3575": "duplicate_of:omni_math_hard/244",
+  "omni_math_hard/3597": "duplicate_of:omni_math_hard/391",
+  "omni_math_hard/3611": "partner_of_used:omni_math_hard/336",
+  "omni_math_hard/3612": "duplicate_of:omni_math_hard/258",
+  "omni_math_hard/3617": "duplicate_of:omni_math_hard/1464",
+  "omni_math_hard/3670": "duplicate_of:omni_math_hard/316",
+  "omni_math_hard/3724": "duplicate_of:omni_math_hard/328",
+  "omni_math_hard/3806": "duplicate_of:omni_math_hard/1476",
+  "omni_math_hard/4070": "duplicate_of:omni_math_hard/2408",
+  "omni_math_hard/4379": "duplicate_of:omni_math_hard/3295"
+ },
+ "flagged_counts": {
+  "flagged_not_duplicate": 43,
+  "reviewed_duplicate": 13
+ },
+ "flagged_pairs": [
+  {
+   "a": "aime/2025/15",
+   "b": "aime/2026/8",
+   "char5_jaccard": 0.316,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.1111
+  },
+  {
+   "a": "gpqa_diamond/rec9GugrngvsQR99A",
+   "b": "gpqa_diamond/recjgMJaMxz4ESDF2",
+   "char5_jaccard": 0.4808,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3378
+  },
+  {
+   "a": "gpqa_diamond/recPIzpnuYpB4yvmp",
+   "b": "gpqa_diamond/recvlnu8BuLmXZhSX",
+   "char5_jaccard": 0.4296,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.2414
+  },
+  {
+   "a": "gpqa_diamond/recYCMJWH7IpcdqwE",
+   "b": "gpqa_diamond/recclFbsjbaiVVnnV",
+   "char5_jaccard": 0.4702,
+   "exact_normalized": false,
+   "gold_text_equal": true,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.1878
+  },
+  {
+   "a": "gpqa_diamond/recb2M22zaD3tL6Qc",
+   "b": "gpqa_diamond/rechtUKxC6G67H7Pr",
+   "char5_jaccard": 0.437,
+   "exact_normalized": false,
+   "gold_text_equal": true,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.2102
+  },
+  {
+   "a": "omni_math_hard/1464",
+   "b": "omni_math_hard/3617",
+   "char5_jaccard": 0.6577,
+   "exact_normalized": false,
+   "gold_relation": "equal",
+   "gold_text_equal": true,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.5
+  },
+  {
+   "a": "omni_math_hard/1476",
+   "b": "omni_math_hard/3806",
+   "char5_jaccard": 0.6041,
+   "exact_normalized": false,
+   "gold_relation": "equal",
+   "gold_text_equal": true,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.9535
+  },
+  {
+   "a": "omni_math_hard/1617",
+   "b": "omni_math_hard/3563",
+   "char5_jaccard": 0.6209,
+   "exact_normalized": false,
+   "gold_relation": "equal",
+   "gold_text_equal": false,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.8462
+  },
+  {
+   "a": "omni_math_hard/162",
+   "b": "omni_math_hard/3962",
+   "char5_jaccard": 0.7138,
+   "exact_normalized": false,
+   "gold_relation": "equal",
+   "gold_text_equal": false,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.7763
+  },
+  {
+   "a": "omni_math_hard/2408",
+   "b": "omni_math_hard/4070",
+   "char5_jaccard": 0.2829,
+   "exact_normalized": false,
+   "gold_relation": "equal",
+   "gold_text_equal": false,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.3
+  },
+  {
+   "a": "omni_math_hard/244",
+   "b": "omni_math_hard/3575",
+   "char5_jaccard": 0.6271,
+   "exact_normalized": false,
+   "gold_relation": "equal",
+   "gold_text_equal": false,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.6269
+  },
+  {
+   "a": "omni_math_hard/258",
+   "b": "omni_math_hard/3612",
+   "char5_jaccard": 0.7702,
+   "exact_normalized": false,
+   "gold_relation": "equal",
+   "gold_text_equal": false,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.8571
+  },
+  {
+   "a": "omni_math_hard/308",
+   "b": "omni_math_hard/3566",
+   "char5_jaccard": 0.6196,
+   "exact_normalized": false,
+   "gold_relation": "conflict",
+   "gold_text_equal": false,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.8421
+  },
+  {
+   "a": "omni_math_hard/316",
+   "b": "omni_math_hard/3648",
+   "char5_jaccard": 0.311,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3256
+  },
+  {
+   "a": "omni_math_hard/316",
+   "b": "omni_math_hard/3670",
+   "char5_jaccard": 0.4545,
+   "exact_normalized": false,
+   "gold_relation": "equal",
+   "gold_text_equal": false,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.7179
+  },
+  {
+   "a": "omni_math_hard/316",
+   "b": "omni_math_hard/3672",
+   "char5_jaccard": 0.4,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3462
+  },
+  {
+   "a": "omni_math_hard/316",
+   "b": "omni_math_hard/3812",
+   "char5_jaccard": 0.2509,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3103
+  },
+  {
+   "a": "omni_math_hard/316",
+   "b": "omni_math_hard/3869",
+   "char5_jaccard": 0.318,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.0968
+  },
+  {
+   "a": "omni_math_hard/316",
+   "b": "omni_math_hard/3989",
+   "char5_jaccard": 0.3152,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.2857
+  },
+  {
+   "a": "omni_math_hard/316",
+   "b": "omni_math_hard/4112",
+   "char5_jaccard": 0.2146,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3404
+  },
+  {
+   "a": "omni_math_hard/328",
+   "b": "omni_math_hard/3724",
+   "char5_jaccard": 0.5709,
+   "exact_normalized": false,
+   "gold_relation": "one_way",
+   "gold_text_equal": false,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.4444
+  },
+  {
+   "a": "omni_math_hard/3295",
+   "b": "omni_math_hard/4379",
+   "char5_jaccard": 0.6821,
+   "exact_normalized": false,
+   "gold_relation": "equal",
+   "gold_text_equal": false,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.5926
+  },
+  {
+   "a": "omni_math_hard/336",
+   "b": "omni_math_hard/3611",
+   "char5_jaccard": 0.792,
+   "exact_normalized": false,
+   "gold_relation": "equal",
+   "gold_text_equal": false,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.8481
+  },
+  {
+   "a": "omni_math_hard/3569",
+   "b": "omni_math_hard/3805",
+   "char5_jaccard": 0.5728,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.54
+  },
+  {
+   "a": "omni_math_hard/3569",
+   "b": "omni_math_hard/3952",
+   "char5_jaccard": 0.3202,
+   "exact_normalized": false,
+   "gold_text_equal": true,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.2333
+  },
+  {
+   "a": "omni_math_hard/3569",
+   "b": "omni_math_hard/3974",
+   "char5_jaccard": 0.4323,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3448
+  },
+  {
+   "a": "omni_math_hard/3597",
+   "b": "omni_math_hard/391",
+   "char5_jaccard": 0.8107,
+   "exact_normalized": false,
+   "gold_relation": "equal",
+   "gold_text_equal": false,
+   "status": "reviewed_duplicate",
+   "word3_jaccard": 0.7343
+  },
+  {
+   "a": "omni_math_hard/3599",
+   "b": "omni_math_hard/3648",
+   "char5_jaccard": 0.4021,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3182
+  },
+  {
+   "a": "omni_math_hard/3599",
+   "b": "omni_math_hard/3780",
+   "char5_jaccard": 0.319,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3125
+  },
+  {
+   "a": "omni_math_hard/3620",
+   "b": "omni_math_hard/3648",
+   "char5_jaccard": 0.2952,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3
+  },
+  {
+   "a": "omni_math_hard/3620",
+   "b": "omni_math_hard/3672",
+   "char5_jaccard": 0.2835,
+   "exact_normalized": false,
+   "gold_text_equal": true,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3
+  },
+  {
+   "a": "omni_math_hard/3620",
+   "b": "omni_math_hard/3677",
+   "char5_jaccard": 0.3145,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.2927
+  },
+  {
+   "a": "omni_math_hard/3620",
+   "b": "omni_math_hard/3821",
+   "char5_jaccard": 0.2316,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3404
+  },
+  {
+   "a": "omni_math_hard/3620",
+   "b": "omni_math_hard/4169",
+   "char5_jaccard": 0.3205,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.4615
+  },
+  {
+   "a": "omni_math_hard/3648",
+   "b": "omni_math_hard/3672",
+   "char5_jaccard": 0.2237,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3556
+  },
+  {
+   "a": "omni_math_hard/3648",
+   "b": "omni_math_hard/3677",
+   "char5_jaccard": 0.3571,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3243
+  },
+  {
+   "a": "omni_math_hard/3648",
+   "b": "omni_math_hard/3780",
+   "char5_jaccard": 0.3743,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.5588
+  },
+  {
+   "a": "omni_math_hard/3648",
+   "b": "omni_math_hard/4112",
+   "char5_jaccard": 0.2462,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.35
+  },
+  {
+   "a": "omni_math_hard/3670",
+   "b": "omni_math_hard/3672",
+   "char5_jaccard": 0.3128,
+   "exact_normalized": false,
+   "gold_text_equal": true,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.2241
+  },
+  {
+   "a": "omni_math_hard/3670",
+   "b": "omni_math_hard/3675",
+   "char5_jaccard": 0.3102,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.1429
+  },
+  {
+   "a": "omni_math_hard/3670",
+   "b": "omni_math_hard/3693",
+   "char5_jaccard": 0.3307,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.1857
+  },
+  {
+   "a": "omni_math_hard/3670",
+   "b": "omni_math_hard/3989",
+   "char5_jaccard": 0.4138,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3036
+  },
+  {
+   "a": "omni_math_hard/3670",
+   "b": "omni_math_hard/4279",
+   "char5_jaccard": 0.3204,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.2297
+  },
+  {
+   "a": "omni_math_hard/3672",
+   "b": "omni_math_hard/3780",
+   "char5_jaccard": 0.1966,
+   "exact_normalized": false,
+   "gold_text_equal": true,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.32
+  },
+  {
+   "a": "omni_math_hard/3672",
+   "b": "omni_math_hard/3812",
+   "char5_jaccard": 0.2889,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3793
+  },
+  {
+   "a": "omni_math_hard/3677",
+   "b": "omni_math_hard/3780",
+   "char5_jaccard": 0.2435,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3171
+  },
+  {
+   "a": "omni_math_hard/3679",
+   "b": "omni_math_hard/3974",
+   "char5_jaccard": 0.3408,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.2105
+  },
+  {
+   "a": "omni_math_hard/3780",
+   "b": "omni_math_hard/3812",
+   "char5_jaccard": 0.1812,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3091
+  },
+  {
+   "a": "omni_math_hard/3780",
+   "b": "omni_math_hard/4112",
+   "char5_jaccard": 0.301,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3721
+  },
+  {
+   "a": "omni_math_hard/3805",
+   "b": "omni_math_hard/3952",
+   "char5_jaccard": 0.3402,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3019
+  },
+  {
+   "a": "omni_math_hard/3805",
+   "b": "omni_math_hard/3974",
+   "char5_jaccard": 0.4525,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3774
+  },
+  {
+   "a": "omni_math_hard/3821",
+   "b": "omni_math_hard/4169",
+   "char5_jaccard": 0.1845,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3061
+  },
+  {
+   "a": "omni_math_hard/3848",
+   "b": "omni_math_hard/91",
+   "char5_jaccard": 0.3286,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.1081
+  },
+  {
+   "a": "omni_math_hard/3869",
+   "b": "omni_math_hard/3920",
+   "char5_jaccard": 0.3775,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.1692
+  },
+  {
+   "a": "omni_math_hard/3952",
+   "b": "omni_math_hard/3974",
+   "char5_jaccard": 0.3061,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.1864
+  },
+  {
+   "a": "omni_math_hard/4005",
+   "b": "omni_math_hard/4112",
+   "char5_jaccard": 0.1618,
+   "exact_normalized": false,
+   "gold_text_equal": false,
+   "status": "flagged_not_duplicate",
+   "word3_jaccard": 0.3
+  }
+ ],
+ "groups": [
+  {
+   "decision": "partner_of_used",
+   "excluded": {
+    "omni_math_hard/162": "partner_of_used:omni_math_hard/3962"
+   },
+   "gold_consistent": true,
+   "gold_relations": {
+    "omni_math_hard/162|omni_math_hard/3962": "equal"
+   },
+   "group_id": "dup000",
+   "members": [
+    "omni_math_hard/162",
+    "omni_math_hard/3962"
+   ],
+   "representative": null,
+   "used": [
+    "omni_math_hard/3962"
+   ]
+  },
+  {
+   "decision": "keep_lowest_row",
+   "excluded": {
+    "omni_math_hard/3575": "duplicate_of:omni_math_hard/244"
+   },
+   "gold_consistent": true,
+   "gold_relations": {
+    "omni_math_hard/244|omni_math_hard/3575": "equal"
+   },
+   "group_id": "dup001",
+   "members": [
+    "omni_math_hard/244",
+    "omni_math_hard/3575"
+   ],
+   "representative": "omni_math_hard/244",
+   "used": []
+  },
+  {
+   "decision": "keep_lowest_row",
+   "excluded": {
+    "omni_math_hard/3612": "duplicate_of:omni_math_hard/258"
+   },
+   "gold_consistent": true,
+   "gold_relations": {
+    "omni_math_hard/258|omni_math_hard/3612": "equal"
+   },
+   "group_id": "dup002",
+   "members": [
+    "omni_math_hard/258",
+    "omni_math_hard/3612"
+   ],
+   "representative": "omni_math_hard/258",
+   "used": []
+  },
+  {
+   "decision": "conflicting_gold",
+   "excluded": {
+    "omni_math_hard/308": "conflicting_gold",
+    "omni_math_hard/3566": "conflicting_gold"
+   },
+   "gold_consistent": false,
+   "gold_relations": {
+    "omni_math_hard/308|omni_math_hard/3566": "conflict"
+   },
+   "group_id": "dup003",
+   "members": [
+    "omni_math_hard/308",
+    "omni_math_hard/3566"
+   ],
+   "representative": null,
+   "used": []
+  },
+  {
+   "decision": "keep_lowest_row",
+   "excluded": {
+    "omni_math_hard/3670": "duplicate_of:omni_math_hard/316"
+   },
+   "gold_consistent": true,
+   "gold_relations": {
+    "omni_math_hard/316|omni_math_hard/3670": "equal"
+   },
+   "group_id": "dup004",
+   "members": [
+    "omni_math_hard/316",
+    "omni_math_hard/3670"
+   ],
+   "representative": "omni_math_hard/316",
+   "used": []
+  },
+  {
+   "decision": "keep_lowest_row",
+   "excluded": {
+    "omni_math_hard/3724": "duplicate_of:omni_math_hard/328"
+   },
+   "gold_consistent": true,
+   "gold_relations": {
+    "omni_math_hard/328|omni_math_hard/3724": "one_way"
+   },
+   "group_id": "dup005",
+   "members": [
+    "omni_math_hard/328",
+    "omni_math_hard/3724"
+   ],
+   "representative": "omni_math_hard/328",
+   "used": []
+  },
+  {
+   "decision": "partner_of_used",
+   "excluded": {
+    "omni_math_hard/3611": "partner_of_used:omni_math_hard/336"
+   },
+   "gold_consistent": true,
+   "gold_relations": {
+    "omni_math_hard/336|omni_math_hard/3611": "equal"
+   },
+   "group_id": "dup006",
+   "members": [
+    "omni_math_hard/336",
+    "omni_math_hard/3611"
+   ],
+   "representative": null,
+   "used": [
+    "omni_math_hard/336"
+   ]
+  },
+  {
+   "decision": "keep_lowest_row",
+   "excluded": {
+    "omni_math_hard/3597": "duplicate_of:omni_math_hard/391"
+   },
+   "gold_consistent": true,
+   "gold_relations": {
+    "omni_math_hard/3597|omni_math_hard/391": "equal"
+   },
+   "group_id": "dup007",
+   "members": [
+    "omni_math_hard/391",
+    "omni_math_hard/3597"
+   ],
+   "representative": "omni_math_hard/391",
+   "used": []
+  },
+  {
+   "decision": "keep_lowest_row",
+   "excluded": {
+    "omni_math_hard/3617": "duplicate_of:omni_math_hard/1464"
+   },
+   "gold_consistent": true,
+   "gold_relations": {
+    "omni_math_hard/1464|omni_math_hard/3617": "equal"
+   },
+   "group_id": "dup008",
+   "members": [
+    "omni_math_hard/1464",
+    "omni_math_hard/3617"
+   ],
+   "representative": "omni_math_hard/1464",
+   "used": []
+  },
+  {
+   "decision": "keep_lowest_row",
+   "excluded": {
+    "omni_math_hard/3806": "duplicate_of:omni_math_hard/1476"
+   },
+   "gold_consistent": true,
+   "gold_relations": {
+    "omni_math_hard/1476|omni_math_hard/3806": "equal"
+   },
+   "group_id": "dup009",
+   "members": [
+    "omni_math_hard/1476",
+    "omni_math_hard/3806"
+   ],
+   "representative": "omni_math_hard/1476",
+   "used": []
+  },
+  {
+   "decision": "keep_lowest_row",
+   "excluded": {
+    "omni_math_hard/3563": "duplicate_of:omni_math_hard/1617"
+   },
+   "gold_consistent": true,
+   "gold_relations": {
+    "omni_math_hard/1617|omni_math_hard/3563": "equal"
+   },
+   "group_id": "dup010",
+   "members": [
+    "omni_math_hard/1617",
+    "omni_math_hard/3563"
+   ],
+   "representative": "omni_math_hard/1617",
+   "used": []
+  },
+  {
+   "decision": "keep_lowest_row",
+   "excluded": {
+    "omni_math_hard/4070": "duplicate_of:omni_math_hard/2408"
+   },
+   "gold_consistent": true,
+   "gold_relations": {
+    "omni_math_hard/2408|omni_math_hard/4070": "equal"
+   },
+   "group_id": "dup011",
+   "members": [
+    "omni_math_hard/2408",
+    "omni_math_hard/4070"
+   ],
+   "representative": "omni_math_hard/2408",
+   "used": []
+  },
+  {
+   "decision": "keep_lowest_row",
+   "excluded": {
+    "omni_math_hard/4379": "duplicate_of:omni_math_hard/3295"
+   },
+   "gold_consistent": true,
+   "gold_relations": {
+    "omni_math_hard/3295|omni_math_hard/4379": "equal"
+   },
+   "group_id": "dup012",
+   "members": [
+    "omni_math_hard/3295",
+    "omni_math_hard/4379"
+   ],
+   "representative": "omni_math_hard/3295",
+   "used": []
+  }
+ ],
+ "method": {
+  "exact": "sha256 of the normalized prompt",
+  "flagged_not_duplicate_review": "the 43 flagged pairs outside the 13 reviewed ones were read on 2026-09-25: shared templates or preambles (functional equations, GPQA shared stems) with different problems; not duplicates",
+  "gold_compare": "gold_relation: whitespace-free text equality, else Math-Verify both directions (equal / one_way / conflict / unknown); only conflict counts as conflicting (gold texts are never written here)",
+  "group_rule": "union-find over exact duplicates and reviewed pairs; used (legacy main U dev) member -> exclude the other members; else conflicting golds -> exclude all; else keep the lowest source row",
+  "near": "char 5-gram or word 3-gram (\\w+ tokens) Jaccard >= 0.3",
+  "normalization": "NFKC, lower case, whitespace runs -> one space, strip",
+  "population": "eligible items of aime, hmmt, omni_math_hard, gpqa_diamond (public prompt)"
+ },
+ "reviewed_pairs": [
+  [
+   "omni_math_hard/1476",
+   "omni_math_hard/3806"
+  ],
+  [
+   "omni_math_hard/1464",
+   "omni_math_hard/3617"
+  ],
+  [
+   "omni_math_hard/258",
+   "omni_math_hard/3612"
+  ],
+  [
+   "omni_math_hard/336",
+   "omni_math_hard/3611"
+  ],
+  [
+   "omni_math_hard/1617",
+   "omni_math_hard/3563"
+  ],
+  [
+   "omni_math_hard/308",
+   "omni_math_hard/3566"
+  ],
+  [
+   "omni_math_hard/162",
+   "omni_math_hard/3962"
+  ],
+  [
+   "omni_math_hard/3597",
+   "omni_math_hard/391"
+  ],
+  [
+   "omni_math_hard/316",
+   "omni_math_hard/3670"
+  ],
+  [
+   "omni_math_hard/244",
+   "omni_math_hard/3575"
+  ],
+  [
+   "omni_math_hard/3295",
+   "omni_math_hard/4379"
+  ],
+  [
+   "omni_math_hard/2408",
+   "omni_math_hard/4070"
+  ],
+  [
+   "omni_math_hard/328",
+   "omni_math_hard/3724"
+  ]
+ ],
+ "study_id": "openrouter_passk_cont_v1",
+ "version": "passk-dup-registry-v1"
+}

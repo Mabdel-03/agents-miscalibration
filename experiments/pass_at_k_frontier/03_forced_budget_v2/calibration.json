@@ -1,0 +1,137 @@
+{
+ "benchmarks": {
+  "aime": {
+   "forced_generations": 32,
+   "forced_graded": 32,
+   "forced_pass_at_1": 0.3125,
+   "forced_realized_equals_budget": 32,
+   "forced_realized_reasoning_mean": 1024,
+   "gate": {
+    "fallback": null,
+    "max": 0.85,
+    "min": 0.15,
+    "verdict": "pass"
+   },
+   "items": 8,
+   "items_graded": 8,
+   "natural_generations": 8,
+   "natural_pass_at_1": 0.875,
+   "natural_reasoning_tokens_max": 29696.0,
+   "natural_reasoning_tokens_mean": 10843.5,
+   "natural_reasoning_tokens_median": 5550.5,
+   "natural_reasoning_tokens_p90": 26628.6,
+   "natural_share_at_or_above_deep_budget": {
+    "deep/1": 0.875,
+    "deep/16": 0.25,
+    "deep/2": 0.75,
+    "deep/25": 0.125,
+    "deep/4": 0.75,
+    "deep/8": 0.375
+   },
+   "natural_with_usage": 8
+  },
+  "gpqa_diamond": {
+   "forced_generations": 32,
+   "forced_graded": 32,
+   "forced_pass_at_1": 0.5,
+   "forced_realized_equals_budget": 32,
+   "forced_realized_reasoning_mean": 1024,
+   "gate": {
+    "fallback": null,
+    "max": 0.85,
+    "min": 0.15,
+    "verdict": "pass"
+   },
+   "items": 8,
+   "items_graded": 8,
+   "natural_generations": 8,
+   "natural_pass_at_1": 0.625,
+   "natural_reasoning_tokens_max": 29696.0,
+   "natural_reasoning_tokens_mean": 16230.625,
+   "natural_reasoning_tokens_median": 14069.0,
+   "natural_reasoning_tokens_p90": 29696.0,
+   "natural_share_at_or_above_deep_budget": {
+    "deep/1": 0.875,
+    "deep/16": 0.375,
+    "deep/2": 0.875,
+    "deep/25": 0.375,
+    "deep/4": 0.875,
+    "deep/8": 0.625
+   },
+   "natural_with_usage": 8
+  },
+  "hmmt": {
+   "forced_generations": 32,
+   "forced_graded": 32,
+   "forced_pass_at_1": 0.25,
+   "forced_realized_equals_budget": 32,
+   "forced_realized_reasoning_mean": 1024,
+   "gate": {
+    "fallback": null,
+    "max": 0.85,
+    "min": 0.15,
+    "verdict": "pass"
+   },
+   "items": 8,
+   "items_graded": 8,
+   "natural_generations": 8,
+   "natural_pass_at_1": 0.625,
+   "natural_reasoning_tokens_max": 29696.0,
+   "natural_reasoning_tokens_mean": 14389.125,
+   "natural_reasoning_tokens_median": 8858.0,
+   "natural_reasoning_tokens_p90": 29696.0,
+   "natural_share_at_or_above_deep_budget": {
+    "deep/1": 0.75,
+    "deep/16": 0.375,
+    "deep/2": 0.75,
+    "deep/25": 0.375,
+    "deep/4": 0.75,
+    "deep/8": 0.625
+   },
+   "natural_with_usage": 8
+  },
+  "omni_math_hard": {
+   "forced_generations": 32,
+   "forced_graded": 32,
+   "forced_pass_at_1": 0.1875,
+   "forced_realized_equals_budget": 32,
+   "forced_realized_reasoning_mean": 1024,
+   "gate": {
+    "fallback": null,
+    "max": 0.85,
+    "min": 0.15,
+    "verdict": "pass"
+   },
+   "items": 8,
+   "items_graded": 8,
+   "natural_generations": 8,
+   "natural_pass_at_1": 0.25,
+   "natural_reasoning_tokens_max": 29696.0,
+   "natural_reasoning_tokens_mean": 25475.0,
+   "natural_reasoning_tokens_median": 29696.0,
+   "natural_reasoning_tokens_p90": 29696.0,
+   "natural_share_at_or_above_deep_budget": {
+    "deep/1": 1.0,
+    "deep/16": 0.875,
+    "deep/2": 1.0,
+    "deep/25": 0.75,
+    "deep/4": 1.0,
+    "deep/8": 0.875
+   },
+   "natural_with_usage": 8
+  }
+ },
+ "decision": "advance",
+ "gate_range": [
+  0.15,
+  0.85
+ ],
+ "main_a": 1024,
+ "note": "pre-registered benchmark-level gate; no per-item selection",
+ "rows": 160,
+ "shards": [
+  "mancer",
+  "parasail"
+ ],
+ "study_id": "openrouter_forced_budget_v2"
+}

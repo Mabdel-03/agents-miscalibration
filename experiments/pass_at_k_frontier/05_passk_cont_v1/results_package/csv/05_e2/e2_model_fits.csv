@@ -1,0 +1,4 @@
+model_file,model,fit,intercept,sigma_item,item_intercept,ridge,gh_nodes,converged,n_iter,objective,n_coef
+pooled_glm.json,pooled_glm,response,0.4505969179057333,3.2948997828586966,true,10.0,20,true,27,772.72418880725,20
+ridge.json,ridge,coverage,-3.823645719524722,0.0,false,0.3,20,true,57,606.9432144035599,14
+ridge.json,ridge,plurality,-3.818934048352145,0.0,false,10.0,20,true,35,759.1077562188734,14

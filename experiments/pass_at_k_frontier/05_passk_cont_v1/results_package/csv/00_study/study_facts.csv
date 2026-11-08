@@ -1,0 +1,182 @@
+key,value,source
+config.study_id,openrouter_passk_cont_v1,configs/passk_cont_v1.json
+config.preset,passk_cont_v1,configs/passk_cont_v1.json
+config.primary_model,qwen/qwen3.8-27b,configs/passk_cont_v1.json
+config.seed,20260917,configs/passk_cont_v1.json
+config.reasoning.main_a,1024,configs/passk_cont_v1.json
+config.reasoning.high_a,,configs/passk_cont_v1.json
+config.reasoning.pilot_a,[1024],configs/passk_cont_v1.json
+config.reasoning.text_completion_headroom,4096,configs/passk_cont_v1.json
+config.reasoning.code_completion_headroom,4096,configs/passk_cont_v1.json
+config.reasoning.requested_reasoning_max,25600,configs/passk_cont_v1.json
+config.reasoning.budget_semantics,forced_exact,configs/passk_cont_v1.json
+config.sampling.temperature,1.0,configs/passk_cont_v1.json
+config.sampling.top_p,0.95,configs/passk_cont_v1.json
+config.sampling.top_k,20,configs/passk_cont_v1.json
+config.sampling.api_seed_enabled,false,configs/passk_cont_v1.json
+config.sampling.response_cache,false,configs/passk_cont_v1.json
+config.sampling.n_per_request,1,configs/passk_cont_v1.json
+config.provider.allow_fallbacks,false,configs/passk_cont_v1.json
+config.provider.require_parameters,true,configs/passk_cont_v1.json
+config.provider.service_tier,standard,configs/passk_cont_v1.json
+config.provider.resolve_exact_endpoint_in_preflight,true,configs/passk_cont_v1.json
+config.provider.auto_provider_switch,false,configs/passk_cont_v1.json
+config.provider.endpoint_tag,,configs/passk_cont_v1.json
+config.forced.enabled,true,configs/passk_cont_v1.json
+config.forced.endpoint,completions,configs/passk_cont_v1.json
+config.forced.template,qwen3.8-27b,configs/passk_cont_v1.json
+config.forced.template_file,src/agent_allocation/api/templates/qwen3.8-27b.chat_template.jinja,configs/passk_cont_v1.json
+config.forced.ban_token_ids,"[248069, 248046, 248044]",configs/passk_cont_v1.json
+config.forced.ban_bias,-100,configs/passk_cont_v1.json
+config.forced.bias_probe_token_id,41674,configs/passk_cont_v1.json
+config.forced.think_close_text,"
+</think>
+
+",configs/passk_cont_v1.json
+config.forced.answer_attempts,3,configs/passk_cont_v1.json
+config.budget.cash_target_usd,150,configs/passk_cont_v1.json
+config.budget.credit_ceiling_usd,150,configs/passk_cont_v1.json
+config.budget.pilot_allowance_usd,3,configs/passk_cont_v1.json
+config.budget.contingency_usd,10,configs/passk_cont_v1.json
+config.budget.soft_admission_ceiling_usd,142,configs/passk_cont_v1.json
+config.budget.reservation_multiplier,1.1,configs/passk_cont_v1.json
+config.budget.max_unresolved_spend_usd,2,configs/passk_cont_v1.json
+config.budget.optional_requires_core_completion,true,configs/passk_cont_v1.json
+config.budget_by_shard.mancer.credit_ceiling_usd,87,configs/passk_cont_v1.json
+config.budget_by_shard.mancer.soft_admission_ceiling_usd,82,configs/passk_cont_v1.json
+config.budget_by_shard.parasail.credit_ceiling_usd,63,configs/passk_cont_v1.json
+config.budget_by_shard.parasail.soft_admission_ceiling_usd,60,configs/passk_cont_v1.json
+config.scheduler_by_shard.mancer.concurrency_start,48,configs/passk_cont_v1.json
+config.scheduler_by_shard.mancer.requests_per_second_start,6,configs/passk_cont_v1.json
+config.scheduler_by_shard.parasail.concurrency_max,40,configs/passk_cont_v1.json
+config.scheduler_by_shard.parasail.requests_per_second_max,8,configs/passk_cont_v1.json
+config.passk.spec,expermt_agent_specs/Pass@K-Frontier-Cont/remaining_experiments_spec.md,configs/passk_cont_v1.json
+config.passk.passk_seed,20260925,configs/passk_cont_v1.json
+config.passk.legacy_run_root,/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts,configs/passk_cont_v1.json
+config.passk.legacy_prompt_version,prompts-v1-e998b556294c,configs/passk_cont_v1.json
+config.passk.expected_permaslug,qwen/qwen3.8-27b-20260814,configs/passk_cont_v1.json
+config.passk.heldout.v48,"[""v48_bank""]",configs/passk_cont_v1.json
+config.passk.heldout.t200,"[""t200_bank"", ""t200_diag""]",configs/passk_cont_v1.json
+config.passk.t200_quota.aime,20,configs/passk_cont_v1.json
+config.passk.t200_quota.hmmt,20,configs/passk_cont_v1.json
+config.passk.t200_quota.omni_math_hard,100,configs/passk_cont_v1.json
+config.passk.t200_quota.gpqa_diamond,60,configs/passk_cont_v1.json
+config.passk.t200_shard_shares.mancer,1,configs/passk_cont_v1.json
+config.passk.t200_shard_shares.parasail,1,configs/passk_cont_v1.json
+config.passk.c48_per_benchmark,12,configs/passk_cont_v1.json
+config.passk.mixture_weights.aime,0.1,configs/passk_cont_v1.json
+config.passk.mixture_weights.hmmt,0.1,configs/passk_cont_v1.json
+config.passk.mixture_weights.omni_math_hard,0.5,configs/passk_cont_v1.json
+config.passk.mixture_weights.gpqa_diamond,0.3,configs/passk_cont_v1.json
+config.passk.bootstrap_replicates,10000,configs/passk_cont_v1.json
+config.passk.forecast_max_usd,115,configs/passk_cont_v1.json
+config.statistics.bootstrap_replicates,10000,configs/passk_cont_v1.json
+config.statistics.cluster_unit,benchmark_and_item,configs/passk_cont_v1.json
+config.statistics.macro_weight_benchmarks_equally,true,configs/passk_cont_v1.json
+config.statistics.bbh_macro_weight_subtasks_equally,true,configs/passk_cont_v1.json
+config.statistics.test_grid_frontier_is_descriptive,true,configs/passk_cont_v1.json
+config.statistics.no_outcome_based_main_sampling,true,configs/passk_cont_v1.json
+config.shards,"[{""endpoint_tag"": ""mancer/fp8"", ""id"": ""mancer"", ""share"": 3}, {""endpoint_tag"": ""parasail/fp8"", ""id"": ""parasail"", ""share"": 2}]",configs/passk_cont_v1.json
+A (tokens per unit of reasoning allowance),1024,configs/passk_cont_v1.json reasoning.main_a
+allowances used (units of A),"[1, 2, 4, 8, 16, 25]",00_contract.md; 25A only in legacy deep/25 and the LEX c48_25a partition
+forced.generation_prompt_suffix,"<|im_start|>assistant
+<think>
+",api/forced.py GENERATION_PROMPT
+forced.template_sha256,c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041,api/forced.py TEMPLATE_SHA256
+gate0.code_head,c8b9b7b3a7ccf3f8754ef1f9ddf6766eb93577fc,gates/gate0.json
+gate0.forecast_total_usd,97.62,gates/gate0.json
+gate0.forecast_by_shard_usd,"{""mancer"": ""57.30"", ""parasail"": ""40.32""}",gates/gate0.json
+gate0.key_limit_remaining_usd,218.67853298,gates/gate0.json
+gate0.planned_new_nodes,10572,gates/gate0.json
+gate0.planned_counts_by_partition,"{""c48_extra"": 816, ""e1_fill"": 1056, ""smoke"": 12, ""t200_bank"": 6200, ""t200_diag"": 1000, ""v48_bank"": 1488}",gates/gate0.json
+prompt_version,prompts-v1-e998b556294c,gates/gate0.json
+decoding_config_hash,a641b002e3cb629e24c2488d7d171c8cfed86aeae98b0ecc63adc1f91893cc39,gates/gate0.json (== forced_v2)
+splits_sha256,c6384ba1d4c3ff8e0aeeae4fcfed7c8904fd020cc37c19ae170e9a84a6528d3c,gates/gate0.json
+records.run_manifest.model,qwen/qwen3.8-27b,records/run_manifest.json
+records.run_manifest.permaslug,qwen/qwen3.8-27b-20260814,records/run_manifest.json
+records.run_manifest.providers,"[""mancer/fp8"", ""parasail/fp8""]",records/run_manifest.json
+records.run_manifest.prompt_version,prompts-v1-e998b556294c,records/run_manifest.json
+records.run_manifest.passk_seed,20260925,records/run_manifest.json
+records.run_manifest.cfg_seed,20260917,records/run_manifest.json
+records.run_manifest.A,1024,records/run_manifest.json
+records.run_manifest.n_candidates,13548,records/run_manifest.json
+records.run_manifest.code_commit,c8b9b7b3a7ccf3f8754ef1f9ddf6766eb93577fc,records/run_manifest.json
+records.run_manifest.created_at,2026-09-26T00:06:16+00:00,records/run_manifest.json
+seal.code_commit,c8b9b7b3a7ccf3f8754ef1f9ddf6766eb93577fc,sealed/SEAL_predictions.json
+seal.reviewed_commit,c8b9b7b3a7ccf3f8754ef1f9ddf6766eb93577fc,sealed/SEAL_predictions.json
+seal.created_at,2026-09-25T22:42:18+00:00,sealed/SEAL_predictions.json
+seal.splits,"[""v48"", ""t200""]",sealed/SEAL_predictions.json
+seal.n_artifacts_hashed,27,sealed/SEAL_predictions.json
+analysis_inputs.manifest.created_at,2026-09-26T00:04:50+00:00,analysis_inputs/manifest.json
+analysis_inputs.manifest.code_commit,c8b9b7b3a7ccf3f8754ef1f9ddf6766eb93577fc,analysis_inputs/manifest.json
+analysis_inputs.manifest.releases,"[""t200"", ""v48""]",analysis_inputs/manifest.json
+analysis_inputs.manifest.labelled_partitions,"[""smoke"", ""e1_fill"", ""c48_extra"", ""t200_bank"", ""t200_diag"", ""v48_bank""]",analysis_inputs/manifest.json
+analysis_inputs.manifest.n_rows,13548,analysis_inputs/manifest.json
+analysis_inputs.manifest.n_rows_by_partition,"{""c48_extra"": 816, ""e1_fill"": 1056, ""legacy_main"": 2880, ""legacy_pilot"": 96, ""smoke"": 12, ""t200_bank"": 6200, ""t200_diag"": 1000, ""v48_bank"": 1488}",analysis_inputs/manifest.json
+draws.distinct.decoding_config_hash,"{""a641b002e3cb629e24c2488d7d171c8cfed86aeae98b0ecc63adc1f91893cc39"": 13548}",analysis_inputs/draws.parquet (value -> rows)
+draws.distinct.prompt_version,"{""prompts-v1-e998b556294c"": 13548}",analysis_inputs/draws.parquet (value -> rows)
+draws.distinct.grader_version,"{""text-grade-v1+text-normalize-v1+math-parse-v3+math-verify==0.9.0"": 13548}",analysis_inputs/draws.parquet (value -> rows)
+draws.distinct.observed_model,"{""qwen/qwen3.8-27b"": 13548}",analysis_inputs/draws.parquet (value -> rows)
+draws.distinct.think_model,"{""qwen/qwen3.8-27b"": 13548}",analysis_inputs/draws.parquet (value -> rows)
+draws.distinct.answer_model,"{""qwen/qwen3.8-27b"": 13548}",analysis_inputs/draws.parquet (value -> rows)
+draws.distinct.completion_headroom,"{""4096"": 13548}",analysis_inputs/draws.parquet (value -> rows)
+draws.distinct.provider_only,"{""mancer/fp8"": 7482, ""parasail/fp8"": 6066}",analysis_inputs/draws.parquet (value -> rows)
+draws.distinct.observed_provider,"{""Mancer 2"": 7482, ""Parasail"": 6066}",analysis_inputs/draws.parquet (value -> rows)
+draws.endpoint_lock_hash_by_shard,"{""mancer"": [""fa8b9ec95b40fb0472255e5ba161b17c8307a43635ba348f18bec29d63188aa1""], ""parasail"": [""6050d9c43ace843ccc4f2d623a963ecede23da8d656d8edb828ece2a00f6f504""]}",analysis_inputs/draws.parquet (adopted forced_v2 endpoint locks)
+draws.every_present_think_exactly_its_allowance,true,analysis_inputs/draws.parquet think_out
+splits.study_id,openrouter_passk_cont_v1,artifacts/manifests/splits.json
+splits.version,passk-splits-v1,artifacts/manifests/splits.json
+splits.passk_seed,20260925,artifacts/manifests/splits.json
+splits.legacy_seed,20260917,artifacts/manifests/splits.json
+splits.salts.c48.aime,openrouter_passk_cont_v1|C48|aime|seed=20260925|,artifacts/manifests/splits.json
+splits.salts.c48.gpqa_diamond,openrouter_passk_cont_v1|C48|gpqa_diamond|seed=20260925|,artifacts/manifests/splits.json
+splits.salts.c48.hmmt,openrouter_passk_cont_v1|C48|hmmt|seed=20260925|,artifacts/manifests/splits.json
+splits.salts.c48.omni_math_hard,openrouter_passk_cont_v1|C48|omni_math_hard|seed=20260925|,artifacts/manifests/splits.json
+splits.salts.formulas.c48 cell tie,"sha256(c48_prefix + 'cell=' + bin), ascending",artifacts/manifests/splits.json
+splits.salts.formulas.c48 item rank,"sha256(c48_prefix + item_id), ascending",artifacts/manifests/splits.json
+splits.salts.formulas.t200/x80 rank,"text_manifest.rank_key(salt, 'rank', item_id) = sha256(salt \x1f 'rank' \x1f item_id) within stratum; text_manifest._stratified_panels (main=quota, dev=0, reserve=rest)",artifacts/manifests/splits.json
+splits.salts.formulas.t200_shard rank,"text_manifest.rank_key(salt, 'rank', item_id); alternate mancer/parasail from the lowest key; odd count: last item -> parasail",artifacts/manifests/splits.json
+splits.salts.t200.aime,openrouter_passk_cont_v1|aime|seed=20260925|t200-v1,artifacts/manifests/splits.json
+splits.salts.t200.gpqa_diamond,openrouter_passk_cont_v1|gpqa_diamond|seed=20260925|t200-v1,artifacts/manifests/splits.json
+splits.salts.t200.hmmt,openrouter_passk_cont_v1|hmmt|seed=20260925|t200-v1,artifacts/manifests/splits.json
+splits.salts.t200.omni_math_hard,openrouter_passk_cont_v1|omni_math_hard|seed=20260925|t200-v1,artifacts/manifests/splits.json
+splits.salts.t200_shard.aime,openrouter_passk_cont_v1|aime|seed=20260925|t200-shard,artifacts/manifests/splits.json
+splits.salts.t200_shard.gpqa_diamond,openrouter_passk_cont_v1|gpqa_diamond|seed=20260925|t200-shard,artifacts/manifests/splits.json
+splits.salts.t200_shard.hmmt,openrouter_passk_cont_v1|hmmt|seed=20260925|t200-shard,artifacts/manifests/splits.json
+splits.salts.t200_shard.omni_math_hard,openrouter_passk_cont_v1|omni_math_hard|seed=20260925|t200-shard,artifacts/manifests/splits.json
+splits.salts.x80.aime,openrouter_passk_cont_v1|aime|seed=20260925|x80-v1,artifacts/manifests/splits.json
+splits.salts.x80.gpqa_diamond,openrouter_passk_cont_v1|gpqa_diamond|seed=20260925|x80-v1,artifacts/manifests/splits.json
+splits.salts.x80.hmmt,openrouter_passk_cont_v1|hmmt|seed=20260925|x80-v1,artifacts/manifests/splits.json
+splits.salts.x80.omni_math_hard,openrouter_passk_cont_v1|omni_math_hard|seed=20260925|x80-v1,artifacts/manifests/splits.json
+panel_size.L96,96,artifacts/manifests/splits.json
+panel_size.C48,48,artifacts/manifests/splits.json
+panel_size.V48,48,artifacts/manifests/splits.json
+panel_size.T200,200,artifacts/manifests/splits.json
+panel_size.D32,32,artifacts/manifests/splits.json
+panel_size.X80,80,artifacts/manifests/splits.json
+ledger.mancer.first_settle_utc,2026-09-25T21:07:09.358649+00:00,shard ledger_journal.jsonl
+ledger.mancer.last_settle_utc,2026-09-25T22:50:00.881736+00:00,shard ledger_journal.jsonl
+ledger.parasail.first_settle_utc,2026-09-25T21:07:09.228790+00:00,shard ledger_journal.jsonl
+ledger.parasail.last_settle_utc,2026-09-25T23:27:19.289662+00:00,shard ledger_journal.jsonl
+timeline.plan approved,2026-09-25 ~14:00 EDT,"memory note passk-cont-run.md (approximate, local EDT)"
+timeline.Gate S passed / build merged,2026-09-25 15:25 EDT,"memory note passk-cont-run.md (approximate, local EDT)"
+timeline.Gate 0 passed; conductor launched (job 23937247),2026-09-25 17:07 EDT,"memory note passk-cont-run.md (approximate, local EDT)"
+timeline.Gate P seal written (sealed/SEAL_predictions.json),2026-09-25 18:42 EDT,"memory note passk-cont-run.md (approximate, local EDT)"
+timeline.generation complete (Gate 4 passed v48 + t200),2026-09-25 19:57 EDT,"memory note passk-cont-run.md (approximate, local EDT)"
+timeline.core study complete: report built (conductor 23963120),2026-09-25 20:07 EDT,"memory note passk-cont-run.md (approximate, local EDT)"
+timeline.E8a allocator run and scored,2026-09-25 ~21:00 EDT,"memory note passk-cont-run.md (approximate, local EDT)"
+timeline.LEX c48_25a generation + front analysis,2026-09-25 ~21:43-21:48 EDT,"memory note passk-cont-run.md (approximate, local EDT)"
+timeline.E8b decisions finished,2026-09-25 ~22:18 EDT,"memory note passk-cont-run.md (approximate, local EDT)"
+commit.forced_v2 base the branch was cut from,dc7eb24fc62146e8bcf5dd95c1e113153e92d5e5,git log (memory note)
+"commit.PREREG.md committed (day 0, before any generation)",e781c34854c2dc54e3898dd9043f1cd39ca1d720,git log (memory note)
+commit.build merged (WP-G/A/M handoffs),3c0a5304d25f86352faa09e7f4a86049d22203b8,git log (memory note)
+commit.pre-launch review fix pass 1,6fd7c1a4124128cdf25272d7db752e152c9c8353,git log (memory note)
+commit.launch/seal code commit (E1 common cohort; sealed fits bound to it),c8b9b7b3a7ccf3f8754ef1f9ddf6766eb93577fc,git log (memory note)
+commit.E8a addendum + module (before any allocator call),9c067a51f7574523c2de804a1b5cb50a9411f61f,git log (memory note)
+commit.LEX addendum + c48_25a runner,d718d1755bc4a3a4ae204aa5d109608c08f7adc5,git log (memory note)
+commit.LEX front analysis,f38a27ea879879d07255d95f414c4aa0c7d246df,git log (memory note)
+commit.E8b addendum + module (before any E8b call),d9bd36a83a0ecb22f07438173fdca750eb9f7dbb,git log (memory note)
+commit.selector comparison (selcmp) under the LEX objective,c8a521b98340ec9f07f4e9ece3a35a0110f436d7,git log (memory note)
+commit.worktree HEAD at export,bc9690aee12caf353f9186d0c82b723a0033ffdd,git rev-parse HEAD
+branch,passk-cont,git
+legacy run root (read-only),/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts,plan

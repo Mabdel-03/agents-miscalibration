@@ -1,0 +1,9 @@
+file,kind,benchmark,item_id,node_id,arm,matches_sent_request
+prompts/examples/solver_think_prompt_aime.txt,solver THINK (ROOT at A; DEEP nodes render identically),aime,aime/2026/3,e70611117a69d7181fab2a3f698d801384a6bb1e30904f41af1f07012a00e02d,,true
+prompts/examples/solver_think_prompt_hmmt.txt,solver THINK (ROOT at A; DEEP nodes render identically),hmmt,hmmt/2025/28,f8278ae77a009ff9bf1c3e02e60ef4741ee7aaae53aef37deef28c3a460c609d,,true
+prompts/examples/solver_think_prompt_omni_math_hard.txt,solver THINK (ROOT at A; DEEP nodes render identically),omni_math_hard,omni_math_hard/3974,b4672fab46227da513feec91459c86ee2a24608005b75869e899fbc377254789,,true
+prompts/examples/solver_think_prompt_gpqa_diamond.txt,solver THINK (ROOT at A; DEEP nodes render identically),gpqa_diamond,gpqa_diamond/rec9ubQihAh6g9bft,76b626824b400c13c64574fe78a722872d8c78ad8dbfccf240924dc3f7217fad,,true
+prompts/llm_selectors/e8a_example_A0.txt,E8A selector THINK,aime,aime/2026/3,1b53f7f94a0f75347c25d6f228e2ea4e2ff59a61c41d7b99069a05054282ac27,A0,true
+prompts/llm_selectors/e8a_example_A1.txt,E8A selector THINK,aime,aime/2026/3,fc53b8921d9e7abccd60df7cb56f0dc3f4607933ee5046de06c144cbe840b261,A1,true
+prompts/llm_selectors/e8b_example_B0.txt,E8B selector THINK,aime,aime/2026/3,fbd597fb9f0f85e3c75f22cb59c1c61f00fa1b65875d296d049ceb259f5b7aff,B0,true
+prompts/llm_selectors/e8b_example_B1.txt,E8B selector THINK,aime,aime/2026/3,9e5bcf7b94d4b49d587328d9b22f94445a21fc90caafc763a524f49f5b55e7dc,B1,true

@@ -1,0 +1,149 @@
+{
+  "holm": {
+    "mixed_vs_deep": {
+      "p": 0.00039996000399960006,
+      "p_holm": 0.0007999200079992001,
+      "rank": 1,
+      "reject": true
+    },
+    "p2_vs_p1": {
+      "p": 0.0344965503449655,
+      "p_holm": 0.0344965503449655,
+      "rank": 2,
+      "reject": true
+    }
+  },
+  "locked": "4x4",
+  "mixed_vs_deep": {
+    "alpha": 0.05,
+    "alternative": "two-sided",
+    "bounds_best_worst": [
+      -0.125,
+      -0.125
+    ],
+    "by_domain": {
+      "aime": -0.25,
+      "gpqa_diamond": -0.06666666666666667,
+      "hmmt": -0.25,
+      "omni_math_hard": -0.11
+    },
+    "ci95_percentile": [
+      -0.18000000000000002,
+      -0.07
+    ],
+    "ci95_studentized": [
+      -0.18429581029863412,
+      -0.07034049016780053
+    ],
+    "ci_one_sided_upper_percentile": -0.08,
+    "ci_one_sided_upper_studentized": -0.07907224596571306,
+    "ci_primary_bonferroni": [
+      -0.19171631531859898,
+      -0.06235451503648412
+    ],
+    "components": 1,
+    "domains": [
+      "aime",
+      "hmmt",
+      "omni_math_hard",
+      "gpqa_diamond"
+    ],
+    "estimate": -0.125,
+    "locked": "4x4",
+    "macro": -0.16916666666666666,
+    "n": {
+      "aime": 20,
+      "gpqa_diamond": 60,
+      "hmmt": 20,
+      "omni_math_hard": 100
+    },
+    "n_dropped_unknown": 0,
+    "n_items": 200,
+    "n_primary": 2,
+    "n_resamples": 10000,
+    "null_value": 0.0,
+    "p": 0.00039996000399960006,
+    "primary_alpha": 0.025,
+    "se": 0.029038268109282644,
+    "t": -4.3046644355501815,
+    "weights": {
+      "aime": 0.1,
+      "gpqa_diamond": 0.3,
+      "hmmt": 0.1,
+      "omni_math_hard": 0.5
+    }
+  },
+  "mixed_vs_deep_tie_averaged": {
+    "ci95_studentized": [
+      -0.15580440236685789,
+      -0.05612076975738516
+    ],
+    "estimate": -0.10380892255892257,
+    "n_items": 199,
+    "p": 9.999000099990002e-05
+  },
+  "p2_vs_p1": {
+    "alpha": 0.05,
+    "alternative": "two-sided",
+    "by_domain": {
+      "aime": -0.01098238613991552,
+      "gpqa_diamond": 0.01093765978367178,
+      "hmmt": -0.002915690474776159,
+      "omni_math_hard": 0.014343710503501273
+    },
+    "ci95_percentile": [
+      0.0008928651899252687,
+      0.01720319647582314
+    ],
+    "ci95_studentized": [
+      0.0009588508407832701,
+      0.017738707808663105
+    ],
+    "ci_one_sided_upper_percentile": 0.015913798068104057,
+    "ci_one_sided_upper_studentized": 0.016352214931724552,
+    "ci_primary_bonferroni": [
+      -0.000155770634648153,
+      0.018943795327083034
+    ],
+    "components": 1,
+    "domains": [
+      "aime",
+      "hmmt",
+      "omni_math_hard",
+      "gpqa_diamond"
+    ],
+    "dropped_items_lt3_known": [],
+    "estimate": 0.009063345525383003,
+    "n": {
+      "aime": 20,
+      "gpqa_diamond": 60,
+      "hmmt": 20,
+      "omni_math_hard": 100
+    },
+    "n_dropped_unknown": 0,
+    "n_items": 200,
+    "n_primary": 2,
+    "n_resamples": 10000,
+    "null_value": 0.0,
+    "p": 0.0344965503449655,
+    "primary_alpha": 0.025,
+    "se": 0.004305319949638187,
+    "t": 2.1051502864832785,
+    "weights": {
+      "aime": 0.1,
+      "gpqa_diamond": 0.3,
+      "hmmt": 0.1,
+      "omni_math_hard": 0.5
+    }
+  },
+  "records": {
+    "candidates.parquet": "f1bcc8a9edf0d50070a9c26b2897891d94fdbdbf341fa6a28b0a0e0831337e7d",
+    "pools.parquet": "07436049dac87dc52af57fdff00cc59e9cd607870206a8e830a144a7f9be8268",
+    "selections.parquet": "53aa17df9076d45febb544350f400f6593253f0c8cf07c361562799dc7367604"
+  },
+  "scored_splits": [
+    "t200",
+    "v48"
+  ],
+  "seal_code_commit": "c8b9b7b3a7ccf3f8754ef1f9ddf6766eb93577fc"
+}

@@ -51,6 +51,9 @@ available non-MCQ confidence signals.
 
 ## Documentation Map
 
+- [experiments/pass_at_k_frontier/README.md](experiments/pass_at_k_frontier/README.md): the
+  Pass@K frontier investigation (depth against width under forced reasoning budgets): five
+  studies with results, reports and code. This is the most recent work in the repository.
 - [docs/EXPERIMENT.md](docs/EXPERIMENT.md): research-reader dossier with objectives,
   methods, diagrams, and interpretation guide.
 - [docs/AXES.md](docs/AXES.md): detailed scaling-axis reference.

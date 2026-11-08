@@ -1,0 +1,4 @@
+population,partition_id,checkpoints,independent_items,items_aime,items_hmmt,items_omni_math_hard,items_gpqa_diamond,strata
+main:population_0 (cp+deep+peer+pooled+private_single+private_team+sample),main,101,96,24,24,24,24,aime=24;hmmt=24;omni_math_hard=24;gpqa_diamond=24
+pilot:population_0 (deep+peer+private_single+private_team+sample),pilot,12,32,8,8,8,8,aime=8;hmmt=8;omni_math_hard=8;gpqa_diamond=8
+pilot:population_1 (peer),pilot,1,29,7,8,7,7,aime=7;hmmt=8;omni_math_hard=7;gpqa_diamond=7

@@ -1,0 +1,1676 @@
+{
+ "aime": [],
+ "gpqa_diamond": [
+  {
+   "item_id": "gpqa_diamond/recZSGUkn56v9kEp1",
+   "reason": "duplicate_option_text:B,D"
+  },
+  {
+   "item_id": "gpqa_diamond/recnGEpF1srQpaqWq",
+   "reason": "duplicate_option_text:B,C"
+  }
+ ],
+ "hmmt": [],
+ "omni_math_hard": [
+  {
+   "item_id": "omni_math_hard/3",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/5",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/7",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/11",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/15",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/27",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/28",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/31",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/33",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/36",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/37",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/38",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/41",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/42",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/44",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/48",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/50",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/51",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/55",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/57",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/58",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/60",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/61",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/64",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/66",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/67",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/87",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/95",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/96",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/97",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/104",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/109",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/110",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/113",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/114",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/118",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/123",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/124",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/125",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/126",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/129",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/130",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/132",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/133",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/138",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/140",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/142",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/147",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/149",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/151",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/152",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/156",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/167",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/169",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/171",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/175",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/177",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/186",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/188",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/193",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/194",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/205",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/209",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/210",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/213",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/217",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/229",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/233",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/237",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/241",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/245",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/248",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/249",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/250",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/251",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/252",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/253",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/255",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/257",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/259",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/260",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/268",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/269",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/270",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/272",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/275",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/276",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/281",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/285",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/288",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/290",
+   "reason": "figure_not_included"
+  },
+  {
+   "item_id": "omni_math_hard/294",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/297",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/299",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/300",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/306",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/307",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/309",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/313",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/319",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/320",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/324",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/332",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/342",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/345",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/347",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/350",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/358",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/401",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/410",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/423",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/426",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/589",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/593",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/654",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/655",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1159",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1279",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1390",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/1396",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1457",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1478",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1503",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1527",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1554",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1573",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1582",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1583",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1596",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1667",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1676",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/1793",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/1894",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2142",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2255",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2279",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2285",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2297",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2389",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2396",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2407",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/2454",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2515",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2549",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2568",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2615",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/2646",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/2659",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3143",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3145",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3151",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3155",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3162",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3172",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3178",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3183",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3191",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/3196",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3199",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3222",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3225",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3235",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3238",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3248",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3264",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3265",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3269",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3272",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3273",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3283",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3286",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3296",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3297",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3299",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3300",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3302",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3304",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3362",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3364",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3367",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3375",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3517",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3521",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3525",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3529",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3532",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3533",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3534",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3535",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3537",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3538",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3539",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3540",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3544",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3550",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3568",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3574",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3584",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3601",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3602",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3606",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3627",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3631",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/3635",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3652",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3653",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3663",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3697",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3700",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3729",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3735",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3743",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3746",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3749",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3762",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3764",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3772",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3788",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3801",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3815",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3816",
+   "reason": "gold_self_verify_failed"
+  },
+  {
+   "item_id": "omni_math_hard/3817",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/3819",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3825",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3827",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3831",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3846",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3847",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3854",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3857",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/3859",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3861",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3867",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3868",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3875",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3883",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3885",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3886",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3889",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3891",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3895",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3898",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3899",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3904",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3905",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3910",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3912",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3913",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3914",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3916",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/3922",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3923",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3934",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3946",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3948",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/3951",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3953",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3954",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3960",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3964",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/3966",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3968",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3970",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3971",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3972",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3976",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3983",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3984",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/3987",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4000",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4002",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4007",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/4009",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4010",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4012",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/4014",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4017",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4019",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4029",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4036",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4042",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4048",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4049",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4050",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4051",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4057",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4060",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4062",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4064",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4066",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4067",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4081",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4091",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4098",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4102",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4103",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4104",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4106",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4107",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4110",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/4116",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4117",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/4119",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/4126",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4128",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4133",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4136",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4138",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4140",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4146",
+   "reason": "empty_gold_answer"
+  },
+  {
+   "item_id": "omni_math_hard/4147",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4154",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/4156",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4160",
+   "reason": "empty_gold_answer"
+  },
+  {
+   "item_id": "omni_math_hard/4161",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4163",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4166",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4167",
+   "reason": "empty_gold_answer"
+  },
+  {
+   "item_id": "omni_math_hard/4173",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4175",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/4180",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4181",
+   "reason": "empty_gold_answer"
+  },
+  {
+   "item_id": "omni_math_hard/4182",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4184",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4185",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4188",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4189",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4190",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4191",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4196",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/4200",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4205",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4208",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4209",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4210",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4212",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/4213",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/4214",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4217",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4223",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4232",
+   "reason": "empty_gold_answer"
+  },
+  {
+   "item_id": "omni_math_hard/4234",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4241",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4242",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/4243",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4244",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/4249",
+   "reason": "empty_gold_answer"
+  },
+  {
+   "item_id": "omni_math_hard/4253",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/4256",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4260",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4262",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4263",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4265",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4268",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4270",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4273",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4277",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4280",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4281",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4282",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4287",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4293",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4294",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4295",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4300",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4303",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4304",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4305",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/4308",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4311",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/4316",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4318",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4319",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4321",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4323",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4326",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4328",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4329",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4331",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4334",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4338",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4339",
+   "reason": "empty_gold_answer"
+  },
+  {
+   "item_id": "omni_math_hard/4341",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4344",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4349",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4352",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4356",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4361",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4365",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4367",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4368",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4371",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4372",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4377",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4378",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4382",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4383",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4384",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4386",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4395",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4399",
+   "reason": "empty_gold_answer"
+  },
+  {
+   "item_id": "omni_math_hard/4400",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4403",
+   "reason": "gold_partial_parse"
+  },
+  {
+   "item_id": "omni_math_hard/4405",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4406",
+   "reason": "gold_unparseable"
+  },
+  {
+   "item_id": "omni_math_hard/4408",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4413",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4414",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4415",
+   "reason": "empty_gold_answer"
+  },
+  {
+   "item_id": "omni_math_hard/4417",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4419",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4420",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4422",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4423",
+   "reason": "gold_prose"
+  },
+  {
+   "item_id": "omni_math_hard/4427",
+   "reason": "gold_prose"
+  }
+ ]
+}

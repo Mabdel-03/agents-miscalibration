@@ -1,0 +1,50 @@
+{
+ "conclusive": true,
+ "drift": false,
+ "evaluated_at": "2026-09-25T23:31:41Z",
+ "gate": "gate3_sample",
+ "passed": true,
+ "samples": [
+  {
+   "generation_id": "gen-1790376466-VLyqGyvMoV18BMFt6XGy",
+   "ok": true,
+   "provider": "Mancer 2",
+   "slugs": [
+    "qwen/qwen3.8-27b-20260814"
+   ]
+  },
+  {
+   "generation_id": "gen-1790376469-cVNDRa56UbIo1XSig9Bg",
+   "ok": true,
+   "provider": "Mancer 2",
+   "slugs": [
+    "qwen/qwen3.8-27b-20260814"
+   ]
+  },
+  {
+   "generation_id": "gen-1790376467-NH3FDS5KaxurYTpKgLtP",
+   "ok": true,
+   "provider": "Mancer 2",
+   "slugs": [
+    "qwen/qwen3.8-27b-20260814"
+   ]
+  },
+  {
+   "generation_id": "gen-1790376556-m9RetjyDefkzLtxiZ8DJ",
+   "ok": true,
+   "provider": "Mancer 2",
+   "slugs": [
+    "qwen/qwen3.8-27b-20260814"
+   ]
+  },
+  {
+   "generation_id": "gen-1790376594-jddzGr02N1gWVx2yGIui",
+   "ok": true,
+   "provider": "Mancer 2",
+   "slugs": [
+    "qwen/qwen3.8-27b-20260814"
+   ]
+  }
+ ],
+ "unavailable": []
+}

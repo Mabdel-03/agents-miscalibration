@@ -1,0 +1,125 @@
+{
+ "endpoint_locks": {
+  "mancer": {
+   "lock_hashes": {
+    "qwen/qwen3.8-27b": "fa8b9ec95b40fb0472255e5ba161b17c8307a43635ba348f18bec29d63188aa1"
+   },
+   "locks": {
+    "qwen/qwen3.8-27b": {
+     "__record__": "EndpointLock",
+     "context_length": 262144,
+     "fetched_at": "20260918T092144Z",
+     "input_price_per_token": "0.0000002",
+     "internal_reasoning_price_per_token": "0",
+     "max_completion_tokens": 235929,
+     "model": "qwen/qwen3.8-27b",
+     "output_price_per_token": "0.0000025",
+     "provider_name": "Mancer 2",
+     "provider_tag": "mancer/fp8",
+     "service_tier": "standard",
+     "snapshot_path": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts/shards/mancer/locks/snapshots/endpoints_qwen_qwen3.8-27b_20260918T092144Z.json",
+     "snapshot_sha256": "2c1bc1862accda5d8c15a00f79d39180e4321c777e28ace29a1b9eff5d2b02aa",
+     "supported_parameters": [
+      "frequency_penalty",
+      "include_reasoning",
+      "logit_bias",
+      "logprobs",
+      "max_tokens",
+      "min_p",
+      "presence_penalty",
+      "reasoning",
+      "reasoning_effort",
+      "repetition_penalty",
+      "response_format",
+      "seed",
+      "stop",
+      "structured_outputs",
+      "temperature",
+      "tool_choice",
+      "tools",
+      "top_a",
+      "top_k",
+      "top_logprobs",
+      "top_p"
+     ]
+    }
+   },
+   "updated_at": "2026-09-18T09:21:44.880299Z"
+  },
+  "parasail": {
+   "lock_hashes": {
+    "qwen/qwen3.8-27b": "6050d9c43ace843ccc4f2d623a963ecede23da8d656d8edb828ece2a00f6f504"
+   },
+   "locks": {
+    "qwen/qwen3.8-27b": {
+     "__record__": "EndpointLock",
+     "context_length": 262144,
+     "fetched_at": "20260918T092144Z",
+     "input_price_per_token": "0.00000024",
+     "internal_reasoning_price_per_token": "0",
+     "max_completion_tokens": 235929,
+     "model": "qwen/qwen3.8-27b",
+     "output_price_per_token": "0.0000022",
+     "provider_name": "Parasail",
+     "provider_tag": "parasail/fp8",
+     "service_tier": "standard",
+     "snapshot_path": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts/shards/parasail/locks/snapshots/endpoints_qwen_qwen3.8-27b_20260918T092144Z.json",
+     "snapshot_sha256": "2c1bc1862accda5d8c15a00f79d39180e4321c777e28ace29a1b9eff5d2b02aa",
+     "supported_parameters": [
+      "frequency_penalty",
+      "include_reasoning",
+      "logit_bias",
+      "logprobs",
+      "max_tokens",
+      "presence_penalty",
+      "reasoning",
+      "reasoning_effort",
+      "repetition_penalty",
+      "response_format",
+      "seed",
+      "stop",
+      "structured_outputs",
+      "temperature",
+      "tool_choice",
+      "tools",
+      "top_k",
+      "top_logprobs",
+      "top_p"
+     ]
+    }
+   },
+   "updated_at": "2026-09-18T09:21:44.883658Z"
+  }
+ },
+ "final": false,
+ "items": 128,
+ "merged_dir": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts/merged",
+ "merged_input_digest": "2169fc79139832bf79d587f161e8ed4576d190ae225b591eefd432eaced42595",
+ "root": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts",
+ "shards": [
+  {
+   "endpoint_tag": "mancer/fp8",
+   "input_digest": "09b4c60c3f102216e80e4dc24ed32c6a6935f25c48011e3731b57d6bca77b49e",
+   "items": 77,
+   "nodes": 8461,
+   "run_dir": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts/shards/mancer",
+   "sealed_partitions": [
+    "main",
+    "pilot"
+   ],
+   "shard_id": "mancer"
+  },
+  {
+   "endpoint_tag": "parasail/fp8",
+   "input_digest": "69057c7f9cc08163c582a01ea772dd5073a0387ee92787a5f602a46510b466a2",
+   "items": 51,
+   "nodes": 5570,
+   "run_dir": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts/shards/parasail",
+   "sealed_partitions": [
+    "main",
+    "pilot"
+   ],
+   "shard_id": "parasail"
+  }
+ ]
+}

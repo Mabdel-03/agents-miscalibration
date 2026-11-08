@@ -1,0 +1,37 @@
+{
+ "complete": true,
+ "criteria": {
+  "all_terminal": {
+   "parsed": 5,
+   "passed": true,
+   "planned": 5,
+   "succeeded": 5
+  },
+  "exact_budgets": {
+   "exact": 5,
+   "of": 5,
+   "passed": true
+  },
+  "permaslug": {
+   "passed": true,
+   "records": 5,
+   "violations": 0
+  },
+  "pin": {
+   "passed": true,
+   "pin": "Parasail",
+   "tag": "parasail/fp8"
+  },
+  "smoke_graded": {
+   "examples": [],
+   "passed": true,
+   "ungraded": 0
+  },
+  "zero_cache_hits": {
+   "passed": true
+  }
+ },
+ "evaluated_at": "2026-09-25T21:18:45Z",
+ "gate": "gate1_smoke",
+ "passed": true
+}

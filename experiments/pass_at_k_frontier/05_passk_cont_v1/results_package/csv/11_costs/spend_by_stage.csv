@@ -1,0 +1,41 @@
+row_type,stage,component,shard,calls,usd,counted_in_study_total,source
+detail,core: Gate 0 endpoint probes,gate0,mancer,20,0.0283875,true,artifacts/shards/mancer/state/ledger_journal.jsonl (settle events)
+detail,core: Gate 0 endpoint probes,gate0,parasail,20,0.02487324,true,artifacts/shards/parasail/state/ledger_journal.jsonl (settle events)
+subtotal,core: Gate 0 endpoint probes,subtotal,all,40,0.05326074,true,sum of this stage's detail rows
+detail,core: Gate 1 canary,canary,mancer,24,0.3729525,true,artifacts/shards/mancer/state/ledger_journal.jsonl (settle events)
+detail,core: Gate 1 canary,canary,parasail,24,0.3322366,true,artifacts/shards/parasail/state/ledger_journal.jsonl (settle events)
+subtotal,core: Gate 1 canary,subtotal,all,48,0.7051891,true,sum of this stage's detail rows
+detail,core: Gate 1 smoke,smoke,mancer,7,0.0264775,true,artifacts/shards/mancer/state/ledger_journal.jsonl (settle events)
+detail,core: Gate 1 smoke,smoke,parasail,5,0.0162828,true,artifacts/shards/parasail/state/ledger_journal.jsonl (settle events)
+subtotal,core: Gate 1 smoke,subtotal,all,12,0.0427603,true,sum of this stage's detail rows
+detail,core: main generation,c48_extra,mancer,512,15.0591575,true,artifacts/shards/mancer/state/ledger_journal.jsonl (settle events)
+detail,core: main generation,e1_fill,mancer,639,6.1165975,true,artifacts/shards/mancer/state/ledger_journal.jsonl (settle events)
+detail,core: main generation,t200_bank,mancer,3103,25.19506,true,artifacts/shards/mancer/state/ledger_journal.jsonl (settle events)
+detail,core: main generation,t200_diag,mancer,501,1.88165,true,artifacts/shards/mancer/state/ledger_journal.jsonl (settle events)
+detail,core: main generation,v48_bank,mancer,930,7.54698,true,artifacts/shards/mancer/state/ledger_journal.jsonl (settle events)
+detail,core: main generation,c48_extra,parasail,306,7.96534392,true,artifacts/shards/parasail/state/ledger_journal.jsonl (settle events)
+detail,core: main generation,e1_fill,parasail,418,3.51436356,true,artifacts/shards/parasail/state/ledger_journal.jsonl (settle events)
+detail,core: main generation,t200_bank,parasail,3101,22.49011716,true,artifacts/shards/parasail/state/ledger_journal.jsonl (settle events)
+detail,core: main generation,t200_diag,parasail,500,1.68890704,true,artifacts/shards/parasail/state/ledger_journal.jsonl (settle events)
+detail,core: main generation,v48_bank,parasail,558,3.99803116,true,artifacts/shards/parasail/state/ledger_journal.jsonl (settle events)
+subtotal,core: main generation,subtotal,all,10568,95.45620784,true,sum of this stage's detail rows
+detail,E8a LLM allocator,L96/A0,both,97,0.2773724,true,e8a/calls.jsonl
+detail,E8a LLM allocator,L96/A1,both,97,0.29152522,true,e8a/calls.jsonl
+detail,E8a LLM allocator,T200/A0,both,204,0.593694,true,e8a/calls.jsonl
+detail,E8a LLM allocator,T200/A1,both,202,0.58716572,true,e8a/calls.jsonl
+subtotal,E8a LLM allocator,subtotal,all,600,1.74975734,true,sum of this stage's detail rows
+detail,LEX c48_25a 25A draws,mancer,mancer,243,16.7952175,true,lex/c48_25a_calls.jsonl
+detail,LEX c48_25a 25A draws,parasail,parasail,144,8.9355738,true,lex/c48_25a_calls.jsonl
+subtotal,LEX c48_25a 25A draws,subtotal,all,387,25.7307913,true,sum of this stage's detail rows
+detail,E8b LLM selectors (LEX objective),C48/B0,both,245,0.76772822,true,e8b/calls.jsonl
+detail,E8b LLM selectors (LEX objective),C48/B1,both,247,0.76804024,true,e8b/calls.jsonl
+detail,E8b LLM selectors (LEX objective),T200/B0,both,1025,3.15940872,true,e8b/calls.jsonl
+detail,E8b LLM selectors (LEX objective),T200/B1,both,1013,3.12537822,true,e8b/calls.jsonl
+subtotal,E8b LLM selectors (LEX objective),subtotal,all,2530,7.8205554,true,sum of this stage's detail rows
+detail,legacy forced_v2 draws reused (not spent in this study),legacy_main,mancer,1740,14.6314525,false,analysis_inputs/draws.parquet cost_usd
+detail,legacy forced_v2 draws reused (not spent in this study),legacy_pilot,mancer,57,0.21427,false,analysis_inputs/draws.parquet cost_usd
+detail,legacy forced_v2 draws reused (not spent in this study),legacy_main,parasail,1140,8.45536044,false,analysis_inputs/draws.parquet cost_usd
+detail,legacy forced_v2 draws reused (not spent in this study),legacy_pilot,parasail,39,0.1286722,false,analysis_inputs/draws.parquet cost_usd
+subtotal,legacy forced_v2 draws reused (not spent in this study),subtotal,all,2976,23.42975514,false,sum of this stage's detail rows
+subtotal,core run (Gate 0 + Gate 1 + main),subtotal,all,10668,96.25741798,true,sum of the core stages
+total,study total (new spend),total,all,14185,131.55852202,true,sum of the counted stage subtotals

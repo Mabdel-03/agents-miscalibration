@@ -1,0 +1,140 @@
+{
+ "after": {
+  "credits": {
+   "total_credits": "9610",
+   "total_usage": "9562.306921792"
+  },
+  "key": {
+   "is_free_tier": false,
+   "limit": "300",
+   "limit_remaining": "174.46529802",
+   "usage": "125.53470198"
+  },
+  "payment_required": false,
+  "recorded_at": "2026-09-24T07:28:59Z"
+ },
+ "before": {
+  "credits": {
+   "total_credits": "9610",
+   "total_usage": "9559.655378692"
+  },
+  "key": {
+   "is_free_tier": false,
+   "limit": "300",
+   "limit_remaining": "177.11684112",
+   "usage": "122.88315888"
+  },
+  "payment_required": false,
+  "recorded_at": "2026-09-24T07:04:34Z"
+ },
+ "decision": "clean",
+ "generation_sample": {
+  "population": 146,
+  "population_source": "tables",
+  "rows": [
+   {
+    "call_no": 1,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790233920-78Lk7ylAj5E7KV2p6DAM",
+     "gen-1790233955-dswdPb2CjyBibKvIkFFR"
+    ],
+    "journaled_completion_tokens": 2430,
+    "journaled_cost_usd": "0.007585",
+    "metadata_completion_tokens": 2430,
+    "metadata_cost_usd": "0.007585",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "6dbc9e7c9eec8376b663803d",
+    "tokens_match": true
+   },
+   {
+    "call_no": 1,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790233691-xDYXDV195N8UhdA7AUWH",
+     "gen-1790233903-B9JFQKaoPVewWUA8BL0y"
+    ],
+    "journaled_completion_tokens": 16837,
+    "journaled_cost_usd": "0.0460225",
+    "metadata_completion_tokens": 16837,
+    "metadata_cost_usd": "0.0460225",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "92e4ca718c48cf45fe45112d",
+    "tokens_match": true
+   }
+  ],
+  "sampled": 2,
+  "seed": 20260923,
+  "share": "0.02"
+ },
+ "key_delta_usd": "2.65154310",
+ "key_minus_ledger_usd": "0E-8",
+ "key_settle": {
+  "interval_s": 30.0,
+  "matched": true,
+  "max_wait_s": 300.0,
+  "outcome": "converged",
+  "polls": [
+   {
+    "key_usage_usd": "125.49407206",
+    "recorded_at": "2026-09-24T07:27:28Z",
+    "waited_s": 0.0
+   },
+   {
+    "key_usage_usd": "125.49407206",
+    "recorded_at": "2026-09-24T07:27:58Z",
+    "waited_s": 30.0
+   },
+   {
+    "key_usage_usd": "125.53470198",
+    "recorded_at": "2026-09-24T07:28:28Z",
+    "waited_s": 60.0
+   },
+   {
+    "key_usage_usd": "125.53470198",
+    "recorded_at": "2026-09-24T07:28:59Z",
+    "waited_s": 90.0
+   }
+  ],
+  "settled": true,
+  "waited_s": 90.0
+ },
+ "key_tolerance_usd": "0.02",
+ "layout": "dynorch/reconciliation/v1",
+ "ledger_after": {
+  "attempts": 270,
+  "charged_max_usd": "0",
+  "open_attempts": [],
+  "open_reservations_usd": "0",
+  "released_unsent_usd": "0",
+  "settled_usd": "3.15013060"
+ },
+ "ledger_before": {
+  "attempts": 38,
+  "charged_max_usd": "0",
+  "open_attempts": [],
+  "open_reservations_usd": "0",
+  "released_unsent_usd": "0",
+  "settled_usd": "0.4985875"
+ },
+ "ledger_delta_usd": "2.65154310",
+ "phase": "after",
+ "problems": [],
+ "recorded_at": "2026-09-24T07:28:59Z",
+ "stage": "pilot",
+ "upstream_402": false
+}

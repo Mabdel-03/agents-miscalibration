@@ -1,0 +1,210 @@
+[
+ {
+  "severity": "blocker",
+  "file": "agent_allocation/src/agent_allocation/dynorch/plan.py",
+  "problem": "run_key and the RunStore/journal paths omit the partition, so the 4 canary k=16 ceiling-probe cells (H1/H3 x {aime dev0, gpqa dev0}) are the SAME run_key/record file/raw dir as the pilot's planned cells for those items. With the sbatch's `VERB=pilot ... --resume`, Runner._existing_by_cell (keyed (arm,item,rung,repeat), no partition) finds the canary's done record and silently skips them: 4 pre-registered pilot cells are never executed, their policy_outcomes_dynorch rows stay `pending` in partition pilot, and Gate 2 evaluates n=62 per harness without noticing. Without --resume the pilot's open_run overwrites the canary record in place (archive_previous returns None on equal run_key) and the first call raises CallJournalConflict inside _served AFTER the upstream call was paid and settled, surfacing as a 500 -> transport_failed -> paid rerun, while the canary manifest's cell loses its record.",
+  "evidence": "Verified with plan_stage on the real base root: `canary pilot shared run_keys: 4 [('H1','aime/2025/30',16), ('H3','aime/2025/30',16), ('H3','gpqa_diamond/rec1oj2DveQWl9Rpw',16), ('H1','gpqa_diamond/rec1oj2DveQWl9Rpw',16)]`. plan.py:69-70 `run_key_for(study_id, arm, item_id, rung, repeat, attempt)`; journal.py:160-161 RunStore.path has no partition; journal.py:102-109 CallJournal.run_dir has no partition; runner.py:258-259 + 495-496 `_cell_key = (arm, item_id, rung, repeat)`; runner.py:218-226 skip logic; journal.py:184-186 `if previous.spec.run_key == spec.run_key: return None`; journal.py:122-124 write_once conflict raised after core.py:486 settle; slurm/dynorch_v1.sbatch `pilot) ... --resume`.",
+  "fix": "Put the partition into the identity: `run_key = sha256(f\"{study_id}|{partition}|{arm}|{item}|{rung}|{repeat}|{attempt}\")[:24]`, add `spec.partition` to RunStore.path / superseded_path, CallJournal.run_dir and RunnerSettings.work_dir, and key `_cell_key` on (partition, arm, item, rung, repeat). Add a unit test that plans canary+pilot on the base root and asserts the run_key sets and store paths are disjoint, and an e2e that runs the pilot after a canary with --resume and asserts all 144 cells execute (no `pending` rows).",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "blocker",
+  "file": "agent_allocation/src/agent_allocation/dynorch/runner.py",
+  "problem": "The exhaustion watchdog measures its 60 s from the last GRANT, not the last served reply. `_terminal` increments `budget.calls` before the upstream call (core.py:545-546) while `remaining < 64` already holds, so the watchdog's timer starts when the TERMINAL call is admitted; a terminal call (prompt = whole root conversation, up to G=1,024 output tokens; at 17-30 tok/s plus prefill that is 35-60+ s) that takes longer than 60 s gets its harness SIGTERMed mid-call. close_run then runs before the parked reply lands, final_message is the previous root content, and the delivered answer (the one call whose purpose is the answer) is lost -> y = 0. TERMINAL is the common exit for delegation runs (solver truncated at the remaining budget, root calls again), i.e. exactly the cells the study is about; this biases the harness arms downward and is scoring-affecting (would force re-execution under the plan's Gate 3 rule).",
+  "evidence": "runner.py:451-474: `calls, remaining = int(view['calls']), int(view['remaining'])`; `if calls != seen_calls or exhausted_since is None: seen_calls, exhausted_since = calls, time.monotonic(); continue`; `if time.monotonic() - exhausted_since >= settings.sigterm_after_exhaustion: await _terminate(...)`. core.py:544-553 `call_no = budget.calls + 1; budget.calls = call_no; ... answer = await self._upstream(...)`. budget.py:94-96 view() exposes only cap/spent/remaining/calls/grace/prompt_total (no in-flight or last-reply timestamp). Plan B4: \"SIGTERM ... 60 s after the run's last served reply\". The e2e watchdog test (test_dynorch_e2e_fake_harness.py:390-430) uses a harness whose reply is instantaneous, so this cannot be caught.",
+  "fix": "Have TokenBudget/ProxyCore expose `in_flight` (lock held / `_active is not None` or the terminal call pending) and `last_reply_monotonic` (set when a reply/duplicate/terminal is served) in budget_view; in `_exhaustion_watchdog` never start or advance the timer while `in_flight` is true and count from `last_reply_monotonic`. Add an e2e with a TERMINAL reply delayed beyond sigterm_after_exhaustion asserting the harness is not killed before the reply and final_message is the terminal answer.",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "blocker",
+  "file": "src/agent_allocation/dynorch/core.py",
+  "problem": "B9 duplicate protection is keyed on rendered_prompt_sha256 alone (no conversation identity, no disconnect condition), so any two conversations in a run whose rendered prompts coincide are served one sample. Two OpenClaude 'solver' sub-agents or two Codex spawn_agent children given the same task text (the plain best-of-n orchestration the study exists to measure, and exactly what T=1.0 sampling is for) render byte-identically (same solver system prompt + identical Notes/<environment_context> block + same user text), so the second and later sub-agents receive the first one's reply with no upstream call and zero tokens charged. The harness believes it drew independent samples; voting/synthesis degenerates; C is under-counted in the harness's favour while diversity is removed. Contract \u00a73 scopes the cache to 'if the client disconnects after mark_sent \u2026 an identical re-request'.",
+  "evidence": "core.py:322-326 (`cached = state.replies.get(prompt_sha)` before any conversation check) and core.py:531 (`state.replies[prompt_sha] = reply` unconditionally). Reproduced on the real ProxyCore over api/fake: two solver requests with identical messages -> `upstream think calls: 1 | second duplicate_served: True | granted: 0 | completion_total: 205 | calls_by_class: {'root': 0, 'solver': 1, 'other': 0}`. test_core_flow.py:280-300 only exercises a same-conversation re-request and so pins the over-broad behaviour.",
+  "fix": "Serve from the cache only when the original request's client went away before receiving the reply: have httpd mark the call undelivered when `_keep_running` parks it (e.g. `core.mark_undelivered(run_key, call_no)`), insert into `state.replies` only for such calls (or keep inserting but check an `undelivered` flag on lookup), and additionally key the cache on (conversation_key, prompt_sha). Add a unit test: two solver conversations with identical prompts -> two upstream calls, two grants, completion_total doubled; and a test that a disconnected-then-retried identical request is still served once.",
+  "reviewer": "review:accounting"
+ },
+ {
+  "severity": "major",
+  "file": "agent_allocation/src/agent_allocation/dynorch/cli.py",
+  "problem": "Gate 4's grader re-run is vacuous: regrade_mismatches skips every row whose parse_status != \"VALID\", but the runner writes the codec VALUE \"valid\" (contract 10.9; gates.PARSE_VALID = ParseStatus.VALID.value). Every row is skipped, mismatches is always 0 and `grader_rerun_identical` can never fail. No unit test covers regrade_mismatches (test_gate4_grader_ladder_and_seal passes `mismatches=` directly).",
+  "evidence": "cli.py:645 `if rec.get(\"parse_status\") != \"VALID\" or not isinstance(rec.get(\"final_message\"), str): continue`; contracts.py:77-78 `ParseStatus.VALID = \"valid\"`; grade.py:102 `record.parse_status = candidate.parse_status.value`; gates.py:39 `PARSE_VALID = ParseStatus.VALID.value`.",
+  "fix": "Compare against `gates.PARSE_VALID` (import it) and add a unit test that builds a runs frame with one VALID row whose `correct` disagrees with the grader and asserts regrade_mismatches == 1 (and 0 when it agrees).",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "major",
+  "file": "agent_allocation/src/agent_allocation/dynorch/runner.py",
+  "problem": "Re-executing a stage without --resume (the sbatch's `VERB=canary` and the runbook's canary line pass no --resume) destroys and double-pays: run_specs ignores existing records (`existing = ... if resume else {}`), open_run's archive_previous returns None for an equal run_key so the done record in runs/ is overwritten in place (a paid result lost, not archived), and the raw journal dir raw/.../a1/ still holds call_0001.json.gz, so the first call's `_journal` -> write_once -> CallJournalConflict is raised AFTER the upstream call was paid and the grant settled; httpd answers 500 (or drops the stream), the harness retries, call 2 conflicts again if the old run had >= 2 calls, and the attempt ends transport_failed -> paid rerun as a2. A re-submitted canary after a Slurm failure therefore wastes ~1-2 paid calls per cell and replaces the Gate 1 evidence.",
+  "evidence": "runner.py:215 `existing = self._existing_by_cell() if resume else {}`; journal.py:179-190 `if previous.spec.run_key == spec.run_key: return None` then core.py:174-176 `self.store.archive_previous(spec); record = new_run_record(...); self.store.save(record)`; journal.py:114-125 write_once + sha comparison -> CallJournalConflict; core.py:486 settle precedes core.py:528 `_journal`; core.py:531 `state.replies[prompt_sha] = reply` is never reached so the retry is not served from the cache; slurm/dynorch_v1.sbatch `canary) exec $A dynorch-run ... --stage canary --allow-paid --max-usd \"$MAX_USD\" ${RUN_FLAGS:-}` (no --resume).",
+  "fix": "Make open_run refuse (ValueError) when runs/<cell>.json with the same run_key or raw/.../a<attempt>/call_*.json.gz already exists, and make Runner always consult the store (treat an existing terminal record as skip-or-next-attempt regardless of --resume; keep --resume only for re-executing interrupted ones). Pass --resume on every sbatch VERB. Test: run a stage twice without --resume and assert the first records are untouched and no upstream call is made for done cells.",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "major",
+  "file": "agent_allocation/src/agent_allocation/dynorch/httpd.py",
+  "problem": "ProxyServer.close() cancels every parked core call instead of awaiting it. When a harness dies mid-call (wall timeout, exhaustion watchdog, drain, crash) the client disconnect parks the core task via _keep_running; the run's `one()` task finishes as soon as the process exits, and if that was the stage's last admitted run, launch_stage's `finally: await server.close()` cancels the keeper, which cancels the core task inside Upstream.complete after `ledger.mark_sent` -> CancelledError leaves a SENT reservation open with nothing journaled (core's `except BaseException: settle_full` charges tokens but writes no journal). Consequences: `open_reservations_usd` != 0 in state/reconciliation_<stage>.json -> `open_reservations_zero` fails -> the stage exits 3 (stop_notify) although nothing is wrong; on the next --resume the attempt is charge_max'd (reservation = 1.1 x (input bound + max_tokens x price), several cents to ~$0.10 at k=25) instead of settled at cost; the upstream reply that was already paid for is thrown away. This will fire on the canary (10 cells; the k=16 probe runs are the ones most likely to end by watchdog/wall).",
+  "evidence": "httpd.py:196-204 `close(): ... for task in list(self._background): task.cancel()`; httpd.py:428-437 `_keep_running` -> `drain(): await task` (an unshielded await of the core task); experiment run in this review: cancelling such a keeper cancels the inner task (`{'cancelled': True} task.cancelled()=True`); upstream.py:202-207 `await self.ledger.mark_sent(aid); ... call = await self.client.raw_completion(...)` with no cancellation handler; core.py:417-420 settles tokens only; runner.py:722-724 `finally: await server.close(); await stack.aclose()`; gates.py:239-240 `open_reservations_zero`; reconcile.py:350 reads `open_reservations_usd`. test_kill_and_resume only asserts `unresolved == 0` after resolve_inherited (charge_max is accepted silently), so the leak is invisible to the suite.",
+  "fix": "In ProxyServer add `async def wait_idle(timeout)` that awaits `asyncio.gather(*self._background, return_exceptions=True)` (with a bound of drain_wait_seconds) and call it from launch_stage before close(); have `_keep_running` await `asyncio.shield(task)` so a late cancel of the keeper never cancels the upstream call; on CancelledError inside Upstream.complete after mark_sent, `await ledger.charge_max(aid)` (or mark_unresolved) before re-raising so the journal never ends with an open SENT attempt. Test: kill a harness during a 3 s fake upstream delay as the last run of a stage, close the server, assert ledger snapshot in_flight == unresolved == 0 and the call was journaled and settled at cost.",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "major",
+  "file": "agent_allocation/src/agent_allocation/dynorch/harness/codex.py",
+  "problem": "Codex wall timeouts are recorded as `done`. The adapter wraps codex in `timeout --kill-after=30s ${WALL}s` with the same WALL as the runner's `wait_for(proc.wait(), timeout=wall)`; `timeout` starts counting before the runner's timer does, so it fires first, codex exits (returncode 124) before the runner's deadline, `timed_out` stays False, and _status_of returns \"done\" for a run that hit the wall (harness_exit_code 124, no rerun -- correct -- but graded on whatever was served and counted in valid_final_share instead of timeout_share). Gate 2's `timeout_share <= 0.02` and the Gate 3 stop rule `timeout share > 0.05` are blind for H3, and the 600 + 120k wall is effectively unmeasured for Codex.",
+  "evidence": "codex.py:131-134 `argv = (\"timeout\", f\"--kill-after={self.sigkill_after}s\", f\"{wall}s\", self.binary, ...)` with `wall = self.wall_seconds(spec)` = base + per_rung*rung; runner.py:433-437 `await asyncio.wait_for(proc.wait(), timeout=wall)` started only after create_subprocess_exec returns; runner.py:449 returns `proc.returncode, timed_out`; runner.py:396-401 `if timed_out: return \"timeout\"...; return \"done\"`; codex.py:185 parse_result always `timed_out=False`.",
+  "fix": "Either drop the outer `timeout` (the runner already SIGTERM/SIGKILLs the process group) or give it `wall + sigkill_after + 60` so the runner's timer is authoritative; additionally treat returncode 124/137 from a `timeout`-wrapped argv as timed_out in _run_subprocess. Add a unit test with a sleeping fake argv under `timeout 1s` and wall=1 asserting status == \"timeout\".",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "major",
+  "file": "agent_allocation/src/agent_allocation/dynorch/runner.py",
+  "problem": "The drain does not \"wait <= 800 s for in-flight settles\"; request_drain SIGTERMs every in-flight harness group immediately, so each of up to 12 runs in flight at every job boundary (main needs several 12 h jobs) is thrown away and re-run as a paid `killed_by_drain` attempt (up to 12 x $0.30 + the rerun per boundary, ~$10+ across the study, and each consumes one of the <= 2 reruns). The 800 s wait then waits only for the kills to be reaped. There is also no SIGTERM->SIGKILL escalation on the drain path: a harness that ignores SIGTERM keeps running until the 800 s `task.cancel()` and the `finally: _terminate` (30 s + 30 s), leaving ~40 s of the 900 s lead for tables + /key reconciliation before Slurm's hard kill.",
+  "evidence": "runner.py:186-193 `request_drain(): ... for run_key, proc in list(self._in_flight.items()): self._drain_killed.add(run_key); _signal_group(proc, signal.SIGTERM)`; runner.py:246-254 drain wait; plan \u00a76 \"stop admitting, wait <= 800 s for in-flight settles, exit 0\"; sbatch `--signal=B:TERM@900`.",
+  "fix": "On drain: stop admitting, let in-flight harnesses finish, and only at `drain_wait_seconds` (800) SIGTERM the survivors via _terminate (SIGTERM, SIGKILL after sigkill_after), marking only those `killed_by_drain`. Keep a config knob for the immediate-kill behaviour if wanted. Update the e2e kill test to assert a run that finishes within the wait is `done`, not killed.",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "major",
+  "file": "agent_allocation/src/agent_allocation/dynorch/runner.py",
+  "problem": "Any exception raised in _attempt after open_run and outside the small prepare/build try (create_subprocess_exec OSError such as ENOENT when `openclaude` is not on the job's PATH or EAGAIN, adapter.parse_result bugs, store.save EDQUOT, finalize_run errors) propagates through run_spec -> one() -> asyncio.gather -> run_specs, which raises immediately while the other 11 `one()` tasks are still running; launch_stage's finally then closes the proxy and releases the ledger journal writer under them, and asyncio.run's teardown cancels them mid-_terminate, orphaning harness processes and leaving their runs `running`. One bad cell takes down the 12 h job uncleanly and skips tables/reconciliation. Note `openclaude` lives in /orcd/home/002/mabdel03/conda_envs/consortium/bin, which neither slurm/env.sh nor the sbatch adds to PATH; with `--export=` (non-ALL) the job PATH depends on the login environment, so this failure mode is realistic for VERB=canary (which runs no doctor).",
+  "evidence": "runner.py:331-338 the try covers only prepare/build_command/check_env/_write_launch_json; runner.py:345-348 `_run_subprocess` / `parse_result` are outside it; runner.py:418-420 create_subprocess_exec; runner.py:238-245 `waiter = asyncio.gather(*tasks)` without return_exceptions, `await waiter`; runner.py:716-724 finally closes server and stack; slurm/dynorch_v1.sbatch `echo ... openclaude=$(command -v openclaude || echo MISSING)` only prints.",
+  "fix": "Wrap the whole body of _attempt after open_run in try/except Exception: close the run (`status=\"failed\"`, `error=f\"{type(exc).__name__}: {exc}\"`, rerun_reason None or zero_proxy_calls_served when calls == 0), journal the attempt and return the record; make `one()` catch and count exceptions so a stage always reaches tables/reconciliation. Add `export PATH=<openclaude bin>:$PATH` (or a config `openclaude_binary`) to the sbatch and have the doctor/`harness_versions()` refuse to start a stage whose adapter version() is \"absent\". Test: a fake adapter whose argv[0] does not exist -> the stage completes with that cell `failed` and the others `done`.",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "major",
+  "file": "src/agent_allocation/dynorch/core.py",
+  "problem": "A root call whose upstream finish_reason is anything but 'stop' is treated as the cap binding (B3). A provider-side cut (finish null / 'error' / content_filter, completion_tokens far below the grant) therefore issues the ANSWER continuation, records the run's ONE grace, sets exhausted, and every subsequent call gets HTTP 402 while most of C is unspent; because the last event is a 402 the rerun rule never reruns it, so a provider hiccup is scored as a model outcome (y from a forced answer or op_no_output). forced_v2 treated the same shape as `forced_think_short` and retried.",
+  "evidence": "core.py:430 `cut = (upstream_finish or \"\").strip().lower() != \"stop\"` and 436-445. Reproduced with FakeReply(think_tokens=100, finish_reason=None) at rung 4: `forced_close_kind: visible_continuation | finish_upstream: None | completion: 122 | grace: 22 | view: {... 'remaining': 3974, ... 'exhausted': 1}` then `second root call: ProxyError budget_exhausted`. No unit test covers finish_reason None/other on a root call.",
+  "fix": "Define cap-bound strictly: `cut = upstream_finish == \"length\"` AND `think_tokens >= grant.max_tokens` (log a mismatch loudly). Any other non-'stop' finish, or 'length' with tokens well below the grant, is a transport outcome: settle the reported tokens (not the grace), journal it, and raise `upstream_failed` (run -> transport_failed -> rerun rule), mirroring forced_v2's forced_think_short. Add tests for finish None, 'error', and 'length' below the grant on root and solver calls.",
+  "reviewer": "review:accounting"
+ },
+ {
+  "severity": "major",
+  "file": "src/agent_allocation/dynorch/runner.py",
+  "problem": "The rerun decision reruns any attempt whose RunRecord.error starts with 'upstream_failed:', regardless of what the last proxy reply was. A sub-agent call that failed ambiguously mid-run (charged whole, harness continued, root delivered an answer) makes the whole run transport_failed and discards the delivered answer; the same happens when the last event is a 402 after an earlier failure. The frozen table says 'rerun iff \u2026 the last proxy reply was a transport/ledger error \u2026 never after 402 / \u2026 with calls served'.",
+  "evidence": "runner.py:391-395 (`error.startswith(\"upstream_failed:\")` -> transport_failed) evaluated after the last-event check at 389-390; core.py:701 sets run.error on every UpstreamFailed and nothing ever clears it. Reproduced: root OK -> solver READ_TIMEOUT -> root served `<final>43</final>`, record.error == 'upstream_failed: ambiguous_timeout'. test_dynorch_e2e_fake_harness.py:281-304 only covers a single-call attempt.",
+  "fix": "Delete the record.error branch (or restrict it to the case where `calls_detail[-1].transport_status != 'ok'` AND no reply followed). Decide solely from ReplyLog.last_event. Add an e2e: solver upstream failure followed by a served root answer -> status done, no rerun, y graded.",
+  "reviewer": "review:accounting"
+ },
+ {
+  "severity": "major",
+  "file": "src/agent_allocation/dynorch/runner.py",
+  "problem": "An upstream HTTP 402/401 (key limit, B6 'infrastructure stop, stop_notify') is only surfaced as UpstreamFailed(infrastructure_stop=True) and recorded on the RunRecord; the runner never reads it. The stage keeps admitting cells: each new harness's first call fails with 502 upstream_failed, is rerun twice more (all at $0), and ends transport_failed at attempt 3. `_rerun_pending` requires attempt <= max_reruns, so `--resume` then skips every such cell forever; a transient key-limit refusal converts the rest of the stage into y = NaN cells with no recovery path short of hand-editing records. Only the 5-minute /key refresh drains, and only if the account endpoints themselves answer 402.",
+  "evidence": "upstream.py:257-261 (infrastructure_stop set), core.py:702-704 (state.infrastructure_stop, run.error), runner.py has no consumer except summary_dict at 635; rerun loop runner.py:307-311 and `_rerun_pending` runner.py:261-263; launch_stage drain only in refresh_ceiling runner.py:694-698. Plan \u00a79 Gate 3 lists 'upstream 402' as a stop rule.",
+  "fix": "Have the core expose `infrastructure_stop` (e.g. on budget_view or a core-level flag) and have Runner._attempt call request_drain() when the closed record carries it; classify such attempts as `killed_by_drain`-like (rerun-eligible, NOT counting against max_reruns). Make `_rerun_pending` admit a cell whose final attempt's error starts with 'infrastructure_stop:'. Test: fake PAYMENT_REQUIRED on cell 2 of 4 -> stage drains, cells 2-4 have attempt 1 only, --resume re-executes them.",
+  "reviewer": "review:accounting"
+ },
+ {
+  "severity": "major",
+  "file": "src/agent_allocation/dynorch/tables.py",
+  "problem": "RunStore keeps every attempt of a cell at the same path runs/<arm>/<rung>/<repeat>/<slug>.json and moves the previous attempt to runs_superseded/\u2026<slug>.a<n>.json, but read_run_records scans only runs/. In the real pipeline superseded attempts never reach dynorch_runs/dynorch_calls, `superseded` in current_records is always empty, retry_cost_usd is always 0 and total_charged_usd == success_cost_usd, so the $-frontier and Gate 2/4 cost figures omit every paid rerun ('all attempts journaled and paid'). The unit tests pass because write_run_record writes attempt 2 as runs/\u2026/<slug>.a2.json, a layout RunStore never produces.",
+  "evidence": "tables.py:282-299 (`root = Path(run_root) / \"runs\"` \u2026 rglob) vs journal.py:160-165 (superseded_path under run_root/'runs_superseded'); tables.py:492-493 retry sum; test helper tables.py:767-776 writes `.a<attempt>.json` under runs/. test_kill_and_resume (integration) asserts the killed attempt is only visible via store.scan(include_superseded=True).",
+  "fix": "Make read_run_records read runs/ and runs_superseded/ (or have RunStore keep all attempts under runs/ with the `.a<n>` suffix so the two agree), and add a test that builds tables from a real RunStore after a rerun and asserts retry_cost_usd == the superseded attempt's cost_usd and that dynorch_runs has one row per attempt.",
+  "reviewer": "review:accounting"
+ },
+ {
+  "severity": "major",
+  "file": "src/agent_allocation/dynorch/plan.py",
+  "problem": "write_plan rewrites manifests/dynorch_plan_<stage>.jsonl with exactly the specs being executed, and run_specs calls it on every launch. `dynorch-run --stage main --arms H0 --rungs 16` (or any partial relaunch/resume with filters) replaces the pre-registered 1,728-cell manifest with the subset; build_tables then either raises because existing records belong to cells 'not in the plan' (tables not built) or, after a later filtered run, silently drops planned cells from policy_outcomes so 'a row per planned cell' and Gate 4 completeness are checked against a shrunken plan.",
+  "evidence": "plan.py:292-297 (`replace_atomic` of the given specs; docstring claims idempotent), runner.py:213 (`planmod.write_plan(specs, \u2026)` unconditional in run_specs), runner.py:683 (`specs_for_cells(... cells)`) with cli.py:139-152 filtering cells by --arms/--rungs; tables.py:406-416 raises for a record whose cell is not planned.",
+  "fix": "Make write_plan write-once per stage: if the manifest exists, read it, assert the new specs are a subset (cell_key and run_key equal), and leave it untouched; refuse (loud) if they disagree. Test: write full plan, run_specs with a subset -> manifest unchanged; build_tables still emits all planned rows.",
+  "reviewer": "review:accounting"
+ },
+ {
+  "severity": "major",
+  "file": "src/agent_allocation/dynorch/core.py",
+  "problem": "Delivered-answer source is ambiguous and can credit an answer the harness never received. close_run takes final_message from state.root_contents, which is appended in _served for every root reply the core PRODUCES; httpd shields the core call, so a root call still in flight when the wall timeout/exhaustion watchdog SIGKILLs the harness completes afterwards, is settled, and lands in root_contents (never in ReplyLog, since reply_log.record runs only after a successful write). The runner calls close_run as soon as the process is dead (possibly before that late reply) and then prefers the core's final_message over the ReplyLog it documents as the source of truth; the late _served also store.save()s the record after finalisation. B7 says 'as served by the proxy'; the runner docstring says the wire layer is authoritative.",
+  "evidence": "core.py:499-500 (root_contents append), core.py:191-192 (final_message at close_run), core.py:532 (store.save after a possibly-closed run), httpd.py:399/366 (ReplyLog.record only after delivery) and httpd.py:428-437 (_keep_running), runner.py:351 (close_run right after _run_subprocess) and runner.py:365-370 (core's final_message wins; ReplyLog only logs a disagreement).",
+  "fix": "Make one rule: the delivered answer is the last root reply that was handed to the client. Either have httpd tell the core which call_no was delivered and let close_run use only delivered root contents, or have the runner take final_message from ReplyLog.delivered and treat the core value as the cross-check. Also have _attempt await any in-flight core call for the run (track tasks per run_key in httpd) before close_run so the record is finalised once. Test: harness killed while a root call is in flight -> final_message None/previous, late tokens still charged.",
+  "reviewer": "review:accounting"
+ },
+ {
+  "severity": "major",
+  "file": "src/agent_allocation/dynorch/cli.py",
+  "problem": "Nothing refuses launching a stage without --resume onto a run root that already holds records. run_specs then re-executes every cell as attempt 1 / generation 1 with the SAME run_key: RunStore.archive_previous returns None for an equal run_key so the done record is overwritten as 'running', the first call reserves an attempt id the ledger already knows (LedgerError 'already reserved'), which core catches as a generic BaseException, marks the grant sent and charges it whole, and the harness gets a 500; the CallJournal write_once would also conflict. This is the attempt-id collision the generation scheme was meant to exclude, reachable by an ordinary operator mistake (or the sbatch resubmit line lacking --resume).",
+  "evidence": "cli.py:389-445 (_run: no existing-records check), runner.py:215 (`existing = \u2026 if resume else {}`), journal.py:185-186 (`if previous.spec.run_key == spec.run_key: return None`), ledger.py:293-294 (LedgerError on duplicate reserve), core.py:417-420 (BaseException -> mark_sent/settle_full), journal.py:122-124 (write_once conflict).",
+  "fix": "In cli._run (and Runner.run_specs), if store.scan() has any record for the stage's cells and resume is False, raise RunRefused('records exist: pass --resume'). Additionally make ProxyCore.open_run refuse a run_key whose record on disk is terminal, and have Upstream.complete translate LedgerError into ProxyError(internal_error) WITHOUT charging the token grant (nothing left the process). Test: second run_specs without resume on a populated root is refused.",
+  "reviewer": "review:accounting"
+ },
+ {
+  "severity": "major",
+  "file": "src/agent_allocation/dynorch/core.py",
+  "problem": "Non-UpstreamFailed exceptions during the ANSWER continuation (most plausibly ProxyError(ledger_refused) when the $ ceiling/unresolved-exposure pause hits between THINK and ANSWER, or a cancellation) settle the THINK tokens and book the full grace conservatively, but write no journal entry, no CallRecord, and do not cache the reply: the paid THINK exchange (raw request/response, generation id) is absent from the audit trail used for /generation reconciliation, run.calls/calls_detail disagree with completion_total (so Gate 1's granted == remaining check trips on the NEXT call), and the harness's retry of the identical request meets budget.closed -> 402, so a fully-thought answer is lost and the run ends exhausted after one call. The THINK-phase BaseException branch has the same journal gap.",
+  "evidence": "core.py:453-466 (only `isinstance(exc, UpstreamFailed)` is journaled; `budget.record_grace(kind, cont_max)` for any exception), core.py:417-420 (THINK BaseException: settle_full, no journal), gates.py:180-186 (grant_not_remaining computed from calls_detail).",
+  "fix": "Journal every settled grant: factor a `_journal_partial(state, request, prompt_sha, grant, phases, kind, exc)` used in both except branches so the THINK phase dict (with its cost and generation id) and a CallRecord are always written. For a ledger_refused on the ANSWER phase, prefer returning the THINK reply as the (truncated) answer with grace 0 and kind 'mid_call_unfunded' rather than raising, or at least cache it so the harness's retry is served. Test: FakeScript with ledger ceiling reached after THINK -> journal file exists, calls_detail has the call, budget totals match.",
+  "reviewer": "review:accounting"
+ },
+ {
+  "severity": "minor",
+  "file": "agent_allocation/src/agent_allocation/dynorch/runner.py",
+  "problem": "On --resume, a non-terminal (`running`) record is always re-executed as the next attempt with no check against max_reruns (only terminal records go through _rerun_pending), so a cell that is repeatedly interrupted (crash, scancel, drain timeout cancel) accumulates unbounded paid attempts a4, a5, ... contrary to the frozen `<= 2 reruns`.",
+  "evidence": "runner.py:218-226 `if self.store.is_terminal(previous) and not self._rerun_pending(previous): skip ... else: todo.append(self._next_attempt(previous, resume=True))`; runner.py:261-263 the attempt cap lives only in _rerun_pending.",
+  "fix": "Apply `previous.spec.attempt <= settings.max_reruns` to the interrupted branch too; beyond it, close the record as `failed` / `interrupted` with y = NaN and skip. Unit test with a `running` record at attempt 3 asserting it is not re-executed.",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "minor",
+  "file": "agent_allocation/src/agent_allocation/dynorch/doctor.py",
+  "problem": "The doctor's CLI version probes redirect CODEX_HOME/TMPDIR/XDG_* but not HOME or CLAUDE_CONFIG_DIR, so `openclaude --version` (run from the login node, where the doctor is invoked first per the runbook) can write ~/.claude / ~/.openclaude state under the 995k-inode /home; the WP-B probe (harness/base.py probe_version) does redirect them. test_cli_probes_run_with_codex_home_on_scratch asserts only CODEX_HOME/TMPDIR.",
+  "evidence": "doctor.py:212-220 `probe_env` sets CODEX_HOME, TMPDIR, XDG_CACHE_HOME, XDG_STATE_HOME only; base.py:243-246 sets HOME, CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME as well.",
+  "fix": "Reuse harness.base.probe_version (or add HOME=<probe_home>/home, CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME to probe_env) and extend the test to assert HOME is under scratch.",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "minor",
+  "file": "agent_allocation/slurm/launch_dynorch_v1.sh",
+  "problem": "`--export=VERB=...,RUN_FLAGS=$RUN_FLAGS` splits on commas, so the runbook's documented `RUN_FLAGS=\"--arms H1,H3\"` becomes `RUN_FLAGS=--arms H1` plus a bogus variable `H3`: the stage silently runs fewer arms (a restriction never adds cells, so nothing complains). `--export` without ALL also replaces the caller's environment with the login environment, so PATH/conda activation for `openclaude` is whatever .bashrc provides. Direct `sbatch slurm/dynorch_v1.sbatch` (without the launcher) fails at submission if the --output logs dir does not exist yet.",
+  "evidence": "launch_dynorch_v1.sh `EXPORTS=\"VERB=$VERB,STAGE=$STAGE,CFG=$CFG,RUN=$RUN,CODE=$CODE${MAX_USD:+,MAX_USD=$MAX_USD}${RUN_FLAGS:+,RUN_FLAGS=$RUN_FLAGS}\"`; RUNBOOK \u00a75 `RUN_FLAGS=\"--arms H1 --rungs 16\"` and cli.py:171-174 `_parse_list` splits on commas; sbatch `#SBATCH --output=.../dynorch_v1/logs/%x_%j.out`.",
+  "fix": "Use `--export=ALL,VERB=...` (or write RUN_FLAGS to a file the sbatch reads) and reject commas in RUN_FLAGS in the launcher; add the openclaude bin dir to PATH in the sbatch; add `mkdir -p` of the logs dir in the runbook's direct-sbatch line.",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "minor",
+  "file": "agent_allocation/src/agent_allocation/dynorch/runner.py",
+  "problem": "_supersede mutates the interrupted record (status failed, rerun_reason interrupted) and appends it to dynorch_attempts.jsonl but never saves it, and archive_previous(spec) with the same run_key returns None, so the copy that later lands in runs_superseded/ (moved by the next attempt's open_run) still says `status: running` with no rerun_reason: the durable record and the attempts journal disagree about the same attempt.",
+  "evidence": "runner.py:292-298 `archive(spec)` (same run_key -> journal.py:185 returns None); `previous.status = \"failed\"; previous.rerun_reason = \"interrupted\"; ... self._journal_attempt(previous)` with no store.save; core.py:174 archive_previous later moves the on-disk (unmodified) file.",
+  "fix": "store.save(previous) before archiving, or archive explicitly with the mutated record (add `RunStore.archive(record)`).",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "minor",
+  "file": "agent_allocation/src/agent_allocation/dynorch/cli.py",
+  "problem": "Gate 1's `nothing_written_under_home` walks all of $HOME (~995k files on NFS) with lstat per file under a 600 s budget; exceeding it returns None, which the gate reports as failed (\"not scanned\"), so Gate 1 will likely end stop_notify on every canary and need an owner look for a non-finding. Also `run_gate1` scans `Path.home()` (= /orcd/home/002/...) while the doctor's notion of home also includes /home literal paths.",
+  "evidence": "cli.py:539-559 new_files_under_home (os.walk + lstat, budget 600 s, limit 50); cli.py:603-606; gates.py:312-314 `home_new_files is not None and not home_new_files`; plan line 40: /home at 995k inodes.",
+  "fix": "Replace the walk with a quota-based inode delta (doctor.home_file_count before/after the stage, recorded in the stage marker) or `find $HOME -newer <marker> -not -path ...` with a longer budget run as a background step; treat a budget overrun as stop_notify with an explicit \"not scanned\" observed value rather than a failed criterion.",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "minor",
+  "file": "agent_allocation/src/agent_allocation/dynorch/runner.py",
+  "problem": "The control/STOP and control/DRAIN sentinels are never consumed: after `touch $RUN/control/STOP` the next `--resume` job drains itself at the first 5 s poll, executing nothing, and status.json reports `drained: true` with no hint why. The runbook does not tell the operator to remove the file.",
+  "evidence": "runner.py:706-713 watch_sentinels only reads the files; RUNBOOK \u00a73 \"touch $RUN/control/STOP drains cleanly\".",
+  "fix": "Refuse to start (RunRefused with the path) when a sentinel exists at stage start, or rename it to STOP.consumed-<ts> once acted on; document removal in the runbook.",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "minor",
+  "file": "agent_allocation/src/agent_allocation/dynorch/cli.py",
+  "problem": "stage_prerequisites enforces only `gate4_main advance` for ext_e0..ext_e3; the plan's extension admission rule (each only after the core is sealed AND `remaining >= 1.25 x forecast`, in the fixed order E0 -> E1 -> E2 -> E3) is not checked anywhere, and the default --max-usd for extensions is the full $95 ceiling, so an extension can be launched that cannot complete within the ceiling and stops mid-way at the ledger. Separately, RunPaths.for_run's local_state_dir defaults to /scratch/<user>/... (present and world-writable on this host, reported at quota in the plan) and paths.ensure() creates it on every dynorch-run.",
+  "evidence": "cli.py:97-104 StageSpec requires=(\"gate4_main\",) for every ext stage; cli.py:224-234; plan \u00a71 \"each only after the core is sealed and reconciled, remaining >= 1.25 x forecast\"; sbatch `*) MAX_USD=${MAX_USD:-$(budget credit_ceiling_usd)}`; paths.py:41-46 default_local_state_dir prefers /scratch; cli.py:408 paths.ensure().",
+  "fix": "In stage_prerequisites for ext stages: require the previous extension's gate4 (E1 needs gate4_ext_e0, ...) and compute `forecast.stage_forecast(cfg, cells) * 1.25 <= credit_ceiling - ledger_totals().settled` (refuse otherwise). Set ALLOCATION_LOCAL_STATE=$DYNORCH_SCRATCH/local_state in the sbatch/runbook so nothing is created under /scratch or /tmp.",
+  "reviewer": "review:robustness"
+ },
+ {
+  "severity": "minor",
+  "file": "src/agent_allocation/dynorch/core.py",
+  "problem": "E0 ceiling_close exception path under-charges inside C: when the continuation raises after possibly being sent, the grant is settled at min(grant.max_tokens, think_tokens + cont_max); since the ceiling-bound grant is the ceiling and the continuation may add up to cont_max beyond it, up to G tokens that may have been generated are not counted toward C (B2 says an ambiguous outcome settles the FULL amount). Core arms are unaffected.",
+  "evidence": "core.py:456-457 `budget.settle(grant, min(grant.max_tokens, think_tokens + cont_max), prompt_tokens)`; TokenBudget.settle does not require completion <= max_tokens, so the clamp is unnecessary.",
+  "fix": "Settle `think_tokens + cont_max` (the conservative maximum; it is <= cap - spent_before by construction of cont_max). Add a test with an E0 spec and an ANSWER-phase READ_TIMEOUT asserting spent == think + cont_max.",
+  "reviewer": "review:accounting"
+ },
+ {
+  "severity": "minor",
+  "file": "src/agent_allocation/dynorch/core.py",
+  "problem": "The TERMINAL call renders request.messages raw (no reasoning re-injection) although hits/misses were already counted for this call, so the cached reasoning of prior tool turns is dropped from the terminal prompt (empty think blocks) and reinjection stats are over-stated; the terminal reply also still runs parse_tool_calls against request.tools although B4 says no tools, so a tool-call block in the terminal answer is stripped from the delivered content and finish_reason 'tool_calls' can be returned after exhaustion.",
+  "evidence": "core.py:327-328 (counters added) vs core.py:541 (`messages = list(request.messages) + [...]`), core.py:575-577 (parse with request.tools), core.py:542 (render with tools=()).",
+  "fix": "Pass the re-injected `messages` into _terminal and render those; return the terminal visible text as plain content (ToolParse none) with finish_reason 'stop'. Adjust test_terminal_path_renders_the_verbatim_sentence_without_thinking_or_tools to assert prior reasoning is present in the rendered terminal prompt.",
+  "reviewer": "review:accounting"
+ }
+]

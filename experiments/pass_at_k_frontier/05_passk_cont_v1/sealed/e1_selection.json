@@ -1,0 +1,79 @@
+{
+  "cohort": {
+    "excluded_unknown": [
+      "hmmt/2025/18"
+    ],
+    "n_common": 95
+  },
+  "reference_1x16": {
+    "by_family": {
+      "aime": 0.8333333333333334,
+      "gpqa_diamond": 0.9166666666666666,
+      "hmmt": 0.782608695652174,
+      "omni_math_hard": 0.625
+    },
+    "macro": 0.7894021739130435,
+    "mixture": 0.7490942028985508,
+    "n_items": 95,
+    "n_unknown_tie": 0
+  },
+  "rule": "argmax L96 mixture-weighted tie-averaged plurality accuracy over {8x2,4x4,2x8} on the common known cohort; ties -> fewer calls",
+  "selected": "4x4",
+  "table": {
+    "1x16": {
+      "by_family": {
+        "aime": 0.8333333333333334,
+        "gpqa_diamond": 0.9166666666666666,
+        "hmmt": 0.782608695652174,
+        "omni_math_hard": 0.625
+      },
+      "macro": 0.7894021739130435,
+      "mixture": 0.7490942028985508,
+      "n_items": 95,
+      "n_unknown_tie": 0
+    },
+    "2x8": {
+      "by_family": {
+        "aime": 0.7291666666666666,
+        "gpqa_diamond": 0.8125,
+        "hmmt": 0.6304347826086957,
+        "omni_math_hard": 0.4375
+      },
+      "macro": 0.6524003623188406,
+      "mixture": 0.5984601449275363,
+      "n_items": 95,
+      "n_unknown_tie": 0
+    },
+    "4x4": {
+      "by_family": {
+        "aime": 0.6666666666666666,
+        "gpqa_diamond": 0.875,
+        "hmmt": 0.4891304347826087,
+        "omni_math_hard": 0.5104166666666666
+      },
+      "macro": 0.6353034420289855,
+      "mixture": 0.6332880434782608,
+      "n_items": 95,
+      "n_unknown_tie": 0
+    },
+    "8x2": {
+      "by_family": {
+        "aime": 0.5104166666666666,
+        "gpqa_diamond": 0.8541666666666666,
+        "hmmt": 0.44021739130434784,
+        "omni_math_hard": 0.44345238095238093
+      },
+      "macro": 0.5620632763975155,
+      "mixture": 0.5730395962732919,
+      "n_items": 95,
+      "n_unknown_tie": 0
+    }
+  },
+  "version": "passk-e1-lock-v1",
+  "weights": {
+    "aime": 0.1,
+    "gpqa_diamond": 0.3,
+    "hmmt": 0.1,
+    "omni_math_hard": 0.5
+  }
+}

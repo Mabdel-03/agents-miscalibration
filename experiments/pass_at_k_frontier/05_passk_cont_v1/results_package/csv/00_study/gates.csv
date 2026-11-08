@@ -1,0 +1,19 @@
+gate_file,gate,shard,split,passed,complete,evaluated_at,n_criteria,n_criteria_failed,criteria_failed,criteria
+analysis_review.json,analysis_review,,,,,2026-09-25T22:24:23+00:00,0,0,[],{}
+e0_gate.json,e0_gate,,,true,,2026-09-25T21:06:10Z,6,0,[],"{""forced_budget_check"": true, ""generation_ids_unique"": true, ""generation_metadata"": true, ""observed_model_provider"": true, ""request_body_collisions"": true, ""split_overlap"": true}"
+gate0.json,gate0,,,true,true,2026-09-25T21:06:12Z,11,0,[],"{""e0_gate"": true, ""forecast"": true, ""gate_s"": true, ""key"": true, ""node_ids"": true, ""nothing_under_home"": true, ""planned_counts"": true, ""prompt_and_decoding"": true, ""slices"": true, ""tests"": true, ""think_parity"": true}"
+gate1_smoke_mancer.json,gate1_smoke,mancer,,true,true,2026-09-25T21:18:44Z,6,0,[],"{""all_terminal"": true, ""exact_budgets"": true, ""permaslug"": true, ""pin"": true, ""smoke_graded"": true, ""zero_cache_hits"": true}"
+gate1_smoke_parasail.json,gate1_smoke,parasail,,true,true,2026-09-25T21:18:45Z,6,0,[],"{""all_terminal"": true, ""exact_budgets"": true, ""permaslug"": true, ""pin"": true, ""smoke_graded"": true, ""zero_cache_hits"": true}"
+gate2_mancer.json,gate2,mancer,,true,,2026-09-25T22:45:55Z,5,0,[],"{""exact_budgets"": true, ""provider_drift"": true, ""refit_forecast"": true, ""unit_cost"": true, ""valid_final"": true}"
+gate2_parasail.json,gate2,parasail,,true,,2026-09-25T23:16:29Z,5,0,[],"{""exact_budgets"": true, ""provider_drift"": true, ""refit_forecast"": true, ""unit_cost"": true, ""valid_final"": true}"
+gate3_mancer.json,gate3,mancer,,true,,2026-09-25T23:31:43Z,3,0,[],"{""accepted_exact"": true, ""bias_ignored"": true, ""stream_cuts"": true}"
+gate3_parasail.json,gate3,parasail,,true,,2026-09-25T23:31:46Z,3,0,[],"{""accepted_exact"": true, ""bias_ignored"": true, ""stream_cuts"": true}"
+gate3_sample_mancer.json,gate3_sample,mancer,,true,,2026-09-25T23:31:41Z,0,0,[],{}
+gate3_sample_parasail.json,gate3_sample,parasail,,true,,2026-09-25T23:31:45Z,0,0,[],{}
+gate4_mancer_t200.json,gate4,mancer,t200,true,,2026-09-25T23:32:11Z,3,0,[],"{""completion"": true, ""dev_grades"": true, ""unique_think_texts"": true}"
+gate4_mancer_v48.json,gate4,mancer,v48,true,,2026-09-25T23:31:56Z,3,0,[],"{""completion"": true, ""dev_grades"": true, ""unique_think_texts"": true}"
+gate4_parasail_t200.json,gate4,parasail,t200,true,,2026-09-25T23:32:19Z,3,0,[],"{""completion"": true, ""dev_grades"": true, ""unique_think_texts"": true}"
+gate4_parasail_v48.json,gate4,parasail,v48,true,,2026-09-25T23:32:04Z,3,0,[],"{""completion"": true, ""dev_grades"": true, ""unique_think_texts"": true}"
+gate_s.json,gate_s,,,true,,2026-09-25T18:34:20Z,13,0,[],"{""c48_subset_bank_known_with_inclusion_probs"": true, ""duplicate_registry_review"": true, ""inventories_match_legacy_lock"": true, ""legacy_assignment_reproduced_l96_d32"": true, ""manifest_rows_legacy_byte_identical"": true, ""manifests_cover_l96_d32_t200"": true, ""prereg_committed_e781c34"": true, ""t200_assignment_1to1"": true, ""t200_composition_20_20_100_60"": true, ""t200_disjoint_main_dev_duplicates"": true, ""t200_eligible"": true, ""write_once_sha256"": true, ""x80_subset_8_8_40_24"": true}"
+graded_mancer.json,graded,mancer,,true,,2026-09-25T23:32:19Z,0,0,[],{}
+graded_parasail.json,graded,parasail,,true,,2026-09-25T23:32:21Z,0,0,[],{}

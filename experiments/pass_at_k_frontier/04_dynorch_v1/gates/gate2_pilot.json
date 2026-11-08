@@ -1,0 +1,178 @@
+{
+ "__record__": "GateResult",
+ "criteria": [
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H1_valid_final_share",
+   "observed": "{\"n\": 64, \"share\": 0.9062, \"valid\": 58}",
+   "passed": true,
+   "threshold": ">= 0.9 (>= 0.8: stop_notify; below: stop)"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H1_tool_call_parse_failure_share",
+   "observed": "{\"calls\": 0, \"share\": 0.0}",
+   "passed": true,
+   "threshold": "<= 0.05"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H1_cap_overrun_runs",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H1_grace_overrun_runs",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H1_spawn_share_k16",
+   "observed": "{\"runs_k16\": 32, \"share\": 0.0, \"spawning\": 0}",
+   "passed": false,
+   "threshold": "WAIVED by owner (2026-09-24T07:03:53Z): >= 0.1"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H1_guard_triggered_share",
+   "observed": "0.0",
+   "passed": true,
+   "threshold": "<= 0.05"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H1_evaluator_error_share",
+   "observed": "{\"graded\": 58, \"share\": 0.0}",
+   "passed": true,
+   "threshold": "<= 0.01"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H1_reinjection_hit_rate",
+   "observed": "{\"hits\": 0, \"misses\": 0, \"rate\": null}",
+   "passed": true,
+   "threshold": ">= 0.95 (vacuous with no assistant tool turns)"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H1_timeout_share",
+   "observed": "{\"share\": 0.0, \"timeouts\": 0}",
+   "passed": true,
+   "threshold": "<= 0.02"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H3_valid_final_share",
+   "observed": "{\"n\": 64, \"share\": 0.9844, \"valid\": 63}",
+   "passed": true,
+   "threshold": ">= 0.9 (>= 0.8: stop_notify; below: stop)"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H3_tool_call_parse_failure_share",
+   "observed": "{\"calls\": 2, \"share\": 0.0}",
+   "passed": true,
+   "threshold": "<= 0.05"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H3_cap_overrun_runs",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H3_grace_overrun_runs",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H3_spawn_share_k16",
+   "observed": "{\"runs_k16\": 32, \"share\": 0.0, \"spawning\": 0}",
+   "passed": false,
+   "threshold": "WAIVED by owner (2026-09-24T07:03:53Z): >= 0.1"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H3_guard_triggered_share",
+   "observed": "0.0",
+   "passed": true,
+   "threshold": "<= 0.05"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H3_evaluator_error_share",
+   "observed": "{\"graded\": 63, \"share\": 0.0}",
+   "passed": true,
+   "threshold": "<= 0.01"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H3_reinjection_hit_rate",
+   "observed": "{\"hits\": 0, \"misses\": 0, \"rate\": null}",
+   "passed": true,
+   "threshold": ">= 0.95 (vacuous with no assistant tool turns)"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + reports/PILOT_REPORT.md",
+   "name": "H3_timeout_share",
+   "observed": "{\"share\": 0.0, \"timeouts\": 0}",
+   "passed": true,
+   "threshold": "<= 0.02"
+  },
+  {
+   "evidence": "state/reconciliation_pilot.json",
+   "name": "key_delta_within_tolerance",
+   "observed": "{\"diff\": \"0E-8\", \"key_delta\": \"2.65154310\", \"ledger_delta\": \"2.65154310\"}",
+   "passed": true,
+   "threshold": "|key \u2212 ledger| <= 0.02"
+  },
+  {
+   "evidence": "state/reconciliation_pilot.json",
+   "name": "generation_sample_matches",
+   "observed": "{\"bad\": [], \"sampled\": 2}",
+   "passed": true,
+   "threshold": "every sampled call: /generation fetched, tokens counted once, cost within $0.01 or 5 %"
+  },
+  {
+   "evidence": "state/reconciliation_pilot.json",
+   "name": "observed_provider_pinned",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "every sampled generation served by the pinned provider"
+  },
+  {
+   "evidence": "state/reconciliation_pilot.json",
+   "name": "no_upstream_402",
+   "observed": "false",
+   "passed": true,
+   "threshold": "no PAYMENT_REQUIRED from upstream"
+  },
+  {
+   "evidence": "state/reconciliation_pilot.json",
+   "name": "open_reservations_zero",
+   "observed": "\"0\"",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "forecast.py",
+   "name": "core_forecast_within_soft_ceiling",
+   "observed": "{\"core_forecast_usd\": \"70.4665210000000\", \"cuts_applied\": [], \"soft_ceiling_usd\": \"90\", \"spent_usd\": \"3.15013060\"}",
+   "passed": true,
+   "threshold": "forecast (+25 %) <= soft ceiling \u2212 spent after at most C1\u2013C3"
+  }
+ ],
+ "decision": "advance",
+ "evaluated_at": "2026-09-24T07:30:04Z",
+ "gate": "gate2",
+ "passed": false,
+ "stage": "pilot"
+}

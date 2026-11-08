@@ -1,0 +1,144 @@
+{
+ "code": {
+  "clean": true,
+  "head": "c8b9b7b3a7ccf3f8754ef1f9ddf6766eb93577fc"
+ },
+ "complete": true,
+ "criteria": {
+  "e0_gate": {
+   "checks": {
+    "forced_budget_check": true,
+    "generation_ids_unique": true,
+    "generation_metadata": true,
+    "observed_model_provider": true,
+    "request_body_collisions": true,
+    "split_overlap": true
+   },
+   "passed": true
+  },
+  "forecast": {
+   "by_shard": {
+    "mancer": "57.30",
+    "parasail": "40.32"
+   },
+   "checks": {
+    "mancer_within_slice": true,
+    "parasail_within_slice": true,
+    "total_within_max": true
+   },
+   "passed": true,
+   "total_usd": "97.62"
+  },
+  "gate_s": {
+   "passed": true,
+   "recorded_splits_sha256": "c6384ba1d4c3ff8e0aeeae4fcfed7c8904fd020cc37c19ae170e9a84a6528d3c",
+   "splits_sha256": "c6384ba1d4c3ff8e0aeeae4fcfed7c8904fd020cc37c19ae170e9a84a6528d3c"
+  },
+  "key": {
+   "limit_remaining": "218.67853298",
+   "passed": true,
+   "sum_credit_ceilings": "150.0"
+  },
+  "node_ids": {
+   "legacy_collisions": 0,
+   "legacy_ids": 14031,
+   "passed": true,
+   "planned": 10572,
+   "unique": 10572
+  },
+  "nothing_under_home": {
+   "env_under_home": [],
+   "passed": true
+  },
+  "planned_counts": {
+   "counts": {
+    "c48_extra": 816,
+    "e1_fill": 1056,
+    "smoke": 12,
+    "t200_bank": 6200,
+    "t200_diag": 1000,
+    "v48_bank": 1488
+   },
+   "expected": {
+    "c48_extra": 816,
+    "e1_fill": 1056,
+    "smoke": 12,
+    "t200_bank": 6200,
+    "t200_diag": 1000,
+    "v48_bank": 1488
+   },
+   "passed": true
+  },
+  "prompt_and_decoding": {
+   "decoding_config_hash": "a641b002e3cb629e24c2488d7d171c8cfed86aeae98b0ecc63adc1f91893cc39",
+   "legacy_decoding_config_hash": "a641b002e3cb629e24c2488d7d171c8cfed86aeae98b0ecc63adc1f91893cc39",
+   "passed": true,
+   "prompt_version": "prompts-v1-e998b556294c"
+  },
+  "slices": {
+   "passed": true,
+   "slices": {
+    "mancer": {
+     "credit_ceiling_usd": "87.00",
+     "soft_admission_ceiling_usd": "82.00"
+    },
+    "parasail": {
+     "credit_ceiling_usd": "63.00",
+     "soft_admission_ceiling_usd": "60.00"
+    }
+   }
+  },
+  "tests": {
+   "passed": true,
+   "returncode": 0,
+   "tail": [
+    "........................................................................ [ 99%]",
+    ".                                                                        [100%]",
+    "145 passed in 137.67s (0:02:17)"
+   ],
+   "targets": [
+    "tests/unit/passk",
+    "tests/integration/test_passk_wpg_e2e.py"
+   ]
+  },
+  "think_parity": {
+   "check": "think_body_parity",
+   "checked": 128,
+   "evaluated_at": "2026-09-25T21:06:12Z",
+   "items": 128,
+   "mismatches": [],
+   "missing": [],
+   "passed": true,
+   "provider_only": {
+    "mancer": [
+     "mancer/fp8"
+    ],
+    "parasail": [
+     "parasail/fp8"
+    ]
+   }
+  }
+ },
+ "evaluated_at": "2026-09-25T21:06:12Z",
+ "gate": "gate0",
+ "jobs_sha256": {
+  "mancer": {
+   "c48_extra": "bb69aabcb06eb67d26e1e1f683b02aa74f2122a356fdd3c418b460e4417960e8",
+   "e1_fill": "20320267cc93c44bc9421fdceefa78ec57748c0b7593b9beba58131882c501b2",
+   "smoke": "54178d6918a1cc9e0906731b324a1dd4e27499c5b56612b81d4f92f42fcaa984",
+   "t200_bank": "1e980c9b15e5b83b8f53fd930f5a3d27e72f4b82357cbe358e79327917eee7c3",
+   "t200_diag": "66049b5736e3741d1059f9bf013ebd2f72539f95445b7f77c116effe4bce4d6d",
+   "v48_bank": "314abc37cafc1c8a3afbd4276bac509e1c506230ea6ab8df42b74811a8121773"
+  },
+  "parasail": {
+   "c48_extra": "fead2584ba5bfacc5b1023b850eec59b82190d11fdaea611fd6b3b4eb0fc7939",
+   "e1_fill": "23c64134a8f74b270c5a9689f1376e487da66cfc5d51bc2ae1b6f3aafe2fcc43",
+   "smoke": "4d9850624eff6c35374037a16337af8405e2b251d9a99803f3bceba679ff8749",
+   "t200_bank": "0401c3999eee195b297206ad0166c026629b12d862d240417f075b331dbb34a4",
+   "t200_diag": "960ea5e71a4b4d5429b79a834ff4ec87b407be9dbd05a7701932c6a477152149",
+   "v48_bank": "691490209a098b4877936e66f3c002e373b4347193e8772c3a376fe828255ec7"
+  }
+ },
+ "passed": true,
+ "splits_sha256": "c6384ba1d4c3ff8e0aeeae4fcfed7c8904fd020cc37c19ae170e9a84a6528d3c"
+}

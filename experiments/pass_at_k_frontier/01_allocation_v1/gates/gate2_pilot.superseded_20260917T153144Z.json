@@ -1,0 +1,129 @@
+{
+ "__record__": "GateResult",
+ "criteria": [
+  {
+   "evidence": "reports/PILOT_REPORT.md",
+   "name": "math500_valid_final",
+   "observed": "{\"n\": 108, \"share\": 0.954}",
+   "passed": true,
+   "threshold": ">= 0.95"
+  },
+  {
+   "evidence": "reports/PILOT_REPORT.md",
+   "name": "math500_truncated_without_final",
+   "observed": "{\"n\": 108, \"share\": 0.046}",
+   "passed": false,
+   "threshold": "<= 0.03"
+  },
+  {
+   "evidence": "reports/PILOT_REPORT.md",
+   "name": "mmlu_pro_valid_final",
+   "observed": "{\"n\": 108, \"share\": 0.898}",
+   "passed": false,
+   "threshold": ">= 0.95"
+  },
+  {
+   "evidence": "reports/PILOT_REPORT.md",
+   "name": "mmlu_pro_truncated_without_final",
+   "observed": "{\"n\": 108, \"share\": 0.019}",
+   "passed": true,
+   "threshold": "<= 0.03"
+  },
+  {
+   "evidence": "reports/PILOT_REPORT.md",
+   "name": "bbh_logic4_valid_final",
+   "observed": "{\"n\": 108, \"share\": 1.0}",
+   "passed": true,
+   "threshold": ">= 0.95"
+  },
+  {
+   "evidence": "reports/PILOT_REPORT.md",
+   "name": "bbh_logic4_truncated_without_final",
+   "observed": "{\"n\": 108, \"share\": 0.0}",
+   "passed": true,
+   "threshold": "<= 0.03"
+  },
+  {
+   "evidence": "reports/PILOT_REPORT.md",
+   "name": "mbpp_plus_valid_final",
+   "observed": "{\"n\": 108, \"share\": 0.972}",
+   "passed": true,
+   "threshold": ">= 0.95"
+  },
+  {
+   "evidence": "reports/PILOT_REPORT.md",
+   "name": "mbpp_plus_truncated_without_final",
+   "observed": "{\"n\": 108, \"share\": 0.0}",
+   "passed": true,
+   "threshold": "<= 0.03"
+  },
+  {
+   "evidence": "reports/PILOT_REPORT.md",
+   "name": "zero_cache_hits",
+   "observed": "0",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "reports/PILOT_REPORT.md",
+   "name": "zero_provider_drift",
+   "observed": "0",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "state/ledger_journal.jsonl",
+   "name": "resume_no_duplicate_terminal_nodes",
+   "observed": "0",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "state/ledger_journal.jsonl",
+   "name": "budget_stop_never_over_reserved",
+   "observed": "\"-0.00008077\"",
+   "passed": true,
+   "threshold": "<= 0"
+  },
+  {
+   "evidence": "selections/pilot.jsonl",
+   "name": "selector_rows_populated",
+   "observed": "0",
+   "passed": true,
+   "threshold": "0 missing"
+  },
+  {
+   "evidence": "grades/",
+   "name": "code_public_and_private_rows",
+   "observed": "{\"candidates\": 113, \"private\": 113, \"public\": 113}",
+   "passed": true,
+   "threshold": "every code candidate has both"
+  },
+  {
+   "evidence": "grades/",
+   "name": "evaluator_error_share",
+   "observed": "0.0",
+   "passed": true,
+   "threshold": "<= 0.01"
+  },
+  {
+   "evidence": "reports/PILOT_REPORT.md",
+   "name": "packet_envelope_respected",
+   "observed": "0",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "reports/PILOT_REPORT.md",
+   "name": "core_forecast_within_soft_ceiling",
+   "observed": "\"65.92563871\"",
+   "passed": true,
+   "threshold": "<= 125"
+  }
+ ],
+ "decision": "stop_notify",
+ "evaluated_at": "2026-09-17T13:10:55Z",
+ "gate": "gate2",
+ "passed": false,
+ "stage": "pilot"
+}

@@ -1,0 +1,10 @@
+TASK
+{task_prompt}
+
+OUTPUT REQUIREMENT
+{output_requirement}
+
+INDEPENDENT CANDIDATE SOLUTIONS
+{candidate_packets}
+
+Solve the original task using the candidates as potentially useful but fallible evidence. Check the decisive steps. You may select a supported candidate or derive a different solution. Return a concise rationale and exactly one complete final answer using the required tags.

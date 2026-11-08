@@ -1,0 +1,31 @@
+{
+ "__record__": "GateResult",
+ "criteria": [
+  {
+   "evidence": "dynorch-doctor",
+   "name": "doctor_preconditions",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "no blocking doctor failure"
+  },
+  {
+   "evidence": "tests/unit/dynorch",
+   "name": "unit_suite_green",
+   "observed": "{\"returncode\": 0, \"summary\": \"................................ [ 66%]\\n........................................................................ [ 82%]\\n........................................................................ [ 99%]\\n....                                                                     [100%]\\n436 passed in 33.61s\"}",
+   "passed": true,
+   "threshold": "pytest tests/unit/dynorch exit 0"
+  },
+  {
+   "evidence": "gates/gate0_smoke.json",
+   "name": "real_cli_smoke",
+   "observed": "{\"failures\": [], \"passed\": true}",
+   "passed": true,
+   "threshold": "every OpenClaude and Codex smoke check passed"
+  }
+ ],
+ "decision": "advance",
+ "evaluated_at": "2026-09-24T11:25:13Z",
+ "gate": "gate0",
+ "passed": true,
+ "stage": "offline"
+}

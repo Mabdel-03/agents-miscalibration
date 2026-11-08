@@ -1,0 +1,23 @@
+{
+ "attempts": 5719,
+ "criteria": {
+  "accepted_exact": {
+   "passed": true,
+   "violations": []
+  },
+  "bias_ignored": {
+   "max_in_30min": 0,
+   "passed": true,
+   "total": 0
+  },
+  "stream_cuts": {
+   "cuts": 0,
+   "passed": true,
+   "trailing_attempts": 500
+  }
+ },
+ "drained": false,
+ "evaluated_at": "2026-09-25T23:31:43Z",
+ "gate": "gate3",
+ "passed": true
+}

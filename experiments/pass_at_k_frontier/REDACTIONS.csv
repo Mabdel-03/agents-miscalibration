@@ -1,0 +1,23 @@
+kind,file,column,cells_withheld,original_sha256,public_sha256,reason
+cells,04_dynorch_v1/tables/dynorch_runs.parquet,cli_result,207,8ced3cf126fc1d3bf8df908ab09f71bf4c48834888f8448b0f2e82eb95671e97,a8130676d4130e1a1467dbb6021136fb25a601359b3da48247d051e6e6b77da3,cell restates a benchmark question
+cells,04_dynorch_v1/tables/dynorch_runs.parquet,final_message,207,8ced3cf126fc1d3bf8df908ab09f71bf4c48834888f8448b0f2e82eb95671e97,a8130676d4130e1a1467dbb6021136fb25a601359b3da48247d051e6e6b77da3,cell restates a benchmark question
+cells,05_passk_cont_v1/results_package/csv/02_draws/draws_all.csv,vote_exact_key,6,9a6f1ae739a6cfacaf523b8dc759a345a4d665600b640c0dbcf4c73e6dc98903,75034e89c2114d9fd090f3787272743dc9c7a53fa2dd4172a4303f69bae456ee,cell restates a benchmark question
+cells,05_passk_cont_v1/results_package/csv/02_draws/draws_all.csv,vote_text,8,9a6f1ae739a6cfacaf523b8dc759a345a4d665600b640c0dbcf4c73e6dc98903,75034e89c2114d9fd090f3787272743dc9c7a53fa2dd4172a4303f69bae456ee,cell restates a benchmark question
+cells,05_passk_cont_v1/results_package/csv/03_pools/pool_classes.csv,class_id,15,7f0706d2e6eb2a671dbfc3a8b656fd3d0b4f4b21c209eca9ac9181d00e4ff6fb,fb2d81dd56676644915ebc42c40e02622c0490820c411de72e1509f80dd177e3,cell restates a benchmark question
+cells,05_passk_cont_v1/results_package/csv/03_pools/pool_outcomes.csv,winner_class,7,30ec37b59109ec0a57eab384bc09f05f16d29d43345e5ac8fe98862133e31f5a,a9b07fcaf571cf4ddf39719a3dadf5d8e4000fcfc09666238f35c87776582614,cell restates a benchmark question
+cells,05_passk_cont_v1/results_package/csv/08_lex_front/c48_25a_calls.csv,visible_content,18,2665313ae99385f898b499269b2e59729beccbcce3fc0fde97633536d8a97f4d,868e367bdff91ca98dcf2a7a8d3c593fd5c33d600fcd6c6a860a7d2ba007c048,cell restates a benchmark question
+cells,05_passk_cont_v1/results_package/csv/10_e8b_lex_llm/decisions.csv,visible,2,f4e1808417909ab13a1ca3d4dbd59765bd5ba68de483cc7d2f7c65017ff6b88d,44a1cdf8712092823f097b8f65ae4141e61b0e614607d81450b112af0e68a937,cell restates a benchmark question
+cells,05_passk_cont_v1/scored/pool_metrics.parquet,winner_class,7,53aa17df9076d45febb544350f400f6593253f0c8cf07c361562799dc7367604,ca9bf2afd4e8f4ca3c00689b84020d8f13c424042f49d84ef6191a195929651e,cell restates a benchmark question
+file,05_passk_cont_v1/results_package/prompts/examples/solver_think_prompt_aime.txt,,,,,rendered prompt containing an AIME problem; original in the results package on the cluster (RAW_DATA.md)
+file,05_passk_cont_v1/results_package/prompts/examples/solver_think_prompt_gpqa_diamond.txt,,,,,rendered prompt containing a GPQA-Diamond question; original in the results package on the cluster (RAW_DATA.md)
+file,05_passk_cont_v1/results_package/prompts/examples/solver_think_prompt_hmmt.txt,,,,,rendered prompt containing an HMMT problem; original in the results package on the cluster (RAW_DATA.md)
+file,05_passk_cont_v1/results_package/prompts/examples/solver_think_prompt_omni_math_hard.txt,,,,,rendered prompt containing an Omni-MATH problem; original in the results package on the cluster (RAW_DATA.md)
+file,05_passk_cont_v1/results_package/prompts/llm_selectors/e8a_example_A0.txt,,,,,rendered selector prompt containing a benchmark problem; original in the results package on the cluster (RAW_DATA.md)
+file,05_passk_cont_v1/results_package/prompts/llm_selectors/e8a_example_A1.txt,,,,,rendered selector prompt containing a benchmark problem; original in the results package on the cluster (RAW_DATA.md)
+file,05_passk_cont_v1/results_package/prompts/llm_selectors/e8b_example_B0.txt,,,,,rendered selector prompt containing a benchmark problem; original in the results package on the cluster (RAW_DATA.md)
+file,05_passk_cont_v1/results_package/prompts/llm_selectors/e8b_example_B1.txt,,,,,rendered selector prompt containing a benchmark problem; original in the results package on the cluster (RAW_DATA.md)
+csv-dropped,01_allocation_v1/tables/budget_replay_items.csv,,,,,over 10 MB or empty; the Parquet twin holds the same data
+csv-dropped,01_allocation_v1/tables/candidates.csv,,,,,over 10 MB or empty; the Parquet twin holds the same data
+csv-dropped,01_allocation_v1/tables/policy_costs.csv,,,,,over 10 MB or empty; the Parquet twin holds the same data
+csv-dropped,01_allocation_v1/tables/policy_outcomes.csv,,,,,over 10 MB or empty; the Parquet twin holds the same data
+csv-dropped,03_forced_budget_v2/tables/high_vs_main_shared_items.csv,,,,,over 10 MB or empty; the Parquet twin holds the same data

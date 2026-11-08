@@ -1,0 +1,630 @@
+{
+ "after": {
+  "credits": {
+   "total_credits": "9710",
+   "total_usage": "9611.656568412"
+  },
+  "key": {
+   "is_free_tier": false,
+   "limit": "300",
+   "limit_remaining": "125.11565139999999",
+   "usage": "174.8843486"
+  },
+  "payment_required": false,
+  "recorded_at": "2026-09-24T14:48:10Z"
+ },
+ "before": {
+  "credits": {
+   "total_credits": "9710",
+   "total_usage": "9610.883631572"
+  },
+  "key": {
+   "is_free_tier": false,
+   "limit": "300",
+   "limit_remaining": "125.88858823999999",
+   "usage": "174.11141176"
+  },
+  "payment_required": false,
+  "recorded_at": "2026-09-24T14:40:46Z"
+ },
+ "decision": "clean",
+ "generation_sample": {
+  "population": 1166,
+  "population_source": "tables",
+  "rows": [
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790260468-gYwwLx9IWNazxKOoYGvz"
+    ],
+    "journaled_completion_tokens": 1213,
+    "journaled_cost_usd": "0.00320116",
+    "metadata_completion_tokens": 1213,
+    "metadata_cost_usd": "0.00320116",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "0cce95517b652ee0518692de",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790254313-Y1eimsTJ7S3zLtIxdZwY",
+     "gen-1790254561-GG1HMEsTES2Ty4dim7cV"
+    ],
+    "journaled_completion_tokens": 16722,
+    "journaled_cost_usd": "0.0462950",
+    "metadata_completion_tokens": 16722,
+    "metadata_cost_usd": "0.0462950",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "0de030b4aa9ee30d30ad9985",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790260887-k0brponYjuqFxV4LyzJe"
+    ],
+    "journaled_completion_tokens": 549,
+    "journaled_cost_usd": "0.00219",
+    "metadata_completion_tokens": 549,
+    "metadata_cost_usd": "0.00219",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "0e78470eac4324441a6dbdf1",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790260870-fStXaleDc4Wd6fhRURcD",
+     "gen-1790260888-qPuOzs9JQm8UrOL7UKmR"
+    ],
+    "journaled_completion_tokens": 1272,
+    "journaled_cost_usd": "0.0044675",
+    "metadata_completion_tokens": 1272,
+    "metadata_cost_usd": "0.0044675",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "19e99225ef866027239427de",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790260447-vDiX8BcFdmds4rxSnhVt",
+     "gen-1790260468-Dtn9fG78TXd3Fk5VNZqS"
+    ],
+    "journaled_completion_tokens": 2395,
+    "journaled_cost_usd": "0.00621092",
+    "metadata_completion_tokens": 2395,
+    "metadata_cost_usd": "0.00621092",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "1d1b40006b5ee24cb9a8a786",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790260094-EoZeyHRQRtm9trkA1tS7"
+    ],
+    "journaled_completion_tokens": 4157,
+    "journaled_cost_usd": "0.00974324",
+    "metadata_completion_tokens": 4157,
+    "metadata_cost_usd": "0.00974324",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "27c5670d5a6c79a8b4da06e3",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790253302-99FS5oKKuJwUFZcBbAnM"
+    ],
+    "journaled_completion_tokens": 12606,
+    "journaled_cost_usd": "0.0323275",
+    "metadata_completion_tokens": 12606,
+    "metadata_cost_usd": "0.0323275",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "5fdd7b34d66f9238910aa33e",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790261098-Uhb2vBUc10VMi5BytBvO",
+     "gen-1790261109-vgOStWWkEyhBcOCPdZCc"
+    ],
+    "journaled_completion_tokens": 1414,
+    "journaled_cost_usd": "0.00427096",
+    "metadata_completion_tokens": 1414,
+    "metadata_cost_usd": "0.00427096",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "6228828a75ceae323dacf763",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790259756-mcpDUzfNuZHCpDwpkqJQ",
+     "gen-1790259855-5eG8AEiV22fVnVxHCkLw"
+    ],
+    "journaled_completion_tokens": 8775,
+    "journaled_cost_usd": "0.0241875",
+    "metadata_completion_tokens": 8775,
+    "metadata_cost_usd": "0.0241875",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "66de471263a06d995a67ca70",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790254400-sADOhpsUCsAjtVmICoCQ"
+    ],
+    "journaled_completion_tokens": 1231,
+    "journaled_cost_usd": "0.0039025",
+    "metadata_completion_tokens": 1231,
+    "metadata_cost_usd": "0.0039025",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "701b3db4502c4d95c5b928e1",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790255528-KFDlk3qk8znlGqxIzZsb"
+    ],
+    "journaled_completion_tokens": 1833,
+    "journaled_cost_usd": "0.00432412",
+    "metadata_completion_tokens": 1833,
+    "metadata_cost_usd": "0.00432412",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "70dd2fe7a58e346e47eb9d3a",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790260047-2m5tDdYKple3PKCM8O09",
+     "gen-1790260156-9lBk6Bmnj6X6tyBoU4Bz"
+    ],
+    "journaled_completion_tokens": 8476,
+    "journaled_cost_usd": "0.02107760",
+    "metadata_completion_tokens": 8476,
+    "metadata_cost_usd": "0.02107760",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "878794945d2c7891bc7819f4",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790255734-YgA1CFeKOGe8n9ymkmtV",
+     "gen-1790256196-vu0oFdhAoZNeZxmsntDR"
+    ],
+    "journaled_completion_tokens": 25895,
+    "journaled_cost_usd": "0.06397892",
+    "metadata_completion_tokens": 25895,
+    "metadata_cost_usd": "0.06397892",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "94bb095a9d159e8c3155b6a2",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790260507-x18kHkULx4VNMHKxXnWE"
+    ],
+    "journaled_completion_tokens": 676,
+    "journaled_cost_usd": "0.00249",
+    "metadata_completion_tokens": 676,
+    "metadata_cost_usd": "0.00249",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "9954bb9f1b8ff1a078166b90",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790252814-qVA5g6YE0Wv9SGAi7NRj"
+    ],
+    "journaled_completion_tokens": 10540,
+    "journaled_cost_usd": "0.0241852",
+    "metadata_completion_tokens": 10540,
+    "metadata_cost_usd": "0.0241852",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "9b544982a11747dfbdee9439",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790261165-CABAzaPDgOrtwNPFgcM2",
+     "gen-1790261180-biWlPm433AP0Hfvh0Vmj"
+    ],
+    "journaled_completion_tokens": 1207,
+    "journaled_cost_usd": "0.00379636",
+    "metadata_completion_tokens": 1207,
+    "metadata_cost_usd": "0.00379636",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "a307775c8219a2986a42ada1",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790255198-rhBXD1kPKrRlqSgMVUof"
+    ],
+    "journaled_completion_tokens": 2900,
+    "journaled_cost_usd": "0.00777",
+    "metadata_completion_tokens": 2900,
+    "metadata_cost_usd": "0.00777",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "a3b517d823a5f35e689337dd",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790260335-XMPs5DA5aC4V4q3vOqgJ"
+    ],
+    "journaled_completion_tokens": 816,
+    "journaled_cost_usd": "0.0025325",
+    "metadata_completion_tokens": 816,
+    "metadata_cost_usd": "0.0025325",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "bcbdf87b131275c8bbeb968f",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790252856-p7X2WqBOAPL2p7w2I7t4"
+    ],
+    "journaled_completion_tokens": 7541,
+    "journaled_cost_usd": "0.01967",
+    "metadata_completion_tokens": 7541,
+    "metadata_cost_usd": "0.01967",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "dc9f058bbc76cb3c5554317c",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790260873-4WJoSpknjiLzaK0s2XeG",
+     "gen-1790260890-E9whcmRvKHegrTgfv7jV"
+    ],
+    "journaled_completion_tokens": 1279,
+    "journaled_cost_usd": "0.00396340",
+    "metadata_completion_tokens": 1279,
+    "metadata_cost_usd": "0.00396340",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "df5c82d1be05deeacb9bb80d",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790260959-eK1p6TSvVxIuRwHl3hzo",
+     "gen-1790260969-jW8G7YCNMOdADU1Av2C3"
+    ],
+    "journaled_completion_tokens": 1385,
+    "journaled_cost_usd": "0.00372348",
+    "metadata_completion_tokens": 1385,
+    "metadata_cost_usd": "0.00372348",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "eb1a10de5bcd197100d77662",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790258977-KGLYXIYsVKXdzpzBLdtG"
+    ],
+    "journaled_completion_tokens": 410,
+    "journaled_cost_usd": "0.00144416",
+    "metadata_completion_tokens": 410,
+    "metadata_cost_usd": "0.00144416",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "ec16ca43ddeae71fbcfb1597",
+    "tokens_match": true,
+    "transport_status": "ok"
+   },
+   {
+    "call_no": 1,
+    "conservative_charge": false,
+    "cost_within_tolerance": true,
+    "expected_provider": "Parasail",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790257352-JhyhbqwPEiyZQdFaULi1",
+     "gen-1790257753-ySNofMgJyXuwcssPyo0Y"
+    ],
+    "journaled_completion_tokens": 26180,
+    "journaled_cost_usd": "0.06461408",
+    "metadata_completion_tokens": 26180,
+    "metadata_cost_usd": "0.06461408",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Parasail"
+    ],
+    "provider_ok": true,
+    "run_key": "fbe45fce0b6cbe48c1c562bd",
+    "tokens_match": true,
+    "transport_status": "ok"
+   }
+  ],
+  "sampled": 23,
+  "seed": 20260923,
+  "share": "0.02"
+ },
+ "key_delta_usd": "0.77293684",
+ "key_minus_ledger_usd": "0E-9",
+ "key_minus_settled_usd": "0E-8",
+ "key_settle": {
+  "interval_s": 30.0,
+  "matched": true,
+  "max_wait_s": 300.0,
+  "outcome": "converged",
+  "polls": [
+   {
+    "key_usage_usd": "174.8843486",
+    "recorded_at": "2026-09-24T14:47:40Z",
+    "waited_s": 0.0
+   },
+   {
+    "key_usage_usd": "174.8843486",
+    "recorded_at": "2026-09-24T14:48:10Z",
+    "waited_s": 30.0
+   }
+  ],
+  "settled": true,
+  "waited_s": 30.0
+ },
+ "key_tolerance_usd": "0.50",
+ "key_within_ledger_bounds": true,
+ "layout": "dynorch/reconciliation/v1",
+ "ledger_after": {
+  "attempts": 5754,
+  "charged_max_usd": "0.932582156",
+  "open_attempts": [],
+  "open_reservations_usd": "0",
+  "released_unsent_usd": "0",
+  "settled_usd": "52.47614472"
+ },
+ "ledger_before": {
+  "attempts": 5395,
+  "charged_max_usd": "0.932582156",
+  "open_attempts": [],
+  "open_reservations_usd": "0",
+  "released_unsent_usd": "0",
+  "settled_usd": "51.70320788"
+ },
+ "ledger_charged_max_delta_usd": "0E-9",
+ "ledger_delta_usd": "0.772936840",
+ "ledger_settled_delta_usd": "0.77293684",
+ "phase": "after",
+ "problems": [],
+ "recorded_at": "2026-09-24T14:48:10Z",
+ "stage": "ext_e1",
+ "upstream_402": false
+}

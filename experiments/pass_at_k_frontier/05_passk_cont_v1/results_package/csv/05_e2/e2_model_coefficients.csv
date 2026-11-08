@@ -1,0 +1,49 @@
+model_file,model,fit,index,column,column_name_source,coef,x_mean,x_scale
+pooled_glm.json,pooled_glm,response,0,aime:d1,stored,-3.2296158634497876,0.08336951801997394,0.2764399419134125
+pooled_glm.json,pooled_glm,response,1,aime:d2,stored,-2.058010483760744,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,2,aime:d4,stored,-0.044711808970498534,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,3,aime:d8,stored,1.1265784789648876,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,4,aime:d16,stored,3.1836809183380046,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,5,hmmt:d1,stored,-2.3674710191905097,0.08336951801997394,0.27643994191341253
+pooled_glm.json,pooled_glm,response,6,hmmt:d2,stored,-1.4076353963289072,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,7,hmmt:d4,stored,1.0860311801099032,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,8,hmmt:d8,stored,2.2935979436867786,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,9,hmmt:d16,stored,3.250715959239458,0.04168475900998697,0.19986780600253304
+pooled_glm.json,pooled_glm,response,10,omni_math_hard:d1,stored,-2.0975710124860267,0.08336951801997394,0.27643994191341253
+pooled_glm.json,pooled_glm,response,11,omni_math_hard:d2,stored,-1.1632104246258772,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,12,omni_math_hard:d4,stored,0.05263891069344256,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,13,omni_math_hard:d8,stored,-0.12124518266666238,0.04125054277029961,0.19886914162699018
+pooled_glm.json,pooled_glm,response,14,omni_math_hard:d16,stored,1.3497925670889825,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,15,gpqa_diamond:d1,stored,0.661802261950517,0.08336951801997394,0.27643994191341253
+pooled_glm.json,pooled_glm,response,16,gpqa_diamond:d2,stored,1.2645430642657194,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,17,gpqa_diamond:d4,stored,1.1755262812915335,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,18,gpqa_diamond:d8,stored,1.732190446099002,0.04168475900998697,0.19986780600253307
+pooled_glm.json,pooled_glm,response,19,gpqa_diamond:d16,stored,1.7321904460990014,0.04168475900998697,0.19986780600253307
+ridge.json,ridge,coverage,0,bench:aime,derived from the design code,0.5473035604095463,0.25030674846625767,0.4331896583928539
+ridge.json,ridge,coverage,1,bench:hmmt,derived from the design code,0.19564529296417235,0.25030674846625767,0.433189658392846
+ridge.json,ridge,coverage,2,bench:omni_math_hard,derived from the design code,-0.11410903871247471,0.249079754601227,0.4324800925464894
+ridge.json,ridge,coverage,3,bench:gpqa_diamond,derived from the design code,-0.6292133303362566,0.25030674846625767,0.43318965839284884
+ridge.json,ridge,coverage,4,log2_n,derived from the design code,-0.24831183197160708,1.1625766871165644,1.065901265560182
+ridge.json,ridge,coverage,5,log2_a,derived from the design code,-0.16855456958886172,1.6012269938650308,1.2962422201344437
+ridge.json,ridge,coverage,6,rate_a,derived from the design code,6.594586127275313,0.5423342956814592,0.37151347522945816
+ridge.json,ridge,coverage,7,rate1,derived from the design code,0.007984012167093884,0.3876939732948388,0.36437209543408705
+ridge.json,ridge,coverage,8,top_share,derived from the design code,1.1041781976549583,0.5849143790590067,0.3199194528132654
+ridge.json,ridge,coverage,9,n_classes,derived from the design code,-0.7649504134921052,0.31589979550101926,0.28322137782088985
+ridge.json,ridge,coverage,10,novote,derived from the design code,28.47459696846132,0.003911042944785285,0.011773297143683475
+ridge.json,ridge,coverage,11,log2_n*rate_a,derived from the design code,4.54480991990371,0.5516705762059385,0.740871893947723
+ridge.json,ridge,coverage,12,log2_n*top_share,derived from the design code,0.920787778616298,0.679619262536204,0.801743146097792
+ridge.json,ridge,coverage,13,log2_a*rate_a,derived from the design code,0.6035223713228272,1.025306748466259,1.1572323921538097
+ridge.json,ridge,plurality,0,bench:aime,derived from the design code,0.4790491922663429,0.25030674846625767,0.4331896583928539
+ridge.json,ridge,plurality,1,bench:hmmt,derived from the design code,0.16067027036107684,0.25030674846625767,0.433189658392846
+ridge.json,ridge,plurality,2,bench:omni_math_hard,derived from the design code,0.061432145005175874,0.249079754601227,0.4324800925464894
+ridge.json,ridge,plurality,3,bench:gpqa_diamond,derived from the design code,-0.7009505204149096,0.25030674846625767,0.43318965839284884
+ridge.json,ridge,plurality,4,log2_n,derived from the design code,-0.2719668128948378,1.1625766871165644,1.065901265560182
+ridge.json,ridge,plurality,5,log2_a,derived from the design code,-0.13084530001667616,1.6012269938650308,1.2962422201344437
+ridge.json,ridge,plurality,6,rate_a,derived from the design code,4.952572120655095,0.5423342956814592,0.37151347522945816
+ridge.json,ridge,plurality,7,rate1,derived from the design code,0.454574068102291,0.3876939732948388,0.36437209543408705
+ridge.json,ridge,plurality,8,top_share,derived from the design code,1.7571316845094027,0.5849143790590067,0.3199194528132654
+ridge.json,ridge,plurality,9,n_classes,derived from the design code,-0.16590303953568517,0.31589979550101926,0.28322137782088985
+ridge.json,ridge,plurality,10,novote,derived from the design code,17.334895872584404,0.003911042944785285,0.011773297143683475
+ridge.json,ridge,plurality,11,log2_n*rate_a,derived from the design code,1.294108407783874,0.5516705762059385,0.740871893947723
+ridge.json,ridge,plurality,12,log2_n*top_share,derived from the design code,0.1708183055871448,0.679619262536204,0.801743146097792
+ridge.json,ridge,plurality,13,log2_a*rate_a,derived from the design code,0.6259884126323986,1.025306748466259,1.1572323921538097

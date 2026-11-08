@@ -1,0 +1,10 @@
+TASK
+{task_prompt}
+
+OUTPUT REQUIREMENT
+{output_requirement}
+
+YOUR PREVIOUS WRITTEN SOLUTION
+{own_packet}
+
+Reconsider your previous solution. Check the assumptions and decisive steps. Correct any error you find, but retain the answer when the reasoning remains valid. Work from the supplied task and your previous written solution. Return an updated concise rationale and one complete final answer using the required tags.

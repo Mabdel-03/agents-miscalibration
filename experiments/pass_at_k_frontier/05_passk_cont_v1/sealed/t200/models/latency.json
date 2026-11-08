@@ -1,0 +1,5 @@
+{
+ "use_latency": false,
+ "cv_log_loss_without": 0.5126733466041993,
+ "cv_log_loss_with": 0.5147491117829144
+}

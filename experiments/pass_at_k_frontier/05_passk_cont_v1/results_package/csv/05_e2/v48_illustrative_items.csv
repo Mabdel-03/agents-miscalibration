@@ -1,0 +1,5 @@
+benchmark,item_id,k,pred_diff
+aime,aime/2026/17,4,0.8435193414695223
+gpqa_diamond,gpqa_diamond/reck4G4xxv3YnpbtQ,16,-0.8206333755812818
+hmmt,hmmt/2026/5,8,0.7596752390191739
+omni_math_hard,omni_math_hard/121,16,-0.8681162325043877

@@ -1,0 +1,15 @@
+time,label,key_usage_usd,key_limit_usd,limit_remaining_usd,shard,stage,source
+2026-09-25 14:20 EDT,owner raised the key limit before launch,181.32,400.0,218.68,,,memory note passk-cont-run.md
+2026-09-25 20:07 EDT,"core study complete (10,572 new generations): 277.58 - 181.32 = 96.26 all-in",277.58,400.0,,,,memory note passk-cont-run.md
+2026-09-25T21:07:07.713518+00:00,OpenRouter /key snapshot,181.32146702,400.0,218.67853298,mancer,canary_before,artifacts/shards/mancer/state/provider_usage.jsonl (usage fields only)
+2026-09-25T21:14:53.162575+00:00,OpenRouter /key snapshot,182.04772208,400.0,217.95227792,mancer,canary_after,artifacts/shards/mancer/state/provider_usage.jsonl (usage fields only)
+2026-09-25T21:15:21.369596+00:00,OpenRouter /key snapshot,182.04772208,400.0,217.95227792,mancer,canary_after,artifacts/shards/mancer/state/provider_usage.jsonl (usage fields only)
+2026-09-25T21:16:09.156098+00:00,OpenRouter /key snapshot,182.04772208,400.0,217.95227792,mancer,passk_run,artifacts/shards/mancer/state/provider_usage.jsonl (usage fields only)
+2026-09-25T21:19:10.940402+00:00,OpenRouter /key snapshot,182.10131328,400.0,217.89868672,mancer,passk_run,artifacts/shards/mancer/state/provider_usage.jsonl (usage fields only)
+2026-09-25T22:31:19.543511+00:00,OpenRouter /key snapshot,251.44840002,400.0,148.55159998,mancer,passk_run,artifacts/shards/mancer/state/provider_usage.jsonl (usage fields only)
+2026-09-25T21:07:07.699676+00:00,OpenRouter /key snapshot,181.32146702,400.0,218.67853298,parasail,canary_before,artifacts/shards/parasail/state/provider_usage.jsonl (usage fields only)
+2026-09-25T21:12:42.723302+00:00,OpenRouter /key snapshot,181.91111458,400.0,218.08888542,parasail,canary_after,artifacts/shards/parasail/state/provider_usage.jsonl (usage fields only)
+2026-09-25T21:15:41.840279+00:00,OpenRouter /key snapshot,182.04772208,400.0,217.95227792,parasail,canary_after,artifacts/shards/parasail/state/provider_usage.jsonl (usage fields only)
+2026-09-25T21:16:09.182435+00:00,OpenRouter /key snapshot,182.04772208,400.0,217.95227792,parasail,passk_run,artifacts/shards/parasail/state/provider_usage.jsonl (usage fields only)
+2026-09-25T21:19:10.831993+00:00,OpenRouter /key snapshot,182.10131328,400.0,217.89868672,parasail,passk_run,artifacts/shards/parasail/state/provider_usage.jsonl (usage fields only)
+2026-09-25T22:31:18.900339+00:00,OpenRouter /key snapshot,251.44840002,400.0,148.55159998,parasail,passk_run,artifacts/shards/parasail/state/provider_usage.jsonl (usage fields only)

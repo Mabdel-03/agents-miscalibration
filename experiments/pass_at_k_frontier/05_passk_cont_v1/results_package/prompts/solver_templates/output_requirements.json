@@ -1,0 +1,6 @@
+{
+  "aime": "Put exactly one mathematical answer inside <final>. A boxed mathematical expression is allowed. Do not put the derivation in <final>.",
+  "hmmt": "Put exactly one mathematical answer inside <final>. A boxed mathematical expression is allowed. Do not put the derivation in <final>.",
+  "omni_math_hard": "Put exactly one mathematical answer inside <final>. A boxed mathematical expression is allowed. Do not put the derivation in <final>.",
+  "gpqa_diamond": "Put only the letter of one listed answer option inside <final>."
+}

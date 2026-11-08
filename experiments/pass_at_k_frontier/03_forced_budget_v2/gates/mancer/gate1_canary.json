@@ -1,0 +1,66 @@
+{
+ "__record__": "GateResult",
+ "criteria": [
+  {
+   "evidence": "manifests/jobs/canary.jsonl + parsed/ + state/generation_metadata.jsonl",
+   "name": "all_transport_ok",
+   "observed": "{\"n\": 24, \"not_ok\": []}",
+   "passed": true,
+   "threshold": "every canary call TransportStatus.ok"
+  },
+  {
+   "evidence": "manifests/jobs/canary.jsonl + parsed/ + state/generation_metadata.jsonl",
+   "name": "zero_cache_hits",
+   "observed": "0",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "manifests/jobs/canary.jsonl + parsed/ + state/generation_metadata.jsonl",
+   "name": "provider_identity",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "100% served by the locked provider"
+  },
+  {
+   "evidence": "manifests/jobs/canary.jsonl + parsed/ + state/generation_metadata.jsonl",
+   "name": "standard_tier_by_metadata_and_price",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "service_tier standard/absent and billed/standard price in (Decimal('0.90'), Decimal('1.10'))"
+  },
+  {
+   "evidence": "manifests/jobs/canary.jsonl + parsed/ + state/generation_metadata.jsonl",
+   "name": "reasoning_tokens_reported",
+   "observed": "1.0",
+   "passed": true,
+   "threshold": ">= 0.9"
+  },
+  {
+   "evidence": "manifests/jobs/canary.jsonl + parsed/ + state/generation_metadata.jsonl",
+   "name": "forced_exact_budget",
+   "observed": "{\"budgets\": {\"1024\": {\"max\": 1024, \"min\": 1024, \"n\": 4}, \"16384\": {\"max\": 16384, \"min\": 16384, \"n\": 4}, \"2048\": {\"max\": 2048, \"min\": 2048, \"n\": 4}, \"4096\": {\"max\": 4096, \"min\": 4096, \"n\": 4}, \"512\": {\"max\": 512, \"min\": 512, \"n\": 4}, \"8192\": {\"max\": 8192, \"min\": 8192, \"n\": 4}}, \"not_exact\": [], \"not_forced\": []}",
+   "passed": true,
+   "threshold": "every canary node: reasoning_tokens == reasoning_budget and THINK finish_reason length"
+  },
+  {
+   "evidence": "manifests/jobs/canary.jsonl + parsed/ + state/generation_metadata.jsonl",
+   "name": "no_rejected_budget",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "no 4xx for any configured A"
+  },
+  {
+   "evidence": "state/provider_usage.jsonl",
+   "name": "ledger_reconciles_with_key_usage",
+   "observed": "{\"key_delta\": \"0.72535564\", \"ledger_settled\": \"0.71452498\"}",
+   "passed": true,
+   "threshold": "ledger settled >= key delta - 0.0357262490"
+  }
+ ],
+ "decision": "advance",
+ "evaluated_at": "2026-09-18T09:31:19Z",
+ "gate": "gate1",
+ "passed": true,
+ "stage": "canary"
+}

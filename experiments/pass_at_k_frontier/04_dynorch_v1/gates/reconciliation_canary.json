@@ -1,0 +1,108 @@
+{
+ "after": {
+  "credits": {
+   "total_credits": "9610",
+   "total_usage": "9559.655378692"
+  },
+  "key": {
+   "is_free_tier": false,
+   "limit": "300",
+   "limit_remaining": "177.11684112",
+   "usage": "122.88315888"
+  },
+  "payment_required": false,
+  "recorded_at": "2026-09-24T07:02:45Z"
+ },
+ "before": {
+  "credits": {
+   "total_credits": "9610",
+   "total_usage": "9559.409896192"
+  },
+  "key": {
+   "is_free_tier": false,
+   "limit": "300",
+   "limit_remaining": "177.36232361999998",
+   "usage": "122.63767638"
+  },
+  "payment_required": false,
+  "recorded_at": "2026-09-24T06:41:21Z"
+ },
+ "decision": "clean",
+ "generation_sample": {
+  "population": 10,
+  "population_source": "tables",
+  "rows": [
+   {
+    "call_no": 1,
+    "cost_within_tolerance": true,
+    "expected_provider": "Mancer 2",
+    "fetched": true,
+    "generation_ids": [
+     "gen-1790232083-H6qPrBo2HJsWzm1Gb3Zp",
+     "gen-1790232137-tbQClhcAFO2TW1Ps70RX"
+    ],
+    "journaled_completion_tokens": 4422,
+    "journaled_cost_usd": "0.0129925",
+    "metadata_completion_tokens": 4422,
+    "metadata_cost_usd": "0.0129925",
+    "metadata_token_field": "native_tokens_completion",
+    "native_tokens_missing": false,
+    "provider_names": [
+     "Mancer 2"
+    ],
+    "provider_ok": true,
+    "run_key": "a2e99fad9322c6758c6d11ea",
+    "tokens_match": true
+   }
+  ],
+  "sampled": 1,
+  "seed": 20260923,
+  "share": "0.02"
+ },
+ "key_delta_usd": "0.24548250",
+ "key_minus_ledger_usd": "0E-8",
+ "key_settle": {
+  "interval_s": 30.0,
+  "matched": true,
+  "max_wait_s": 300.0,
+  "outcome": "converged",
+  "polls": [
+   {
+    "key_usage_usd": "122.88315888",
+    "recorded_at": "2026-09-24T07:02:15Z",
+    "waited_s": 0.0
+   },
+   {
+    "key_usage_usd": "122.88315888",
+    "recorded_at": "2026-09-24T07:02:45Z",
+    "waited_s": 30.0
+   }
+  ],
+  "settled": true,
+  "waited_s": 30.0
+ },
+ "key_tolerance_usd": "0.02",
+ "layout": "dynorch/reconciliation/v1",
+ "ledger_after": {
+  "attempts": 38,
+  "charged_max_usd": "0",
+  "open_attempts": [],
+  "open_reservations_usd": "0",
+  "released_unsent_usd": "0",
+  "settled_usd": "0.4985875"
+ },
+ "ledger_before": {
+  "attempts": 20,
+  "charged_max_usd": "0",
+  "open_attempts": [],
+  "open_reservations_usd": "0",
+  "released_unsent_usd": "0",
+  "settled_usd": "0.2531050"
+ },
+ "ledger_delta_usd": "0.2454825",
+ "phase": "after",
+ "problems": [],
+ "recorded_at": "2026-09-24T07:02:45Z",
+ "stage": "canary",
+ "upstream_402": false
+}

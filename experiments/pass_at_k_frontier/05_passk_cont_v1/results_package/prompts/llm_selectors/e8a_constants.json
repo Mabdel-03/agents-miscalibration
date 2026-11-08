@@ -1,0 +1,27 @@
+{
+ "SYSTEM": "You are a planning assistant. You do not solve the problem yourself. You decide how a fixed reasoning budget should be spent by a separate solver (the same language model as you) so that the final answer it delivers is most likely to be correct.",
+ "OPTION_TEXT": {
+  "1x16": "one attempt with 16 units of reasoning",
+  "2x8": "two attempts with 8 units of reasoning each",
+  "4x4": "four attempts with 4 units of reasoning each",
+  "8x2": "eight attempts with 2 units of reasoning each",
+  "16x1": "sixteen attempts with 1 unit of reasoning each"
+ },
+ "USER_HEAD": "PROBLEM\n{problem}\n\nBUDGET\nThe solver has a total budget of 16 units of reasoning, where 1 unit is 1,024 reasoning tokens. Every attempt reasons for exactly its full allowance and then writes its final answer. Attempts are independent: they do not see each other.\n\nOPTIONS\n{options}\nWith more than one attempt, the delivered answer is the most common final answer among the attempts (ties are broken uniformly at random). With one attempt, it is that attempt's final answer.\n",
+ "USER_DIAG": "\nEARLIER ATTEMPTS\nFive independent short attempts (1 unit of reasoning each) were already made on this problem. Their final answers (correctness unknown) were:\n{answers}\n",
+ "USER_TAIL": "\nTASK\nChoose the option most likely to deliver a correct final answer for this problem. Reply with only the option label inside <final></final>, i.e. <final>LABEL</final> where LABEL is one of the labels listed above.",
+ "NO_ANSWER": "(no valid final answer)",
+ "MENU": [
+  "1x16",
+  "2x8",
+  "4x4",
+  "8x2",
+  "16x1"
+ ],
+ "FALLBACK": "1x16",
+ "THINK_TOKENS": 1024,
+ "MAX_PARSE_ATTEMPTS": 2,
+ "prompt_sha256": "8601019493c6021aaba77bb41d0b01a40914a9ce580645e1d7dd94948a8cd438",
+ "option_order_salt": "passk_cont_v1/e8a/order|seed=20260925|<arm>|<item_id>; options sorted by sha256(salt|label)",
+ "parse": "exactly one <final>...</final>; lowercased, whitespace removed, '×' -> 'x'; must be a menu label"
+}

@@ -1,0 +1,80 @@
+{
+ "__record__": "GateResult",
+ "criteria": [
+  {
+   "evidence": "tables/policy_outcomes_dynorch.parquet",
+   "name": "every_planned_cell_has_row",
+   "observed": "{\"missing\": [], \"pending\": [], \"planned\": 1728}",
+   "passed": true,
+   "threshold": "one finalised row per planned cell"
+  },
+  {
+   "evidence": "tables/policy_outcomes_dynorch.parquet",
+   "name": "completeness_per_cell",
+   "observed": "{\"completeness\": {\"H0/1\": 0.9792, \"H0/16\": 1.0, \"H0/2\": 1.0, \"H0/25\": 1.0, \"H0/4\": 1.0, \"H0/8\": 1.0, \"H1/1\": 1.0, \"H1/16\": 1.0, \"H1/2\": 0.9896, \"H1/25\": 1.0, \"H1/4\": 1.0, \"H1/8\": 0.9896, \"H3/1\": 1.0, \"H3/16\": 1.0, \"H3/2\": 1.0, \"H3/25\": 1.0, \"H3/4\": 1.0, \"H3/8\": 1.0}, \"partial\": []}",
+   "passed": true,
+   "threshold": ">= 0.95 per (arm, rung); partial cells are excluded from primary p-values; a partial primary cell (H1/16, H3/16) stops for the owner"
+  },
+  {
+   "evidence": "state/reconciliation_main.json",
+   "name": "key_delta_within_tolerance",
+   "observed": "{\"diff\": \"0E-9\", \"key_delta\": \"0.28470174\", \"ledger_delta\": \"0.284701740\"}",
+   "passed": true,
+   "threshold": "|key \u2212 ledger| <= 0.50"
+  },
+  {
+   "evidence": "state/reconciliation_main.json",
+   "name": "generation_sample_matches",
+   "observed": "{\"bad\": [], \"sampled\": 35}",
+   "passed": true,
+   "threshold": "every sampled call: /generation fetched, tokens counted once, cost within $0.01 or 5 %"
+  },
+  {
+   "evidence": "state/reconciliation_main.json",
+   "name": "observed_provider_pinned",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "every sampled generation served by the pinned provider"
+  },
+  {
+   "evidence": "state/reconciliation_main.json",
+   "name": "no_upstream_402",
+   "observed": "false",
+   "passed": true,
+   "threshold": "no PAYMENT_REQUIRED from upstream"
+  },
+  {
+   "evidence": "state/reconciliation_main.json",
+   "name": "open_reservations_zero",
+   "observed": "\"0\"",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "grading/text/grade.py re-run",
+   "name": "grader_rerun_identical",
+   "observed": "0",
+   "passed": true,
+   "threshold": "0 mismatches on re-grading every VALID final answer"
+  },
+  {
+   "evidence": "forced_budget_v2/merged/tables/policy_outcomes.parquet",
+   "name": "sealed_ladder_reproduced",
+   "observed": "{\"deep/16\": 0.7916666666666666, \"sample/16\": 0.41666666666666663}",
+   "passed": true,
+   "threshold": "deep/16 = 0.7917, sample/16 = 0.4167"
+  },
+  {
+   "evidence": "tables/SEAL.json",
+   "name": "tables_sealed",
+   "observed": "[\"dynorch_calls.parquet\", \"dynorch_runs.parquet\", \"policy_costs_dynorch.parquet\", \"policy_outcomes_dynorch.parquet\"]",
+   "passed": true,
+   "threshold": "dynorch_runs, dynorch_calls, policy_outcomes_dynorch, policy_costs_dynorch hashed in tables/SEAL.json"
+  }
+ ],
+ "decision": "advance",
+ "evaluated_at": "2026-09-24T11:43:15Z",
+ "gate": "gate4",
+ "passed": true,
+ "stage": "main"
+}

@@ -1,0 +1,1524 @@
+{
+ "budgets": [
+  {
+   "at_completion_cap_count": 0,
+   "cache_statuses": {
+    "null": 3
+   },
+   "cached_prompt_tokens": {
+    "max": 0,
+    "median": 0,
+    "min": 0,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "completed_share": 1.0,
+   "completion_statuses": {
+    "completed": 3
+   },
+   "completion_tokens": {
+    "max": 1225,
+    "median": 989,
+    "min": 574,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "content_empty_count": 0,
+   "content_empty_share": 0.0,
+   "cost_usd": {
+    "known_count": 3,
+    "mean_known": "0.0004113",
+    "total_known": "0.0012339",
+    "unknown_count": 0
+   },
+   "count": 3,
+   "finish_reasons": {
+    "stop": 3
+   },
+   "headroom_utilization": {
+    "max": 0.7975260416666666,
+    "median": 0.6438802083333334,
+    "min": 0.3736979166666667,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "latency_seconds": {
+    "max": 3.4839063740801066,
+    "median": 2.888368993997574,
+    "min": 1.9961085468530655,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "length_share": 0.0,
+   "max_completion_tokens": [
+    1536
+   ],
+   "metadata": {
+    "available": 3,
+    "cost_disagreements": 0,
+    "missing": 0,
+    "models": {
+     "google/gemini-2.5-flash-lite": 3
+    },
+    "native_tokens_reasoning": {
+     "max": 391,
+     "median": 363,
+     "min": 346,
+     "n": 3,
+     "n_none": 0,
+     "share_none": 0.0
+    },
+    "provider_names": {
+     "Google AI Studio": 3
+    },
+    "reasoning_usage_disagreements": 0,
+    "response_cache_source_ids": 0,
+    "service_tiers": {
+     "default": 3
+    }
+   },
+   "native_finish_reasons": {
+    "STOP": 3
+   },
+   "observed_models": {
+    "google/gemini-2.5-flash-lite": 3
+   },
+   "observed_providers": {
+    "Google AI Studio": 3
+   },
+   "prompt_tokens": {
+    "max": 459,
+    "median": 425,
+    "min": 303,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "reasoning_budget_ratio": {
+    "max": 0.763671875,
+    "median": 0.708984375,
+    "min": 0.67578125,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "reasoning_exceeds_completion_count": 0,
+   "reasoning_over_budget_count": 0,
+   "reasoning_returned_share": 1.0,
+   "reasoning_tokens": {
+    "max": 391,
+    "median": 363,
+    "min": 346,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "requested_reasoning_budget": 512,
+   "transport_ok_count": 3,
+   "transport_statuses": {
+    "ok": 3
+   },
+   "visible_tokens": {
+    "max": 862,
+    "median": 598,
+    "min": 228,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   }
+  },
+  {
+   "at_completion_cap_count": 0,
+   "cache_statuses": {
+    "null": 6
+   },
+   "cached_prompt_tokens": {
+    "max": 0,
+    "median": 0,
+    "min": 0,
+    "n": 6,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "completed_share": 0.6666666666666666,
+   "completion_statuses": {
+    "completed": 4,
+    "length": 2
+   },
+   "completion_tokens": {
+    "max": 2038,
+    "median": 1242,
+    "min": 961,
+    "n": 6,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "content_empty_count": 0,
+   "content_empty_share": 0.0,
+   "cost_usd": {
+    "known_count": 6,
+    "mean_known": "0.001701783333333333333333333333",
+    "total_known": "0.0102107",
+    "unknown_count": 0
+   },
+   "count": 6,
+   "finish_reasons": {
+    "length": 2,
+    "stop": 4
+   },
+   "headroom_utilization": {
+    "max": 0.9951171875,
+    "median": 0.58447265625,
+    "min": 0.3206380208333333,
+    "n": 6,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "latency_seconds": {
+    "max": 8.829410262871534,
+    "median": 4.116923248046078,
+    "min": 2.8420406258665025,
+    "n": 6,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "length_share": 0.3333333333333333,
+   "max_completion_tokens": [
+    2048,
+    3072
+   ],
+   "metadata": {
+    "available": 6,
+    "cost_disagreements": 0,
+    "missing": 0,
+    "models": {
+     "google/gemini-2.5-flash": 2,
+     "google/gemini-2.5-flash-lite": 4
+    },
+    "native_tokens_reasoning": {
+     "max": 886,
+     "median": 774.5,
+     "min": 740,
+     "n": 6,
+     "n_none": 0,
+     "share_none": 0.0
+    },
+    "provider_names": {
+     "Google AI Studio": 6
+    },
+    "reasoning_usage_disagreements": 0,
+    "response_cache_source_ids": 0,
+    "service_tiers": {
+     "default": 6
+    }
+   },
+   "native_finish_reasons": {
+    "MAX_TOKENS": 2,
+    "STOP": 4
+   },
+   "observed_models": {
+    "google/gemini-2.5-flash": 2,
+    "google/gemini-2.5-flash-lite": 4
+   },
+   "observed_providers": {
+    "Google AI Studio": 6
+   },
+   "prompt_tokens": {
+    "max": 459,
+    "median": 303,
+    "min": 292,
+    "n": 6,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "reasoning_budget_ratio": {
+    "max": 0.865234375,
+    "median": 0.75634765625,
+    "min": 0.72265625,
+    "n": 6,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "reasoning_exceeds_completion_count": 0,
+   "reasoning_over_budget_count": 0,
+   "reasoning_returned_share": 1.0,
+   "reasoning_tokens": {
+    "max": 886,
+    "median": 774.5,
+    "min": 740,
+    "n": 6,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "requested_reasoning_budget": 1024,
+   "transport_ok_count": 6,
+   "transport_statuses": {
+    "ok": 6
+   },
+   "visible_tokens": {
+    "max": 1253,
+    "median": 444.5,
+    "min": 195,
+    "n": 6,
+    "n_none": 0,
+    "share_none": 0.0
+   }
+  },
+  {
+   "at_completion_cap_count": 0,
+   "cache_statuses": {
+    "null": 3
+   },
+   "cached_prompt_tokens": {
+    "max": 0,
+    "median": 0,
+    "min": 0,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "completed_share": 0.6666666666666666,
+   "completion_statuses": {
+    "completed": 2,
+    "length": 1
+   },
+   "completion_tokens": {
+    "max": 3053,
+    "median": 1967,
+    "min": 1153,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "content_empty_count": 0,
+   "content_empty_share": 0.0,
+   "cost_usd": {
+    "known_count": 3,
+    "mean_known": "0.0008626333333333333333333333333",
+    "total_known": "0.0025879",
+    "unknown_count": 0
+   },
+   "count": 3,
+   "finish_reasons": {
+    "length": 1,
+    "stop": 2
+   },
+   "headroom_utilization": {
+    "max": 0.9938151041666666,
+    "median": 0.6402994791666666,
+    "min": 0.3753255208333333,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "latency_seconds": {
+    "max": 7.066657012095675,
+    "median": 4.746112379012629,
+    "min": 3.216166672995314,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "length_share": 0.3333333333333333,
+   "max_completion_tokens": [
+    3072
+   ],
+   "metadata": {
+    "available": 3,
+    "cost_disagreements": 0,
+    "missing": 0,
+    "models": {
+     "google/gemini-2.5-flash-lite": 3
+    },
+    "native_tokens_reasoning": {
+     "max": 1397,
+     "median": 1395,
+     "min": 1059,
+     "n": 3,
+     "n_none": 0,
+     "share_none": 0.0
+    },
+    "provider_names": {
+     "Google AI Studio": 3
+    },
+    "reasoning_usage_disagreements": 0,
+    "response_cache_source_ids": 0,
+    "service_tiers": {
+     "default": 3
+    }
+   },
+   "native_finish_reasons": {
+    "MAX_TOKENS": 1,
+    "STOP": 2
+   },
+   "observed_models": {
+    "google/gemini-2.5-flash-lite": 3
+   },
+   "observed_providers": {
+    "Google AI Studio": 3
+   },
+   "prompt_tokens": {
+    "max": 459,
+    "median": 425,
+    "min": 303,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "reasoning_budget_ratio": {
+    "max": 0.68212890625,
+    "median": 0.68115234375,
+    "min": 0.51708984375,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "reasoning_exceeds_completion_count": 0,
+   "reasoning_over_budget_count": 0,
+   "reasoning_returned_share": 1.0,
+   "reasoning_tokens": {
+    "max": 1397,
+    "median": 1395,
+    "min": 1059,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "requested_reasoning_budget": 2048,
+   "transport_ok_count": 3,
+   "transport_statuses": {
+    "ok": 3
+   },
+   "visible_tokens": {
+    "max": 1656,
+    "median": 572,
+    "min": 94,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   }
+  },
+  {
+   "at_completion_cap_count": 0,
+   "cache_statuses": {
+    "null": 4
+   },
+   "cached_prompt_tokens": {
+    "max": 0,
+    "median": 0,
+    "min": 0,
+    "n": 4,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "completed_share": 0.75,
+   "completion_statuses": {
+    "completed": 3,
+    "length": 1
+   },
+   "completion_tokens": {
+    "max": 5106,
+    "median": 2655.5,
+    "min": 1332,
+    "n": 4,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "content_empty_count": 0,
+   "content_empty_share": 0.0,
+   "cost_usd": {
+    "known_count": 4,
+    "mean_known": "0.001211875",
+    "total_known": "0.0048475",
+    "unknown_count": 0
+   },
+   "count": 4,
+   "finish_reasons": {
+    "length": 1,
+    "stop": 3
+   },
+   "headroom_utilization": {
+    "max": 0.997265625,
+    "median": 0.51865234375,
+    "min": 0.216796875,
+    "n": 4,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "latency_seconds": {
+    "max": 11.934314362937585,
+    "median": 6.290552207035944,
+    "min": 4.034922499908134,
+    "n": 4,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "length_share": 0.25,
+   "max_completion_tokens": [
+    5120,
+    6144
+   ],
+   "metadata": {
+    "available": 4,
+    "cost_disagreements": 0,
+    "missing": 0,
+    "models": {
+     "google/gemini-2.5-flash-lite": 4
+    },
+    "native_tokens_reasoning": {
+     "max": 3448,
+     "median": 2374.5,
+     "min": 1096,
+     "n": 4,
+     "n_none": 0,
+     "share_none": 0.0
+    },
+    "provider_names": {
+     "Google AI Studio": 4
+    },
+    "reasoning_usage_disagreements": 0,
+    "response_cache_source_ids": 0,
+    "service_tiers": {
+     "default": 4
+    }
+   },
+   "native_finish_reasons": {
+    "MAX_TOKENS": 1,
+    "STOP": 3
+   },
+   "observed_models": {
+    "google/gemini-2.5-flash-lite": 4
+   },
+   "observed_providers": {
+    "Google AI Studio": 4
+   },
+   "prompt_tokens": {
+    "max": 459,
+    "median": 364,
+    "min": 292,
+    "n": 4,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "reasoning_budget_ratio": {
+    "max": 0.841796875,
+    "median": 0.5797119140625,
+    "min": 0.267578125,
+    "n": 4,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "reasoning_exceeds_completion_count": 0,
+   "reasoning_over_budget_count": 0,
+   "reasoning_returned_share": 1.0,
+   "reasoning_tokens": {
+    "max": 3448,
+    "median": 2374.5,
+    "min": 1096,
+    "n": 4,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "requested_reasoning_budget": 4096,
+   "transport_ok_count": 4,
+   "transport_statuses": {
+    "ok": 4
+   },
+   "visible_tokens": {
+    "max": 1658,
+    "median": 348,
+    "min": 102,
+    "n": 4,
+    "n_none": 0,
+    "share_none": 0.0
+   }
+  },
+  {
+   "at_completion_cap_count": 0,
+   "cache_statuses": {
+    "null": 3
+   },
+   "cached_prompt_tokens": {
+    "max": 0,
+    "median": 0,
+    "min": 0,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "completed_share": 1.0,
+   "completion_statuses": {
+    "completed": 3
+   },
+   "completion_tokens": {
+    "max": 9103,
+    "median": 5539,
+    "min": 1374,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "content_empty_count": 0,
+   "content_empty_share": 0.0,
+   "cost_usd": {
+    "known_count": 3,
+    "mean_known": "0.002175033333333333333333333333",
+    "total_known": "0.0065251",
+    "unknown_count": 0
+   },
+   "count": 3,
+   "finish_reasons": {
+    "stop": 3
+   },
+   "headroom_utilization": {
+    "max": 0.9877387152777778,
+    "median": 0.6010199652777778,
+    "min": 0.14908854166666666,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "latency_seconds": {
+    "max": 20.441086581908166,
+    "median": 14.382815215038136,
+    "min": 3.786842124070972,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "length_share": 0.0,
+   "max_completion_tokens": [
+    9216
+   ],
+   "metadata": {
+    "available": 3,
+    "cost_disagreements": 0,
+    "missing": 0,
+    "models": {
+     "google/gemini-2.5-flash-lite": 3
+    },
+    "native_tokens_reasoning": {
+     "max": 8189,
+     "median": 5058,
+     "min": 1254,
+     "n": 3,
+     "n_none": 0,
+     "share_none": 0.0
+    },
+    "provider_names": {
+     "Google AI Studio": 3
+    },
+    "reasoning_usage_disagreements": 0,
+    "response_cache_source_ids": 0,
+    "service_tiers": {
+     "default": 3
+    }
+   },
+   "native_finish_reasons": {
+    "STOP": 3
+   },
+   "observed_models": {
+    "google/gemini-2.5-flash-lite": 3
+   },
+   "observed_providers": {
+    "Google AI Studio": 3
+   },
+   "prompt_tokens": {
+    "max": 459,
+    "median": 425,
+    "min": 303,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "reasoning_budget_ratio": {
+    "max": 0.9996337890625,
+    "median": 0.617431640625,
+    "min": 0.153076171875,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "reasoning_exceeds_completion_count": 0,
+   "reasoning_over_budget_count": 0,
+   "reasoning_returned_share": 1.0,
+   "reasoning_tokens": {
+    "max": 8189,
+    "median": 5058,
+    "min": 1254,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "requested_reasoning_budget": 8192,
+   "transport_ok_count": 3,
+   "transport_statuses": {
+    "ok": 3
+   },
+   "visible_tokens": {
+    "max": 914,
+    "median": 481,
+    "min": 120,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   }
+  },
+  {
+   "at_completion_cap_count": 0,
+   "cache_statuses": {
+    "null": 3
+   },
+   "cached_prompt_tokens": {
+    "max": 0,
+    "median": 0,
+    "min": 0,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "completed_share": 1.0,
+   "completion_statuses": {
+    "completed": 3
+   },
+   "completion_tokens": {
+    "max": 9517,
+    "median": 5813,
+    "min": 1221,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "content_empty_count": 0,
+   "content_empty_share": 0.0,
+   "cost_usd": {
+    "known_count": 3,
+    "mean_known": "0.002246366666666666666666666667",
+    "total_known": "0.0067391",
+    "unknown_count": 0
+   },
+   "count": 3,
+   "finish_reasons": {
+    "stop": 3
+   },
+   "headroom_utilization": {
+    "max": 0.5467026654411765,
+    "median": 0.3339269301470588,
+    "min": 0.07014016544117647,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "latency_seconds": {
+    "max": 20.75315959798172,
+    "median": 12.792767770821229,
+    "min": 3.355215745046735,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "length_share": 0.0,
+   "max_completion_tokens": [
+    17408
+   ],
+   "metadata": {
+    "available": 3,
+    "cost_disagreements": 0,
+    "missing": 0,
+    "models": {
+     "google/gemini-2.5-flash-lite": 3
+    },
+    "native_tokens_reasoning": {
+     "max": 9228,
+     "median": 5193,
+     "min": 1079,
+     "n": 3,
+     "n_none": 0,
+     "share_none": 0.0
+    },
+    "provider_names": {
+     "Google AI Studio": 3
+    },
+    "reasoning_usage_disagreements": 0,
+    "response_cache_source_ids": 0,
+    "service_tiers": {
+     "default": 3
+    }
+   },
+   "native_finish_reasons": {
+    "STOP": 3
+   },
+   "observed_models": {
+    "google/gemini-2.5-flash-lite": 3
+   },
+   "observed_providers": {
+    "Google AI Studio": 3
+   },
+   "prompt_tokens": {
+    "max": 459,
+    "median": 425,
+    "min": 303,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "reasoning_budget_ratio": {
+    "max": 0.563232421875,
+    "median": 0.31695556640625,
+    "min": 0.06585693359375,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "reasoning_exceeds_completion_count": 0,
+   "reasoning_over_budget_count": 0,
+   "reasoning_returned_share": 1.0,
+   "reasoning_tokens": {
+    "max": 9228,
+    "median": 5193,
+    "min": 1079,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "requested_reasoning_budget": 16384,
+   "transport_ok_count": 3,
+   "transport_statuses": {
+    "ok": 3
+   },
+   "visible_tokens": {
+    "max": 620,
+    "median": 289,
+    "min": 142,
+    "n": 3,
+    "n_none": 0,
+    "share_none": 0.0
+   }
+  }
+ ],
+ "cross_budget": {
+  "distinct_medians": 6,
+  "median_nondecreasing": true,
+  "median_reasoning_tokens_by_budget": {
+   "1024": 774.5,
+   "16384": 5193,
+   "2048": 1395,
+   "4096": 2374.5,
+   "512": 363,
+   "8192": 5058
+  }
+ },
+ "flags": [
+  "A=1024:length_finishes=2",
+  "A=1024:service_tier_not_standard:default",
+  "A=16384:service_tier_not_standard:default",
+  "A=2048:length_finishes=1",
+  "A=2048:service_tier_not_standard:default",
+  "A=4096:length_finishes=1",
+  "A=4096:service_tier_not_standard:default",
+  "A=512:service_tier_not_standard:default",
+  "A=8192:service_tier_not_standard:default",
+  "overall:length_finishes=4",
+  "overall:service_tier_not_standard:default"
+ ],
+ "overall": {
+  "at_completion_cap_count": 0,
+  "cache_statuses": {
+   "null": 22
+  },
+  "cached_prompt_tokens": {
+   "max": 0,
+   "median": 0,
+   "min": 0,
+   "n": 22,
+   "n_none": 0,
+   "share_none": 0.0
+  },
+  "completed_share": 0.8181818181818182,
+  "completion_statuses": {
+   "completed": 18,
+   "length": 4
+  },
+  "completion_tokens": {
+   "max": 9517,
+   "median": 1581.5,
+   "min": 574,
+   "n": 22,
+   "n_none": 0,
+   "share_none": 0.0
+  },
+  "content_empty_count": 0,
+  "content_empty_share": 0.0,
+  "cost_usd": {
+   "known_count": 22,
+   "mean_known": "0.0014611",
+   "total_known": "0.0321442",
+   "unknown_count": 0
+  },
+  "count": 22,
+  "finish_reasons": {
+   "length": 4,
+   "stop": 18
+  },
+  "headroom_utilization": {
+   "max": 0.997265625,
+   "median": 0.5738613153594772,
+   "min": 0.07014016544117647,
+   "n": 22,
+   "n_none": 0,
+   "share_none": 0.0
+  },
+  "latency_seconds": {
+   "max": 20.75315959798172,
+   "median": 4.413916497025639,
+   "min": 1.9961085468530655,
+   "n": 22,
+   "n_none": 0,
+   "share_none": 0.0
+  },
+  "length_share": 0.18181818181818182,
+  "max_completion_tokens": [
+   1536,
+   2048,
+   3072,
+   5120,
+   6144,
+   9216,
+   17408
+  ],
+  "metadata": {
+   "available": 22,
+   "cost_disagreements": 0,
+   "missing": 0,
+   "models": {
+    "google/gemini-2.5-flash": 2,
+    "google/gemini-2.5-flash-lite": 20
+   },
+   "native_tokens_reasoning": {
+    "max": 9228,
+    "median": 1087.5,
+    "min": 346,
+    "n": 22,
+    "n_none": 0,
+    "share_none": 0.0
+   },
+   "provider_names": {
+    "Google AI Studio": 22
+   },
+   "reasoning_usage_disagreements": 0,
+   "response_cache_source_ids": 0,
+   "service_tiers": {
+    "default": 22
+   }
+  },
+  "native_finish_reasons": {
+   "MAX_TOKENS": 4,
+   "STOP": 18
+  },
+  "observed_models": {
+   "google/gemini-2.5-flash": 2,
+   "google/gemini-2.5-flash-lite": 20
+  },
+  "observed_providers": {
+   "Google AI Studio": 22
+  },
+  "prompt_tokens": {
+   "max": 459,
+   "median": 425,
+   "min": 292,
+   "n": 22,
+   "n_none": 0,
+   "share_none": 0.0
+  },
+  "reasoning_budget_ratio": {
+   "max": 0.9996337890625,
+   "median": 0.695556640625,
+   "min": 0.06585693359375,
+   "n": 22,
+   "n_none": 0,
+   "share_none": 0.0
+  },
+  "reasoning_exceeds_completion_count": 0,
+  "reasoning_over_budget_count": 0,
+  "reasoning_returned_share": 1.0,
+  "reasoning_tokens": {
+   "max": 9228,
+   "median": 1087.5,
+   "min": 346,
+   "n": 22,
+   "n_none": 0,
+   "share_none": 0.0
+  },
+  "requested_reasoning_budget": null,
+  "transport_ok_count": 22,
+  "transport_statuses": {
+   "ok": 22
+  },
+  "visible_tokens": {
+   "max": 1658,
+   "median": 470.5,
+   "min": 94,
+   "n": 22,
+   "n_none": 0,
+   "share_none": 0.0
+  }
+ },
+ "row_count": 22,
+ "rows": [
+  {
+   "attempt_id": "451bed776dd2a5f903bce2e790ee3a80126fe4e3b1a0e28570b616a072bd8960:1",
+   "benchmark": "math500",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 1225,
+   "content_empty": false,
+   "cost_usd": "0.0005203",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630660-H69ur50SwoalGqqxK1k7",
+   "item_id": "math500/test/intermediate_algebra/362.json",
+   "max_completion_tokens": 1536,
+   "metadata_native_tokens_reasoning": 363,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "451bed776dd2a5f903bce2e790ee3a80126fe4e3b1a0e28570b616a072bd8960",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 303,
+   "reasoning_returned": true,
+   "reasoning_tokens": 363,
+   "requested_reasoning_budget": 512,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "79b7ba660c2e867494891964251014068372b09f94334ffeae575b9ed3a0c9b4:1",
+   "benchmark": "math500",
+   "cache_status": null,
+   "completion_status": "length",
+   "completion_tokens": 2038,
+   "content_empty": false,
+   "cost_usd": "0.0008455",
+   "finish_reason": "length",
+   "generation_id": "gen-1789630662-UBMyytPOEcAkxLuENFK6",
+   "item_id": "math500/test/intermediate_algebra/362.json",
+   "max_completion_tokens": 2048,
+   "metadata_native_tokens_reasoning": 886,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "MAX_TOKENS",
+   "node_id": "79b7ba660c2e867494891964251014068372b09f94334ffeae575b9ed3a0c9b4",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 303,
+   "reasoning_returned": true,
+   "reasoning_tokens": 886,
+   "requested_reasoning_budget": 1024,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "f017ba8b8f820ca9c088e3a1c8efd7283b1997208169a00d7a54f3dd452691d6:1",
+   "benchmark": "math500",
+   "cache_status": null,
+   "completion_status": "length",
+   "completion_tokens": 3053,
+   "content_empty": false,
+   "cost_usd": "0.0012515",
+   "finish_reason": "length",
+   "generation_id": "gen-1789630664-0AC6iyO2PyQaCr32DheJ",
+   "item_id": "math500/test/intermediate_algebra/362.json",
+   "max_completion_tokens": 3072,
+   "metadata_native_tokens_reasoning": 1397,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "MAX_TOKENS",
+   "node_id": "f017ba8b8f820ca9c088e3a1c8efd7283b1997208169a00d7a54f3dd452691d6",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 303,
+   "reasoning_returned": true,
+   "reasoning_tokens": 1397,
+   "requested_reasoning_budget": 2048,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "70d5ead31c0812823553c0bb2f58dbf7a9a8b9a2bd04d64edaa532358cb2b1f7:1",
+   "benchmark": "math500",
+   "cache_status": null,
+   "completion_status": "length",
+   "completion_tokens": 5106,
+   "content_empty": false,
+   "cost_usd": "0.0020727",
+   "finish_reason": "length",
+   "generation_id": "gen-1789630665-lwaflpXDbj3y76QKeWkr",
+   "item_id": "math500/test/intermediate_algebra/362.json",
+   "max_completion_tokens": 5120,
+   "metadata_native_tokens_reasoning": 3448,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "MAX_TOKENS",
+   "node_id": "70d5ead31c0812823553c0bb2f58dbf7a9a8b9a2bd04d64edaa532358cb2b1f7",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 303,
+   "reasoning_returned": true,
+   "reasoning_tokens": 3448,
+   "requested_reasoning_budget": 4096,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "b4f716b05f3db384493e557705623a7c88dbb851569c367ec6bde06dd5ebebf4:1",
+   "benchmark": "math500",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 9103,
+   "content_empty": false,
+   "cost_usd": "0.0036715",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630667-7lEqUJjw725IwfAMlCfM",
+   "item_id": "math500/test/intermediate_algebra/362.json",
+   "max_completion_tokens": 9216,
+   "metadata_native_tokens_reasoning": 8189,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "b4f716b05f3db384493e557705623a7c88dbb851569c367ec6bde06dd5ebebf4",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 303,
+   "reasoning_returned": true,
+   "reasoning_tokens": 8189,
+   "requested_reasoning_budget": 8192,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "8e49246d7eb9cde8f5df9d9dc9cda2d3cc0e3feb4150968ad81c593d4ea215ab:1",
+   "benchmark": "math500",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 9517,
+   "content_empty": false,
+   "cost_usd": "0.0038371",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630668-HIOwnYVvUkt4a57Hntr4",
+   "item_id": "math500/test/intermediate_algebra/362.json",
+   "max_completion_tokens": 17408,
+   "metadata_native_tokens_reasoning": 9228,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "8e49246d7eb9cde8f5df9d9dc9cda2d3cc0e3feb4150968ad81c593d4ea215ab",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 303,
+   "reasoning_returned": true,
+   "reasoning_tokens": 9228,
+   "requested_reasoning_budget": 16384,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "2792e5d6b482a046d9b93f8abd9bbefad47ec4079e2055eaa03c12f9858f53e4:1",
+   "benchmark": "mmlu_pro",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 989,
+   "content_empty": false,
+   "cost_usd": "0.0004415",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630660-qVHIr3l08lWPHcVu3URy",
+   "item_id": "mmlu_pro/9903",
+   "max_completion_tokens": 1536,
+   "metadata_native_tokens_reasoning": 391,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "2792e5d6b482a046d9b93f8abd9bbefad47ec4079e2055eaa03c12f9858f53e4",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 459,
+   "reasoning_returned": true,
+   "reasoning_tokens": 391,
+   "requested_reasoning_budget": 512,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "0e822850ce7610c2d7425fc7389143cfb81128f54ed51c20fe39f65a202a0191:1",
+   "benchmark": "mmlu_pro",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 1433,
+   "content_empty": false,
+   "cost_usd": "0.0006191",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630662-OqnmHFFVzXyKsVtvVba3",
+   "item_id": "mmlu_pro/9903",
+   "max_completion_tokens": 2048,
+   "metadata_native_tokens_reasoning": 845,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "0e822850ce7610c2d7425fc7389143cfb81128f54ed51c20fe39f65a202a0191",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 459,
+   "reasoning_returned": true,
+   "reasoning_tokens": 845,
+   "requested_reasoning_budget": 1024,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "4da06d80ebaf627370eccd8ec29c0e40290acd65c4e01a8bd70b1ffc8fcef331:1",
+   "benchmark": "mmlu_pro",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 1967,
+   "content_empty": false,
+   "cost_usd": "0.0008327",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630664-phjVzUjGeCPlG5oQQCoz",
+   "item_id": "mmlu_pro/9903",
+   "max_completion_tokens": 3072,
+   "metadata_native_tokens_reasoning": 1395,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "4da06d80ebaf627370eccd8ec29c0e40290acd65c4e01a8bd70b1ffc8fcef331",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 459,
+   "reasoning_returned": true,
+   "reasoning_tokens": 1395,
+   "requested_reasoning_budget": 2048,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "a8ed7bd1600fdb6bd8b8ddb1ce5da71e0661e4783494964b208df214467cf227:1",
+   "benchmark": "mmlu_pro",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 3581,
+   "content_empty": false,
+   "cost_usd": "0.0014783",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630666-ijNgdURZwSu8gqjYprIv",
+   "item_id": "mmlu_pro/9903",
+   "max_completion_tokens": 5120,
+   "metadata_native_tokens_reasoning": 3121,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "a8ed7bd1600fdb6bd8b8ddb1ce5da71e0661e4783494964b208df214467cf227",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 459,
+   "reasoning_returned": true,
+   "reasoning_tokens": 3121,
+   "requested_reasoning_budget": 4096,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "6174f70894d5b70dc6622470ce6ca36e91b0949a1daa08e577f62c338dc47b9e:1",
+   "benchmark": "mmlu_pro",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 5539,
+   "content_empty": false,
+   "cost_usd": "0.0022615",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630667-xgdleZGsGjCh2CueKZep",
+   "item_id": "mmlu_pro/9903",
+   "max_completion_tokens": 9216,
+   "metadata_native_tokens_reasoning": 5058,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "6174f70894d5b70dc6622470ce6ca36e91b0949a1daa08e577f62c338dc47b9e",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 459,
+   "reasoning_returned": true,
+   "reasoning_tokens": 5058,
+   "requested_reasoning_budget": 8192,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "0158ac384774e2c4a5eb2cc31bf76573899be80b435af3a6ecec51a5905ec5eb:1",
+   "benchmark": "mmlu_pro",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 5813,
+   "content_empty": false,
+   "cost_usd": "0.0023711",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630669-bWtGZHHx8otLa2zKJWd5",
+   "item_id": "mmlu_pro/9903",
+   "max_completion_tokens": 17408,
+   "metadata_native_tokens_reasoning": 5193,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "0158ac384774e2c4a5eb2cc31bf76573899be80b435af3a6ecec51a5905ec5eb",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 459,
+   "reasoning_returned": true,
+   "reasoning_tokens": 5193,
+   "requested_reasoning_budget": 16384,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "8da1f4564744373aa44129cf06c7edaffeca512a618d88473aaba4b26b60df41:1",
+   "benchmark": "bbh_logic4",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 574,
+   "content_empty": false,
+   "cost_usd": "0.0002721",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630661-Sb5Ou9zj7KTxpHbo2iVf",
+   "item_id": "bbh_logic4/tracking_shuffled_objects_seven_objects/56",
+   "max_completion_tokens": 1536,
+   "metadata_native_tokens_reasoning": 346,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "8da1f4564744373aa44129cf06c7edaffeca512a618d88473aaba4b26b60df41",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 425,
+   "reasoning_returned": true,
+   "reasoning_tokens": 346,
+   "requested_reasoning_budget": 512,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "ed3ae37249ebc7b3234421230a2a68d8a71066b5498a727e5b457ec81aa247d3:1",
+   "benchmark": "bbh_logic4",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 961,
+   "content_empty": false,
+   "cost_usd": "0.0004269",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630663-2JWW17U6BriScioXQLQv",
+   "item_id": "bbh_logic4/tracking_shuffled_objects_seven_objects/56",
+   "max_completion_tokens": 2048,
+   "metadata_native_tokens_reasoning": 766,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "ed3ae37249ebc7b3234421230a2a68d8a71066b5498a727e5b457ec81aa247d3",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 425,
+   "reasoning_returned": true,
+   "reasoning_tokens": 766,
+   "requested_reasoning_budget": 1024,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "011bc5f770b45caac31ba0429fae924070a895fc2111e8d87252568d8ae1cac0:1",
+   "benchmark": "bbh_logic4",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 1153,
+   "content_empty": false,
+   "cost_usd": "0.0005037",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630665-atJv9ceU13lh70q5ijQo",
+   "item_id": "bbh_logic4/tracking_shuffled_objects_seven_objects/56",
+   "max_completion_tokens": 3072,
+   "metadata_native_tokens_reasoning": 1059,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "011bc5f770b45caac31ba0429fae924070a895fc2111e8d87252568d8ae1cac0",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 425,
+   "reasoning_returned": true,
+   "reasoning_tokens": 1059,
+   "requested_reasoning_budget": 2048,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "4ad2c82d27ef0560aa6a72ed49fa8799f67aca17d98b92c7585b1d0882f9138d:1",
+   "benchmark": "bbh_logic4",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 1730,
+   "content_empty": false,
+   "cost_usd": "0.0007345",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630666-Jp4SXHEugnan5uh3VDXy",
+   "item_id": "bbh_logic4/tracking_shuffled_objects_seven_objects/56",
+   "max_completion_tokens": 5120,
+   "metadata_native_tokens_reasoning": 1628,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "4ad2c82d27ef0560aa6a72ed49fa8799f67aca17d98b92c7585b1d0882f9138d",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 425,
+   "reasoning_returned": true,
+   "reasoning_tokens": 1628,
+   "requested_reasoning_budget": 4096,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "6fb1cc787ebcfc6912481b6912135945c329f6afe9d1c6c9da2726d46b8f9cfe:1",
+   "benchmark": "bbh_logic4",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 1374,
+   "content_empty": false,
+   "cost_usd": "0.0005921",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630668-dsRsdDT3z87q9oQLAatp",
+   "item_id": "bbh_logic4/tracking_shuffled_objects_seven_objects/56",
+   "max_completion_tokens": 9216,
+   "metadata_native_tokens_reasoning": 1254,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "6fb1cc787ebcfc6912481b6912135945c329f6afe9d1c6c9da2726d46b8f9cfe",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 425,
+   "reasoning_returned": true,
+   "reasoning_tokens": 1254,
+   "requested_reasoning_budget": 8192,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "32ccd6ac2c323786dbfa939a61cf35f81a5de3a8d8b7ca4726e8ecf622c87780:1",
+   "benchmark": "bbh_logic4",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 1221,
+   "content_empty": false,
+   "cost_usd": "0.0005309",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630669-NpztLwYsF8JIE0sDL5nz",
+   "item_id": "bbh_logic4/tracking_shuffled_objects_seven_objects/56",
+   "max_completion_tokens": 17408,
+   "metadata_native_tokens_reasoning": 1079,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "32ccd6ac2c323786dbfa939a61cf35f81a5de3a8d8b7ca4726e8ecf622c87780",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 425,
+   "reasoning_returned": true,
+   "reasoning_tokens": 1079,
+   "requested_reasoning_budget": 16384,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "151b31049a73fd645777f9a37872d3dd2323557c454e6d76d0c1bc50a9fb55a2:1",
+   "benchmark": "mbpp_plus",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 985,
+   "content_empty": false,
+   "cost_usd": "0.0004232",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630661-aeK646NbfjN6ct7yZwUZ",
+   "item_id": "mbpp_plus/Mbpp_271",
+   "max_completion_tokens": 3072,
+   "metadata_native_tokens_reasoning": 740,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "151b31049a73fd645777f9a37872d3dd2323557c454e6d76d0c1bc50a9fb55a2",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 292,
+   "reasoning_returned": true,
+   "reasoning_tokens": 740,
+   "requested_reasoning_budget": 1024,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "4b8dc4b4e16a4848912a202bb7ddcfede1cc7c520886c1090097d2937cf15f08:1",
+   "benchmark": "mbpp_plus",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 1332,
+   "content_empty": false,
+   "cost_usd": "0.000562",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630663-vwB0lf3ZMLb9ZaAFhYNf",
+   "item_id": "mbpp_plus/Mbpp_271",
+   "max_completion_tokens": 6144,
+   "metadata_native_tokens_reasoning": 1096,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "4b8dc4b4e16a4848912a202bb7ddcfede1cc7c520886c1090097d2937cf15f08",
+   "observed_model": "google/gemini-2.5-flash-lite",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 292,
+   "reasoning_returned": true,
+   "reasoning_tokens": 1096,
+   "requested_reasoning_budget": 4096,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "6d8713367676e541eed9e29fd7793265422de70ade652af2a6ba87fb74121613:1",
+   "benchmark": "math500",
+   "cache_status": null,
+   "completion_status": "length",
+   "completion_tokens": 2036,
+   "content_empty": false,
+   "cost_usd": "0.0051809",
+   "finish_reason": "length",
+   "generation_id": "gen-1789630690-UXOfYbdmdbair3YCqcv0",
+   "item_id": "math500/test/intermediate_algebra/362.json",
+   "max_completion_tokens": 2048,
+   "metadata_native_tokens_reasoning": 783,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "MAX_TOKENS",
+   "node_id": "6d8713367676e541eed9e29fd7793265422de70ade652af2a6ba87fb74121613",
+   "observed_model": "google/gemini-2.5-flash",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 303,
+   "reasoning_returned": true,
+   "reasoning_tokens": 783,
+   "requested_reasoning_budget": 1024,
+   "transport_status": "ok"
+  },
+  {
+   "attempt_id": "c1c5993f6d4916de399802e851d37e14ae434f0e892c2b3fdb5cf3fc7e44d17a:1",
+   "benchmark": "mbpp_plus",
+   "cache_status": null,
+   "completion_status": "completed",
+   "completion_tokens": 1051,
+   "content_empty": false,
+   "cost_usd": "0.0027151",
+   "finish_reason": "stop",
+   "generation_id": "gen-1789630690-g0jLpjHD0qzozuMwxkfx",
+   "item_id": "mbpp_plus/Mbpp_271",
+   "max_completion_tokens": 3072,
+   "metadata_native_tokens_reasoning": 750,
+   "metadata_provider_name": "Google AI Studio",
+   "metadata_service_tier": "default",
+   "native_finish_reason": "STOP",
+   "node_id": "c1c5993f6d4916de399802e851d37e14ae434f0e892c2b3fdb5cf3fc7e44d17a",
+   "observed_model": "google/gemini-2.5-flash",
+   "observed_provider": "Google AI Studio",
+   "prompt_tokens": 292,
+   "reasoning_returned": true,
+   "reasoning_tokens": 750,
+   "requested_reasoning_budget": 1024,
+   "transport_status": "ok"
+  }
+ ],
+ "schema": "agent_allocation.canary_report/v1"
+}

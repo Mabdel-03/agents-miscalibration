@@ -1,0 +1,72 @@
+{
+ "criteria": {
+  "completion": {
+   "partitions": {
+    "c48_extra": {
+     "failed": [],
+     "passed": true,
+     "planned": 510,
+     "rate": 1.0,
+     "succeeded": 510
+    },
+    "e1_fill": {
+     "failed": [],
+     "passed": true,
+     "planned": 638,
+     "rate": 1.0,
+     "succeeded": 638
+    },
+    "t200_bank": {
+     "failed": [],
+     "passed": true,
+     "planned": 3100,
+     "rate": 1.0,
+     "succeeded": 3100
+    },
+    "t200_diag": {
+     "failed": [],
+     "passed": true,
+     "planned": 500,
+     "rate": 1.0,
+     "succeeded": 500
+    },
+    "v48_bank": {
+     "failed": [],
+     "passed": true,
+     "planned": 930,
+     "rate": 1.0,
+     "succeeded": 930
+    }
+   },
+   "passed": true
+  },
+  "dev_grades": {
+   "passed": true,
+   "ungraded": 0
+  },
+  "unique_think_texts": {
+   "duplicates": 0,
+   "passed": true,
+   "texts": 19740
+  }
+ },
+ "evaluated_at": "2026-09-25T23:31:56Z",
+ "gate": "gate4",
+ "passed": true,
+ "split": "v48",
+ "splits": {
+  "t200": {
+   "partitions": [
+    "t200_bank",
+    "t200_diag"
+   ],
+   "passed": true
+  },
+  "v48": {
+   "partitions": [
+    "v48_bank"
+   ],
+   "passed": true
+  }
+ }
+}

@@ -1,0 +1,82 @@
+{
+ "criteria": {
+  "exact_budgets": {
+   "exact": 5643,
+   "of": 5643,
+   "passed": true
+  },
+  "provider_drift": {
+   "drifted": [],
+   "passed": true
+  },
+  "refit_forecast": {
+   "passed": true,
+   "refit_usd": "56.34",
+   "soft_slice": "82.0",
+   "spent": "55.52612754"
+  },
+  "unit_cost": {
+   "by_multiplier": {
+    "1": {
+     "mean": "0.00375",
+     "n": 2579,
+     "plan": "0.00381",
+     "within": true
+    },
+    "16": {
+     "mean": "0.04511",
+     "n": 328,
+     "plan": "0.04519",
+     "within": true
+    },
+    "2": {
+     "mean": "0.00657",
+     "n": 1436,
+     "plan": "0.00659",
+     "within": true
+    },
+    "4": {
+     "mean": "0.01205",
+     "n": 806,
+     "plan": "0.01203",
+     "within": true
+    },
+    "8": {
+     "mean": "0.02305",
+     "n": 494,
+     "plan": "0.02307",
+     "within": true
+    }
+   },
+   "passed": true
+  },
+  "valid_final": {
+   "passed": true,
+   "per_benchmark": {
+    "aime": {
+     "n": 850,
+     "valid": 846
+    },
+    "gpqa_diamond": {
+     "n": 1618,
+     "valid": 1613
+    },
+    "hmmt": {
+     "n": 848,
+     "valid": 845
+    },
+    "omni_math_hard": {
+     "n": 2327,
+     "valid": 2306
+    }
+   },
+   "pooled": 0.9941520467836257
+  }
+ },
+ "due": true,
+ "evaluated_at": "2026-09-25T22:45:55Z",
+ "gate": "gate2",
+ "passed": true,
+ "settled_nodes": 5643,
+ "shard": "mancer"
+}

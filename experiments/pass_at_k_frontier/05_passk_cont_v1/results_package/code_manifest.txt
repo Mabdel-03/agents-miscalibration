@@ -1,0 +1,130 @@
+passk_cont_v1 results package: code manifest
+============================================
+
+worktree: /orcd/data/tpoggio/001/mabdel03/agents_scaling_passk_cont
+branch: passk-cont
+HEAD: bc9690aee12caf353f9186d0c82b723a0033ffdd  (passk export_package: document the E8b and no-diagnostic split-half columns)
+tracked-file changes at export: none
+
+Key commits
+-----------
+dc7eb24fc62146e8bcf5dd95c1e113153e92d5e5  forced_v2 base the branch was cut from
+    forced-v2 report: flat CSV export for central analysis
+e781c34854c2dc54e3898dd9043f1cd39ca1d720  PREREG.md committed (day 0, before any generation)
+    passk-cont day 0: preset, config, build contract and pre-registration
+3c0a5304d25f86352faa09e7f4a86049d22203b8  build merged (WP-G/A/M handoffs)
+    passk-cont: collect WP handoffs under docs/passk_cont/handoff
+6fd7c1a4124128cdf25272d7db752e152c9c8353  pre-launch review fix pass 1
+    passk review: FIX_STATUS_analysis_chain test results
+c8b9b7b3a7ccf3f8754ef1f9ddf6766eb93577fc  launch/seal code commit (E1 common cohort; sealed fits bound to it)
+    passk: E1 lock on one common known cohort; an all-absent pool is missing in WP-M outcomes (PREREG)
+9c067a51f7574523c2de804a1b5cb50a9411f61f  E8a addendum + module (before any allocator call)
+    passk E8a: pre-registered LLM allocator comparison (addendum + frozen prompt/module), before any allocator call
+d718d1755bc4a3a4ae204aa5d109608c08f7adc5  LEX addendum + c48_25a runner
+    passk LEX: pre-registered accuracy -> consistency -> latency front (owner definitions) + c48_25a runner
+f38a27ea879879d07255d95f414c4aa0c7d246df  LEX front analysis
+    passk LEX: front analysis (per-problem lexicographic winners, population ordering, split-half vs 1x16/1x25, T200 policy readout)
+d9bd36a83a0ecb22f07438173fdca750eb9f7dbb  E8b addendum + module (before any E8b call)
+    passk E8b: pre-registered LLM selectors told the lexicographic objective (M15 menu, K=5), before any E8b call
+c8a521b98340ec9f07f4e9ece3a35a0110f436d7  selector comparison (selcmp) under the LEX objective
+    passk LEX selcmp: cross-fitted E5 selectors vs the E8a LLM allocator vs a diagnostic-agreement rule under accuracy -> consistency -> latency (incl. selector overhead)
+
+Modules (src/agent_allocation/passk and the report)
+----------------------------------------
+src/agent_allocation/passk/analyze.py: ``allocation passk-analyze`` (contract §6): one verb, one stage per sbatch job.
+src/agent_allocation/passk/banks.py: passk_cont_v1 node banks (WP-G): the frozen node list of every partition of contract section 3.
+src/agent_allocation/passk/checkpoints.py: passk_cont_v1 in-run gates evaluated per shard from files on /orcd/data (WP-G; the conductor calls these).
+src/agent_allocation/passk/costs.py: Physical and logical cost ledgers (spec §15.5 item 8; plan "full usage").
+src/agent_allocation/passk/e0/replay.py: Legacy tie replay: re-run the forced_v2 plurality from the pair cache under the legacy tie key.
+src/agent_allocation/passk/e0/run.py: E0 audit outputs under ``<run_root>/e0/`` (plan "Rest of E0"; spec §5 E0 outputs).
+src/agent_allocation/passk/e0_gate.py: E0 gate subset (offline, $0; blocks launch) over the READ-ONLY forced_v2 run root (WP-G).
+src/agent_allocation/passk/e8a.py: E8a: an LLM allocator as a comparison (``docs/passk_cont/PREREG_E8a_llm_allocator.md``).
+src/agent_allocation/passk/e8b.py: E8b: LLM selectors told the owner's lexicographic objective (``docs/passk_cont/PREREG_E8b_lex_llm.md``).
+src/agent_allocation/passk/export_package.py: Paper export package for passk_cont_v1: every result as CSV, with a data dictionary and a manifest.
+src/agent_allocation/passk/extract.py: The single reader (contract §5.3): legacy + new-run candidates -> ``analysis_inputs/draws.parquet``.
+src/agent_allocation/passk/features.py: E5 label-free five-draw features (WP-M; contract §5.7, PREREG E5).
+src/agent_allocation/passk/forecast.py: passk_cont_v1 spend forecast over the frozen node lists (WP-G).
+src/agent_allocation/passk/gates.py: passk_cont_v1 Gate 0 pieces (WP-G): THINK-body parity with forced_v2 and the Gate 0 record.
+src/agent_allocation/passk/grade_scope.py: Held-out fence for grading (WP-G; contract sections 5.6 and "Held-out fence").
+src/agent_allocation/passk/labels.py: Seal verification, the held-out fence and the guarded label join (contract §5.6).
+src/agent_allocation/passk/lex.py: LEX: the lexicographic accuracy -> consistency -> latency front (``docs/passk_cont/PREREG_LEX_front.md``).
+src/agent_allocation/passk/lexfront.py: LEX front analysis (``docs/passk_cont/PREREG_LEX_front.md``): per-problem accuracy -> consistency -> latency.
+src/agent_allocation/passk/metrics.py: Per-pool and per-configuration metrics (plan "Per configuration"; spec §15.5 item 5).
+src/agent_allocation/passk/models/answers.py: E2 answer-distribution model and pool simulator (numpy only).
+src/agent_allocation/passk/models/e2.py: E2: C48 depth-response fit -> sealed V48 predictions, and the post-release scorer.
+src/agent_allocation/passk/models/e5.py: E5: prospective prediction of allocation outcomes on unseen problems (dev = L96 -> T200).
+src/agent_allocation/passk/models/glm.py: Penalized logistic regression with an optional Gauss-Hermite item random intercept (contract §5.7).
+src/agent_allocation/passk/models/inputs.py: Model-side inputs (WP-M): configurations, classes, pools and observed pool outcomes.
+src/agent_allocation/passk/models/predictors.py: E5 predictors P0, P1, P3, P2 (+ P1-conc, P2-conc) and the withheld-target guard (numpy/scipy only).
+src/agent_allocation/passk/models/response.py: E2 depth-response models (numpy/scipy only).
+src/agent_allocation/passk/pairs.py: Append-only, gold-free Math-Verify pair-verdict cache (contract §5.2).
+src/agent_allocation/passk/pools.py: Evaluated pools per (item, panel, configuration) (contract §5.4) -> ``pools.parquet``.
+src/agent_allocation/passk/readout.py: Plurality readout over a pool's gold-blind answer classes (contract §5.5).
+src/agent_allocation/passk/records.py: §15.2 run records: ``records/run_manifest.json`` and ``records/{candidates,pools,selections}.parquet``.
+src/agent_allocation/passk/run.py: ``allocation passk-run``: dispatch the passk_cont_v1 partitions of one provider shard (WP-G).
+src/agent_allocation/passk/score.py: Post-release scoring: the PREREG primary family and the allocation menus (``passk-analyze --stage score``).
+src/agent_allocation/passk/seal.py: Gate P: mechanical seal checks -> ``sealed/SEAL_predictions.json`` (plan "Mechanical seal checks").
+src/agent_allocation/passk/selcmp.py: Selector comparison under the LEX objective: statistical predictors vs the LLM allocator vs simple rules.
+src/agent_allocation/passk/splits.py: passk_cont_v1 frozen splits (lead-owned): duplicate registry, T200 / X80 / C48 panels, T200 provider assignment,
+src/agent_allocation/passk/stats.py: Bootstrap statistics for passk_cont_v1 (PREREG "Primary family"; contract §1).
+docs/passk_cont_report/analysis.py: Build numbers.json, tables/*.tex and figures/*.pdf for the passk_cont_v1 report from the run root.
+docs/passk_cont_report/render.py: Render report.tmpl.tex -> report.tex, filling every {{path|fmt}} from numbers.json.
+slurm/passk_analyze.sbatch: Slurm wrapper (see RUNBOOK.md)
+slurm/passk_conductor.sbatch: Slurm wrapper (see RUNBOOK.md)
+slurm/passk_conductor.sh: Slurm wrapper (see RUNBOOK.md)
+slurm/passk_cont.sbatch: Slurm wrapper (see RUNBOOK.md)
+
+Commands (per stage)
+--------------------
+[environment]
+    cd /orcd/data/tpoggio/001/mabdel03/agents_scaling_passk_cont/agent_allocation && source slurm/env.sh; A=.venv/bin/allocation; PY=.venv/bin/python; CFG=configs/passk_cont_v1.json; STUDY=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/passk_cont_v1; RUN=$STUDY/artifacts
+[Gate S splits]
+    $PY -m agent_allocation.passk.splits --config $CFG
+[shard plan]
+    $A shard-plan --config $CFG --run-dir $RUN --write; for s in mancer parasail; do $A passk-run --config $CFG --run-dir $RUN --shard $s --partitions smoke --adopt-legacy-lock; done
+[plan check]
+    $A passk-run --config $CFG --run-dir $RUN --shard <s> --plan-only --partitions smoke+c48_extra+e1_fill+t200_diag+v48_bank+t200_bank
+[Gate 0]
+    $PY -m agent_allocation.passk.gates gate0 --config $CFG --study-root $STUDY --check-key --run-tests --run-e0
+[conductor (Gate 1 canary+smoke -> main -> analysis chain -> seal -> release -> score -> report)]
+    sbatch --mail-user=$OWNER_MAIL --export=ALL,START_AT=<gate0|gate1|main|step token> slurm/passk_conductor.sbatch
+[generation (per shard, what the sbatch runs)]
+    $A passk-run --config $CFG --run-dir $RUN --shard <s> --partitions <a+b> --allow-paid --max-usd <slice> --account-auto-reload --resume
+[grading (per shard, fenced ids skipped until the seal)]
+    $A grade --run-dir $RUN/shards/<s> --resume --follow --config $RUN/shards/<s>/state/shard_config.json
+[E0 audit]
+    $A passk-analyze --config $CFG --run-root $STUDY --stage e0
+[E0 gate subset]
+    $PY -m agent_allocation.passk.e0_gate --legacy-root <forced_v2>/artifacts --study-root $STUDY
+[single reader]
+    $A passk-analyze --run-root $STUDY --stage extract
+[pair cache]
+    $A passk-analyze --run-root $STUDY --stage pairs
+[E1 lock]
+    $A passk-analyze --run-root $STUDY --stage e1-lock
+[E2 fit (bwrap fence)]
+    $A passk-analyze --run-root $STUDY --stage e2-fit --sandbox
+[E5 fit (bwrap fence)]
+    $A passk-analyze --run-root $STUDY --stage e5-fit --sandbox
+[Gate P seal]
+    $A passk-analyze --run-root $STUDY --stage seal --sandbox
+[release held-out split]
+    $A passk-analyze --run-root $STUDY --stage release --release v48 (then t200)
+[primary family + E2/E5 scoring]
+    $A passk-analyze --run-root $STUDY --stage score
+[report]
+    $A passk-analyze --run-root $STUDY --stage report  (= docs/passk_cont_report/build.sh)
+[E8a LLM allocator]
+    $PY -m agent_allocation.passk.e8a run --config $CFG --study-root $STUDY --panels L96+T200 --arms A0+A1; $PY -m agent_allocation.passk.e8a score --study-root $STUDY
+[LEX 25A draws]
+    $PY -m agent_allocation.passk.lex gen25 --study-root $STUDY --cap-usd 32; $PY -m agent_allocation.passk.lex grade25 --study-root $STUDY
+[LEX front]
+    $PY -m agent_allocation.passk.lexfront --study-root $STUDY --workers 16
+[selector comparison]
+    $PY -m agent_allocation.passk.selcmp --study-root $STUDY --n-sim 2000 [--overwrite]
+[E8b LLM selectors told the LEX objective]
+    $PY -m agent_allocation.passk.e8b run --study-root $STUDY --panels C48+T200 --arms B0+B1
+[this package]
+    $PY -m agent_allocation.passk.export_package --study-root $STUDY --out $STUDY/paper_package/passk_cont_v1_results
+
+Interpreter: agent_allocation/.venv/bin/python with HF_HOME=/orcd/data/tpoggio/001/mabdel03/.cache/huggingface HF_HUB_OFFLINE=1 MPLCONFIGDIR=/orcd/data/tpoggio/001/mabdel03/.cache/matplotlib PYTHONNOUSERSITE=1 OPENBLAS_NUM_THREADS=1

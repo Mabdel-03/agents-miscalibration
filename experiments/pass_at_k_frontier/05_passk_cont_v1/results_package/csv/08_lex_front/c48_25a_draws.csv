@@ -1,0 +1,390 @@
+item_id,benchmark,shard,replicate,candidate_id,allowance_a,parse_status,final_answer,correct,operational,grade_status,latency_s,reasoning_tokens,cost_usd,observed_provider
+aime/2025/3,aime,parasail,4,b4d3c3971a68661bc19df6abf256b77f4f82c3927374e237bc8b24001f9257e8,25,valid,\boxed{16},true,true,graded,257.2103409226984,25600,0.0629834,Parasail
+aime/2025/4,aime,parasail,5,a17db397b18655187a0c41fe6c5f4cdbc2e07c2a2411fe60ada970cceb4df079,25,valid,\boxed{117},true,true,graded,257.6788434847258,25600,0.06305332,Parasail
+aime/2025/4,aime,parasail,8,25fdcd72cc7a0dc5297508c64625b98ceeeed7bce06d6b9bef809a1284f6aa9b,25,valid,\boxed{117},true,true,graded,257.69688756298274,25600,0.06304452,Parasail
+aime/2025/3,aime,parasail,2,3536297f921358f474224ffb1f7110e87a1788aee1ff48d7e7fbe16f5699cb41,25,valid,\boxed{16},true,true,graded,258.0072535648942,25600,0.0631616,Parasail
+aime/2026/30,aime,parasail,1,9889fe2c3e08f4985e1bf9045324afc123961abe8e9732e450badd58fb7d2e22,25,valid,\boxed{393},true,true,graded,259.2647636947222,25600,0.06341116,Parasail
+aime/2025/3,aime,parasail,8,db6271b47eeba4ab2ab565f0b2c12cbabc9b20db630072789fc435d550c3d366,25,valid,\boxed{16},true,true,graded,262.76328013371676,25600,0.0630186,Parasail
+aime/2026/28,aime,parasail,4,88b363ed4cd149e675e528476d268b2753e4f3c3252a42823d19c20d457a1455,25,valid,\boxed{107},true,true,graded,263.30049560498446,25600,0.06334036,Parasail
+aime/2026/21,aime,parasail,6,0b530e41a679bf76e8777adbf1dba868b9ed34661283a76c87d814dd4679e3e1,25,valid,\boxed{50},true,true,graded,264.4217258822173,25600,0.06321804,Parasail
+aime/2026/28,aime,parasail,2,a6edd257818df83db6b0698c21773da68e865781721ba512c5644b1bf5d9618d,25,valid,\boxed{107},true,true,graded,264.46715666307136,25600,0.0634858,Parasail
+aime/2026/30,aime,parasail,5,c622f78bebb742ff5ff2aef30dedc20828a2c22eb889626333dc38264578efc7,25,valid,\boxed{393},true,true,graded,265.75468133669347,25600,0.06357176,Parasail
+aime/2026/30,aime,parasail,6,aeb2b1512723e73e16c732e145653339a018c55c23678dc7c3fa4d55aa5c0b76,25,valid,\boxed{393},true,true,graded,292.17047803802416,25600,0.06350136,Parasail
+aime/2025/4,aime,parasail,4,f79a79cf0b70156d751c8f01be33899a00e5f039e342931cb1a673102e99eee9,25,valid,\boxed{117},true,true,graded,297.657159935683,25600,0.0581396,Parasail
+aime/2025/4,aime,parasail,1,13af05d050d2a83c5638b4e533f65e2df9cc008247674532594a24a0ba66c242,25,valid,\boxed{117},true,true,graded,298.13712690910324,25600,0.05820144,Parasail
+aime/2025/3,aime,parasail,7,314cc512f3991b2d197a889f74d049b433e33825fd88ca976fe696f7e347284c,25,valid,\boxed{16},true,true,graded,298.153345648665,25600,0.0630494,Parasail
+aime/2026/21,aime,parasail,3,5c8d9433d19a4cea7244439d292795535575e0ae6a04222772ad6fe27b59521e,25,valid,\boxed{50},true,true,graded,298.63867873698473,25600,0.05831996,Parasail
+aime/2026/21,aime,parasail,1,5d1e33dc6b776e068521c749bc6a71e404a82c689cfe4345584428581ce7ebdf,25,valid,\boxed{50},true,true,graded,299.00137300090864,25600,0.05838596,Parasail
+aime/2026/21,aime,parasail,8,a2b0032d642aba80c49c3aea32ddf4df498811f0a2d88336e67f8e573b422bc0,25,valid,\boxed{50},true,true,graded,299.72413227846846,25600,0.0632794,Parasail
+aime/2025/4,aime,parasail,6,3b9f64ccac3d6c061109233ac304e0417cb80be9f5c605a71ed80c0759ab8d82,25,valid,\boxed{117},true,true,graded,309.290880178567,25600,0.05808044,Parasail
+aime/2026/21,aime,parasail,7,edfe562b964da234f1f088b28f04b744a4b012797a20cf345187238a1a636f47,25,valid,\boxed{50},true,true,graded,310.16359830647707,25600,0.06328184,Parasail
+aime/2026/30,aime,parasail,8,8a058fac2555e08e6ac73922dd05f1417f27f720d799b7b3ad03d95b4a2c8bd9,25,valid,\boxed{393},true,true,graded,310.6817600801587,25600,0.05860108,Parasail
+aime/2026/30,aime,parasail,3,8ffa9a87093c64a4a6f851bce33147399bb3ee0f83f59a64af46e4bbe59a7943,25,valid,\boxed{381},false,true,graded,311.65370080433786,25600,0.06340676,Parasail
+aime/2026/21,aime,parasail,5,40f65866e9d384c6cf44823e6528d77996eccfc56191e22de0a91c8b2eba79a4,25,valid,\boxed{50},true,true,graded,311.8565966389142,25600,0.06328624,Parasail
+aime/2026/28,aime,parasail,3,c2e7964811cc59856ec6523c2526c281c0427f3889d378ab4dc035d027ebeac3,25,valid,\boxed{107},true,true,graded,311.9249674798921,25600,0.06335208,Parasail
+aime/2026/30,aime,parasail,7,b8fdf63c3177e8bd69e860f750f328e148e882583e57b6805c147709e691f82a,25,valid,\boxed{407},false,true,graded,312.58274010103196,25600,0.06368396,Parasail
+aime/2025/4,aime,parasail,2,e8e1c97c2e844f5305b8a1bfc28ec2ada95e05fb601470096f4f0ccad3f6eeb2,25,valid,\boxed{117},true,true,graded,325.9075080770999,25600,0.06302912,Parasail
+aime/2025/3,aime,parasail,6,db309e45c01b24909ef128033b9220277691f665ea931813e8fa1de1b1997a8f,25,valid,\boxed{16},true,true,graded,326.33699804591015,25600,0.0630274,Parasail
+aime/2025/3,aime,parasail,3,ac7ae3c4979af90375d3d822aa5902e34af4dc51b3dd05f29730da96e1d9ff2a,25,valid,\boxed{16},true,true,graded,327.5503983879462,25600,0.0630626,Parasail
+aime/2025/4,aime,parasail,3,be8815fd1557f786671bc1489d19c30a640ae99e82b6014aa7c6944ab14cc978,25,valid,\boxed{117},true,true,graded,327.59274692693725,25600,0.06305552,Parasail
+aime/2025/4,aime,parasail,7,b961f6826b6200b0ffebdfa97bd002fab019948cdee624bbc9174092e02cd692,25,valid,\boxed{117},true,true,graded,328.2595897722058,25600,0.06316308,Parasail
+aime/2026/30,aime,parasail,2,03c35e35de31fe711ae10f3a8bd967d60e47517e56bbe6540563e10017058693,25,valid,\boxed{393},true,true,graded,328.34833072917536,25600,0.06102624,Parasail
+aime/2026/28,aime,parasail,1,83a72c705bf812a641164a36848ae0980bc47890ea283d4a335bfe646d66ee14,25,valid,\boxed{107},true,true,graded,328.34643940161914,25600,0.05863392,Parasail
+aime/2026/21,aime,parasail,2,14f14ca78efec80c3a74e4cf3d158438a279c0444093bcbadec18852c7b5374d,25,valid,\boxed{50},true,true,graded,329.6111339372583,25600,0.0632486,Parasail
+aime/2026/30,aime,parasail,4,1228948c3d45fe331499c53cef360f9b9a91a8cbcd8f413dec3742b2f73d9fea,25,valid,\boxed{477},false,true,graded,349.76828564936295,25600,0.06319116,Parasail
+aime/2025/3,aime,parasail,1,49497e936e3411ca48795cc05bcf8a362bcd859501da3cebe4643f8e733f65d4,25,valid,\boxed{16},true,true,graded,375.8287056251429,25600,0.05816012,Parasail
+aime/2026/21,aime,parasail,4,ca4084347a15c31a2ca2eeaf7ef42557f6decf3ed37fa5b66eaaf25c0b490623,25,valid,\boxed{50},true,true,graded,377.61432707775384,25600,0.06321804,Parasail
+aime/2025/3,aime,parasail,5,b1dabe48aeedd6b526f61eec8ed4169bf8751b11e612d5c8b628ea87cba361c7,25,valid,\boxed{16},true,true,graded,391.28316456917673,25600,0.063144,Parasail
+aime/2025/17,aime,mancer,7,aea67ca3b4966719d40e8dbf41dc97cc939df2b783a707fca4920f209d855a6e,25,valid,\boxed{49},true,true,graded,391.6915822038427,25600,0.069755,Mancer 2
+aime/2025/17,aime,mancer,3,ffa6711ad18b8e0bb2c57060f97550cc45972612b5a753c97a2a24dac4b4a94f,25,valid,\boxed{49},true,true,graded,393.7387929651886,25600,0.0698,Mancer 2
+aime/2025/25,aime,mancer,2,1c2c07e3961d57726989fc6f2c818630fb1f746a3f312b2b0ae6a6e7dd54694d,25,valid,\boxed{907},true,true,graded,398.93000720767304,25600,0.0699325,Mancer 2
+aime/2025/25,aime,mancer,6,a55d888a7ec49603c989eb7ea4f02deb31a120f9ad75c9a7e5e1e0691328e0dc,25,valid,\boxed{907},true,true,graded,399.97234600503,25600,0.0698775,Mancer 2
+aime/2025/17,aime,mancer,6,e54cdc778b7e6102eb2fecefe935a25f3256936d7c6942491a892d791ad84aa3,25,valid,\boxed{49},true,true,graded,401.43488923693076,25600,0.069715,Mancer 2
+aime/2025/17,aime,mancer,2,27f5ebebb364917519bf36bc79d655e1c9cbc911a7db310fdd8f434718ac6fcd,25,valid,\boxed{49},true,true,graded,403.96082431357354,25600,0.069745,Mancer 2
+aime/2025/25,aime,mancer,5,b5e249119589ec3043bf6f07d03d1a66e8b53f4eb54b35da3c3d6a783a348cbf,25,valid,\boxed{907},true,true,graded,404.45571763813496,25600,0.069845,Mancer 2
+aime/2025/17,aime,mancer,5,003df0b85700a4358a8bd044ae259d83dee1e0e04ca8db1d3c6756c1861126ae,25,valid,\boxed{49},true,true,graded,406.45043406961486,25600,0.0697225,Mancer 2
+aime/2025/17,aime,mancer,8,6239872b467fac8f120b19b09941dd5f304cacad45555a555c3785d808a78dd0,25,valid,\boxed{49},true,true,graded,407.6617024997249,25600,0.0696775,Mancer 2
+aime/2025/25,aime,mancer,7,1287f8ebb932c519d99e44fe335b8588d0683bbe4eb851c3a082335a176a3d68,25,valid,\boxed{907},true,true,graded,409.02633341774344,25600,0.06985,Mancer 2
+aime/2025/17,aime,mancer,4,26992efb5a9113cf307500594b19d927ec4c5b53403c2ada339400bf9430a775,25,valid,\boxed{49},true,true,graded,411.4846625942737,25600,0.0696675,Mancer 2
+aime/2025/17,aime,mancer,1,d29fbb7d5b1e8000d17046ad0da31f78800141cb1af1110f8b139189a998f9bb,25,valid,\boxed{49},true,true,graded,411.5506872953847,25600,0.06967,Mancer 2
+aime/2025/25,aime,mancer,4,1023ce31204e38a790a4f9c6f627c78324a936b80c614605a22dd678f39d5811,25,valid,\boxed{907},true,true,graded,418.7517825742252,25600,0.0696175,Mancer 2
+aime/2026/17,aime,mancer,7,069b7df81525c8ecf611b09d3a5257cd5c6af31687278ce9f29ebe7702c69385,25,valid,\boxed{243},true,true,graded,419.51920700538903,25600,0.069955,Mancer 2
+aime/2026/13,aime,mancer,2,7219005a7dce7cd2c01bbbb3f191fe9550d757dbf93bab8350d32ba106f0c5f4,25,valid,\boxed{39},true,true,graded,424.93328876048326,25600,0.070225,Mancer 2
+aime/2026/13,aime,mancer,3,bf48f6b488f1d472d82c9149471e43403f84a27aea78561f214f4b47865ddf38,25,valid,\boxed{39},true,true,graded,426.4283471261151,25600,0.07017,Mancer 2
+aime/2025/25,aime,mancer,1,77833188af8049a83de3fde58bcd4c1c43ab7b10d4ab1bf27f4a124ce3b54ed2,25,valid,\boxed{907},true,true,graded,431.4799389420077,25600,0.069805,Mancer 2
+aime/2026/13,aime,mancer,7,1f7ceca181d18c03a46193e7ca2b8ac946bfa261ba4cfa7c378e681d2474b9bf,25,valid,\boxed{39},true,true,graded,431.7419714713469,25600,0.070265,Mancer 2
+aime/2025/25,aime,mancer,3,8e629c806ce01a5c72f6f7d8a94d203f81fd779f8e4d1ee1eeb6be248d501748,25,valid,\boxed{907},true,true,graded,434.39811587007716,25600,0.06992,Mancer 2
+aime/2026/17,aime,mancer,3,6a92ef695f247a561008b8e2a1f7aedab3e24fed340f35a98fad3bd1864d4114,25,valid,\boxed{243},true,true,graded,441.2025231872685,25600,0.0700575,Mancer 2
+aime/2026/13,aime,mancer,4,d53965bb2c343aac5aadb58f755075c30e118e1ee47a37a179a032e8fe25fbf8,25,valid,\boxed{39},true,true,graded,442.65088889887556,25600,0.07028,Mancer 2
+aime/2026/13,aime,mancer,8,c9c05494eac85e7555d9b808c5e9a7b0466060adb3e65df4832c2ec51dc2ca30,25,valid,\boxed{39},true,true,graded,444.80091277649626,25600,0.07007,Mancer 2
+hmmt/2025/26,hmmt,mancer,7,ee812e490e6c91bb25f40b9cc094b80b4e079ffad1e9db75c7d1b8301d072765,25,valid,\boxed{9\sqrt{15}},true,true,graded,448.23331179795787,25600,0.070205,Mancer 2
+aime/2026/17,aime,mancer,5,e945084c86a5164a941261604ab53ca5aa1b4a746a17530a4986cbef97521eaf,25,valid,\boxed{243},true,true,graded,456.42413712106645,25600,0.0698725,Mancer 2
+aime/2025/25,aime,mancer,8,42c0347a705036fc6536b17ea2d681ea7fac34aaf5a96f21147b7159bf9646bb,25,valid,\boxed{907},true,true,graded,456.4464487428777,25600,0.0698175,Mancer 2
+aime/2026/17,aime,mancer,1,cd8227d6b015f4cf29b80b78ba0a74843c108688651d75035f97cca949920771,25,valid,\boxed{243},true,true,graded,456.71602057199925,25600,0.069965,Mancer 2
+hmmt/2025/26,hmmt,mancer,3,f8059e2dd94a267b240c1301f9ed0c2a7ec7c5a66d5132f44b51a2d08e0874e3,25,valid,\boxed{9\sqrt{15}},true,true,graded,456.66029050713405,25600,0.0701575,Mancer 2
+aime/2026/13,aime,mancer,6,a3df1fac7da91282c5d0db75190cb9765d05532ee5161bd2a1e1518040f81225,25,valid,\boxed{39},true,true,graded,461.4352100370452,25600,0.070445,Mancer 2
+hmmt/2025/26,hmmt,mancer,4,107bd6ca2480df7dc30d292606de306223ea6cdd8049d180c7d7ab15155f77bc,25,valid,\boxed{9\sqrt{15}},true,true,graded,466.06692032003775,25600,0.0698375,Mancer 2
+aime/2026/10,aime,mancer,4,530989a3e0bf66bf6b8fbfd72a608c877e41e9de692a8fd125b1d171084dd6df,25,valid,\boxed{156},true,true,graded,467.0178194921464,25600,0.069995,Mancer 2
+aime/2026/13,aime,mancer,5,985cd15b22c5ed1307970c27fdd67a1824a2959ad0650b4ad32fdea4062d7630,25,valid,\boxed{39},true,true,graded,467.03219440812245,25600,0.0704625,Mancer 2
+aime/2026/26,aime,mancer,5,cef573c44d1109b3f5bb19d589d0ae44deaaf719706cbeadd083846a8ca57ade,25,valid,\boxed{132},true,true,graded,467.5097097521648,25600,0.069915,Mancer 2
+hmmt/2025/26,hmmt,mancer,5,e454e80753a5a6c106d4836c8a8fbd85cad087569a39725a4f9c70bd351195ee,25,valid,\boxed{9\sqrt{15}},true,true,graded,469.3834657301195,25600,0.0703,Mancer 2
+aime/2026/26,aime,mancer,1,10e2850e690628986cf16c5ffe1090fc3bbc6fab849ebf2ced83215a9b3fbf5f,25,valid,\boxed{132},true,true,graded,475.4233447024599,25600,0.0700625,Mancer 2
+aime/2026/17,aime,mancer,2,f105f0d508e71be9511cd4ee2bef51489142f5b8c0058ad0de3960b3282ccc31,25,valid,\boxed{243},true,true,graded,477.5472409767099,25600,0.0698575,Mancer 2
+aime/2026/17,aime,mancer,4,7c2ebc3d29c0a13d1030259ca81b92440b35ebea42e36c29170f70549b47073a,25,valid,\boxed{243},true,true,graded,478.5136707467027,25600,0.070005,Mancer 2
+hmmt/2025/26,hmmt,mancer,1,dda2ee97b990b7ab54ed43294e79443832c66f529b7a8a161fc759b1a5ff449f,25,valid,\boxed{9\sqrt{15}},true,true,graded,478.5255570230074,25600,0.070195,Mancer 2
+aime/2026/10,aime,mancer,7,3b00943dd1f26f74293127df1db1940d6f11f82bf4722137a3b4d5754feb3dd1,25,valid,\boxed{156},true,true,graded,479.00650050956756,25600,0.06997,Mancer 2
+aime/2026/10,aime,mancer,6,04b6ddcbedbd5e136151991cad39be906d2c936bbd60b9c4811a177a61f51b06,25,valid,\boxed{156},true,true,graded,480.1465129875578,25600,0.070165,Mancer 2
+hmmt/2025/26,hmmt,mancer,2,2eae0469fd25a13ca568c3139e07ab3f26dde5fd94c0e6caa9b87b0d4cc3b8c8,25,valid,\boxed{9\sqrt{15}},true,true,graded,481.80805476848036,25600,0.0704325,Mancer 2
+aime/2025/28,aime,mancer,6,6adf873a05b21a25098906b0490de51a6c9a9c80eb2221da72e2374d1b09bee3,25,valid,\boxed{248},true,true,graded,482.90090276440606,25600,0.07019,Mancer 2
+aime/2026/10,aime,mancer,1,1f860018c19166f509dae1dbd86e59752f9fa6c45afeaff4d256c04b603bc19a,25,valid,156,true,true,graded,483.07131933420897,25600,0.070135,Mancer 2
+hmmt/2025/26,hmmt,mancer,6,b8532ef0834a4cf8d1846a843686a0052279201f8fded3ec5692d0da785417a6,25,valid,\boxed{9\sqrt{15}},true,true,graded,484.11243356671184,25600,0.0700325,Mancer 2
+aime/2025/28,aime,mancer,5,e09174cde4ac7edacc9171ef3679b050678a82c899d4d95b67733835448cadc3,25,valid,696,false,true,graded,486.02869180683047,25600,0.0702775,Mancer 2
+aime/2026/10,aime,mancer,5,0eabd22994ab95a2622d70ecf2a6d8d70900aaa988c6fe0f63712da1d5d56c9d,25,valid,\boxed{156},true,true,graded,487.0507988720201,25600,0.0699825,Mancer 2
+aime/2026/26,aime,mancer,7,d39259bbe015f77f1c814e18bc1c40d6b99d246db41f679dfeb7c219728ec4cf,25,valid,\boxed{132},true,true,graded,488.65840368904173,25600,0.0701025,Mancer 2
+aime/2026/10,aime,mancer,8,f2c4a536c4ff8a78a848ab7684a191f4b30d4c3bc7fff986dba89be0695f6379,25,valid,156,true,true,graded,490.8538541360758,25600,0.07001,Mancer 2
+aime/2026/10,aime,mancer,3,20bd25a8b1249f1dec93a985caac12ecc2efa55ce86893a874e5b0a7feedc293,25,valid,\boxed{165},false,true,graded,490.89290233002976,25600,0.070005,Mancer 2
+aime/2026/13,aime,mancer,1,cb427b5e1a44a083135e72fae39e8599c6a3271226b3e148089e10da4dd5613f,25,valid,\boxed{39},true,true,graded,491.17321641836315,25600,0.0701575,Mancer 2
+aime/2026/26,aime,mancer,6,9b13744952a5ee48a4826fa2be2921d871e690e31d06c128dd61f663b27a2c00,25,valid,\boxed{132},true,true,graded,491.34596207970753,25600,0.07009,Mancer 2
+aime/2026/26,aime,mancer,3,d7b71a78fe05f3215f900cc84cebb615b749ac9cbae82d1118d7656aa9145f87,25,valid,\boxed{132},true,true,graded,492.9477494182065,25600,0.070415,Mancer 2
+aime/2026/17,aime,mancer,6,b4ec343f18a049118f6f9aa77b2751cb4e4d7b87fbf5fa430108828283ecc556,25,valid,\boxed{243},true,true,graded,493.0634096269496,25600,0.0699025,Mancer 2
+aime/2026/10,aime,mancer,2,e091d9a7b0e2c7149b2749f37bafc148c5bd8adeb268067b7ed1f6a4f131efb1,25,valid,156,true,true,graded,494.16400436358526,25600,0.07046,Mancer 2
+aime/2026/26,aime,mancer,4,4fb25821f9623d6090b67388b5481a9b4821e4e96c7efcc4fb3451911d01a3d7,25,valid,\boxed{132},true,true,graded,495.5984712592326,25600,0.070145,Mancer 2
+hmmt/2025/26,hmmt,mancer,8,c7d55dadbad721ad353e4bf31fc2590a54abeefbdb14d3bfca415f24b6167de9,25,valid,\boxed{9\sqrt{15}},true,true,graded,495.8184709926136,25600,0.070165,Mancer 2
+aime/2026/26,aime,mancer,8,5be93c9dfd71a9d09de4e346309696b8674ca38c8ac9db707e3cca94277fe8b8,25,valid,\boxed{132},true,true,graded,502.90433696098626,25600,0.0703075,Mancer 2
+aime/2025/28,aime,mancer,3,fb368cd20395cde654f83cccb68032df96e7ab233e42d130f13aed04c40ded4f,25,valid,\boxed{248},true,true,graded,521.1488889260218,25600,0.07022,Mancer 2
+aime/2026/26,aime,mancer,2,ebe7cb839f31fcceeb7197f4349a12f3b8d2e9b6479f33d6554e1d058dae6069,25,valid,\boxed{132},true,true,graded,521.7079099738039,25600,0.07036,Mancer 2
+aime/2026/17,aime,mancer,8,f196fc8500424096a7ba4d222cc601b4f0e6aeac1d9b2c91c12529ed73915ab2,25,valid,\boxed{243},true,true,graded,524.8213639934547,25600,0.0698725,Mancer 2
+aime/2026/28,aime,parasail,7,8a94d126075da71c88e10cde3d2a7b52c0c80cfd2991b6b8dfffcaed3df56491,25,valid,\boxed{107},true,true,graded,275.08660322008654,25600,0.05852588,Parasail
+aime/2025/28,aime,mancer,2,56d4f1a93cea2bdd1fb1173db88c80339e7ebf99bbd60f24b41cbe5c4732caab,25,valid,248,true,true,graded,538.4047820665874,25600,0.070635,Mancer 2
+aime/2025/28,aime,mancer,1,44681ef5630d60b360d38be4108c11855da3654d497f1b9c038fa4415aba7d08,25,valid,91,false,true,graded,539.2330403216183,25600,0.07111,Mancer 2
+hmmt/2025/2,hmmt,parasail,5,b72765042f3fba47fc0a9985ccb4c08dc61150879c279d7c37b44027467cbbb7,25,valid,\boxed{3375},true,true,graded,274.8299804273993,25600,0.0631346,Parasail
+aime/2025/28,aime,mancer,8,35e3e066a22addd6e0d240009ba539d1747880639df767cf82cc51a24dc91fc9,25,valid,\boxed{248},true,true,graded,541.040966517292,25600,0.07032,Mancer 2
+aime/2025/28,aime,mancer,4,8eac6d61b0474044865148184a73bb2dc4596faa0c55f392c867eb5f712dcd11,25,valid,\boxed{248},true,true,graded,541.5587027613074,25600,0.070375,Mancer 2
+aime/2025/28,aime,mancer,7,08d571a305ac74b662e2b16387e117e056f973d83055aa8242833a4e628fd528,25,valid,\boxed{48},false,true,graded,549.4872779212892,25600,0.0704,Mancer 2
+aime/2026/28,aime,parasail,5,022029c1c900abb6f5077048c5fc9780f518c461f38e1b549fdcce764a7df06e,25,valid,\boxed{107},true,true,graded,313.3003455772996,25600,0.05829072,Parasail
+aime/2026/28,aime,parasail,6,34f98f2c69515ef8607eb5025badedcdc0e04bf05e623cbd38202f6ebb397c1f,25,valid,\boxed{107},true,true,graded,314.76710781734437,25600,0.05854592,Parasail
+aime/2026/28,aime,parasail,8,093192ca9ec73662d79eda82a401519dbb20528345faf175c0dd68240e9d9c4d,25,valid,\boxed{107},true,true,graded,315.4586175256409,25600,0.05865592,Parasail
+hmmt/2025/2,hmmt,parasail,2,55ec714aff538a0953ce29de190577b790e05e3b7391218365acc7c72cf6e98a,25,valid,\boxed{3375},true,true,graded,310.83603902487084,25600,0.0630158,Parasail
+hmmt/2025/2,hmmt,parasail,1,282b73a2026d073607135d08f621ab941e519809d7194a87212c4b9aab375977,25,valid,\boxed{3375},true,true,graded,320.9274319582619,25600,0.06307936,Parasail
+hmmt/2025/2,hmmt,parasail,3,555524640def3a785b86cdaef59f97ddb4a54bc1db0433256777eb8344b15a7a,25,valid,\boxed{3375},true,true,graded,321.4041512128897,25600,0.05813092,Parasail
+hmmt/2025/2,hmmt,parasail,4,4e17d1a0632834edcf5705e31a084bba11f9881c830ba70b6315acaae74d81ed,25,valid,\boxed{3375},true,true,graded,321.43045009020716,25600,0.06298256,Parasail
+hmmt/2025/15,hmmt,parasail,1,215bce4d0e22d0f402d62eae0c91fbbf61e27a1a52a9ec8d8e0abbe4f5dea24d,25,valid,\boxed{200},true,true,graded,275.2462279391475,25600,0.0581862,Parasail
+hmmt/2025/2,hmmt,parasail,6,82787636d8ad97ac6d5de9c357af7de9a924bde168ca2c63436732dc8dfee49b,25,valid,\boxed{3375},true,true,graded,321.93245132500306,25600,0.062974,Parasail
+hmmt/2026/25,hmmt,parasail,6,3fb2d2bb659defe4dab510ad8f71f36aab274fceb80eb0e48084e6d8019fc377,25,valid,\boxed{8\sqrt{6}},true,true,graded,278.675819509197,25600,0.06336036,Parasail
+hmmt/2026/25,hmmt,parasail,8,3700c808fbbb864e2762cacbd77d3375978a5ddf622d5a3b7da4ae3083d9cb46,25,valid,\boxed{8\sqrt6},true,true,graded,277.4852210469544,25600,0.063629,Parasail
+hmmt/2025/15,hmmt,parasail,3,f5ca166672812d08994efe3fd12bde6630971a81dfa4df3c0bdc1a90cff4911a,25,valid,\boxed{200},true,true,graded,277.49658400192857,25600,0.06319648,Parasail
+hmmt/2025/15,hmmt,parasail,5,12accc65f10cfab7cb89355e534352186edfa10cc07c5fd16b403b97b2bba887,25,valid,\boxed{200},true,true,graded,279.32612042455,25600,0.0584744,Parasail
+hmmt/2026/25,hmmt,parasail,5,7e347fc00125cbfbe80dd7db8f1e835838eb5e57a8e57ad89e53386fadc2947f,25,valid,\boxed{\frac{160}{9}},false,true,graded,307.7433708398603,25600,0.0633672,Parasail
+hmmt/2025/2,hmmt,parasail,8,09c1b75c295ce3cff82e919518f8ae40ccfeb0f755a6193dc7e04624032a164f,25,valid,\boxed{3375},true,true,graded,312.42258138768375,25600,0.0629982,Parasail
+hmmt/2026/25,hmmt,parasail,3,91d395e0a0a48213cf81f0bc6c652a8066834a11df19c1071dfc17edbc87119d,25,valid,\boxed{\frac{28\sqrt{2}}{9}},false,true,graded,321.9725842755288,25600,0.0633694,Parasail
+hmmt/2026/25,hmmt,parasail,4,a0c933f541a9ec1b662d70cc859662dc071ba016a8a1f3ab8f35c2d74be1aafa,25,valid,8\sqrt{6},true,true,graded,324.0868420130573,25600,0.0635586,Parasail
+hmmt/2026/25,hmmt,parasail,2,d2d9f7f1b0ebebf20f3d8232d513efc404d0f8e508196ddd59bc0b961c99aa54,25,valid,8\sqrt{6},true,true,graded,325.35383185977116,25600,0.05861872,Parasail
+hmmt/2026/25,hmmt,parasail,1,e46577662917713ec8ff2e7eaa52792fd9a012b88b7452e5d972d884ad59feea,25,valid,4\sqrt{2},false,true,graded,326.39911440806463,25600,0.0638842,Parasail
+hmmt/2025/15,hmmt,parasail,2,6f3e411dcb5899a2ec134e652c2bd3f967ac15fa1e0f81a963062b9e1d09361b,25,valid,\boxed{200},true,true,graded,312.77328527905047,25600,0.05830476,Parasail
+hmmt/2025/15,hmmt,parasail,4,5677bce860f9f377d09f66c42702b291d222cb39e6e1edfd73800e779808c52a,25,valid,\boxed{200},true,true,graded,313.87125802086666,25600,0.06321188,Parasail
+hmmt/2026/25,hmmt,parasail,7,27a61272ef8a182930c3197e740a9e24c3f577a40bd3511ddea0ea720eb495cd,25,valid,8\sqrt{6},true,true,graded,320.78798822592944,25600,0.0639524,Parasail
+hmmt/2025/15,hmmt,parasail,6,144afa57481c9102d5155f24cafea5074387fe68b8f9d0e6ba86b9c02fcbc084,25,valid,\boxed{200},true,true,graded,313.9874789859168,25600,0.06313928,Parasail
+hmmt/2025/15,hmmt,parasail,7,3deadc1b5e668aa6bf749c8e985636d159bb4714c5787c5d7e6ad18a86dbd546,25,valid,\boxed{200},true,true,graded,313.5035865739919,25600,0.0583578,Parasail
+hmmt/2025/15,hmmt,parasail,8,9ef980d89daa80ed6fac2778097685fb98d8cdb07ce86c4d6b822bc34796444a,25,valid,\boxed{200},true,true,graded,315.43870334979147,25600,0.06324684,Parasail
+hmmt/2026/5,hmmt,parasail,1,b07e342a641225e6c39a7d7a76f4c102b4d38b9b1ec41b6925fe2bb7631beba5,25,valid,\boxed{1230},true,true,graded,315.99150375649333,25600,0.05893976,Parasail
+hmmt/2026/5,hmmt,parasail,4,2defa51acb9bf5c3e82d4e8199be7b56ad70b4002fd0f1f4aca4d6d7b78b0fd2,25,valid,\boxed{1230},true,true,graded,314.7588059506379,25600,0.05868016,Parasail
+hmmt/2026/5,hmmt,parasail,2,b07be49476f508f7e2aeb690bde7114f423547a8aee4051afff7d74edc895c95,25,valid,\boxed{1230},true,true,graded,316.5419923122972,25600,0.063501,Parasail
+hmmt/2026/5,hmmt,parasail,3,c174ba156f2591173ef5c29e6518e059c4d00ca7e34b439b88dff93b815dfc31,25,valid,\(\boxed{1230}\),true,true,graded,317.4523856905289,25600,0.06358924,Parasail
+hmmt/2026/5,hmmt,parasail,6,4909b88eb7f193930fd7bb81d04017b20661ca5a12d70eb033a675510665fd9f,25,valid,\boxed{1230},true,true,graded,286.56556517397985,25600,0.06365964,Parasail
+hmmt/2025/2,hmmt,parasail,7,116acfa3d8b626de2317c148551dd79aa81313525b700e73395dcb66ed2c3149,25,valid,\boxed{3375},true,true,graded,380.98473497247323,25600,0.0630774,Parasail
+hmmt/2026/5,hmmt,parasail,7,4a619a77834c9862b750c3ef0bf30729db17a68e783572ec51241545ce10b0c8,25,valid,\boxed{1230},true,true,graded,315.12500219466165,25600,0.05848216,Parasail
+hmmt/2026/5,hmmt,parasail,5,f40340bd9163903e64336625f46d9889801eda01bc787b5653bc370b14bfcfab,25,valid,\boxed{1230},true,true,graded,346.02902658609673,25600,0.06359804,Parasail
+hmmt/2026/5,hmmt,parasail,8,834ebd60e881c51f3a0721b6b5b680c8934b2f1edd9991fc2865b030117926f0,25,valid,\boxed{1230},true,true,graded,314.77371024154127,25600,0.06367456,Parasail
+hmmt/2025/23,hmmt,mancer,3,fb7350d708e11ba17a9c8ab0377984ff3453085e80a0a220ad45a0c02f8018d2,25,valid,\boxed{8\sqrt{10}},true,true,graded,420.6274785101414,25600,0.0701225,Mancer 2
+hmmt/2025/23,hmmt,mancer,7,d25f94cafb49f3261d23f0376321a32d273e511dac159351e2a3fb1e03a67289,25,valid,\boxed{8\sqrt{10}},true,true,graded,411.0104959588498,25600,0.070205,Mancer 2
+hmmt/2025/23,hmmt,mancer,6,23393c529a89b2687ecb0b4ed192ed9b9513504187dc03f352e2d708b057d06b,25,valid,\boxed{8\sqrt{10}},true,true,graded,416.6469318722375,25600,0.070105,Mancer 2
+hmmt/2025/23,hmmt,mancer,4,067cfce17130cacb35dd36058bb42f2ba79425b245947146c53b010dc8c29678,25,valid,\boxed{8\sqrt{10}},true,true,graded,426.90555594908074,25600,0.0701425,Mancer 2
+hmmt/2025/23,hmmt,mancer,1,6c07e4a18d17d7e63c44966aa8f5960263972af344e786adba939319aaa8016b,25,valid,\(\boxed{8\sqrt{10}}\),true,true,graded,432.3738939911127,25600,0.07033,Mancer 2
+hmmt/2025/23,hmmt,mancer,2,d99c0931fdd2747fb7f881b629f515be5f622e2bd894a14e555de84c4ec25cdd,25,valid,\boxed{8\sqrt{10}},true,true,graded,444.21491155121475,25600,0.0702075,Mancer 2
+hmmt/2025/23,hmmt,mancer,8,a7ede49a3b5d364452b3255c1c7ad766e506db01d0180202e9968d727b63df00,25,valid,\boxed{8\sqrt{10}},true,true,graded,427.6242936789058,25600,0.0703025,Mancer 2
+hmmt/2025/11,hmmt,mancer,4,4aed3c057ba83b5b1227f999fac5c8bc0fffa4978f1ed87bf6b7d5c9c7193195,25,valid,\boxed{56},true,true,graded,395.6329799192026,25600,0.07002,Mancer 2
+hmmt/2026/12,hmmt,parasail,1,f8cb915d3670cb16d3bb2bf098c8dbdf2ee5e476c8c2566e6915c7fa5ce25530,25,valid,\(\boxed{\frac{875}{128}}\),true,true,graded,328.7043088749051,25600,0.06311056,Parasail
+hmmt/2025/11,hmmt,mancer,8,b9b8ff3cd70c228c326a71a430887e9232f2c9333733482ea99c24026c612e9a,25,valid,\boxed{56},true,true,graded,398.11326873255894,25600,0.06981,Mancer 2
+hmmt/2025/11,hmmt,mancer,5,2b9ce328a24fa201ae3e945c765c467854b6a0e369b69bcf7a7344be700d97d0,25,valid,\boxed{56},true,true,graded,400.85398802440614,25600,0.07004,Mancer 2
+hmmt/2026/12,hmmt,parasail,2,710d9efb3da8d164247a6f0137a0f272bbfc056d38b201b0dc80986abe096d6a,25,valid,\boxed{\frac{875}{128}},true,true,graded,328.243545842357,25600,0.06303356,Parasail
+hmmt/2025/11,hmmt,mancer,6,1b637c55b9a0edc55900ef9e875211078130e5958e039cc317c3c369277fb463,25,valid,\boxed{56},true,true,graded,403.82021184870973,25600,0.0698175,Mancer 2
+hmmt/2025/10,hmmt,mancer,7,e214a81bb965bd0b9b2dc57f3fa3fe4e327cbfcf360c125d127d30ee675ad0de,25,valid,"\frac{-1-\sqrt{17}}{2}, \frac{-1+\sqrt{17}}{2}",true,true,graded,468.96435569319874,25600,0.070145,Mancer 2
+hmmt/2026/24,hmmt,mancer,2,f0b69e509f2da7057a593a0ceb3f2eb1319b51ee1de50899f6d24e0c129157fe,25,valid,\boxed{\frac{7\sqrt{3}}{3}},true,true,graded,448.0894167991355,25600,0.070045,Mancer 2
+hmmt/2025/10,hmmt,mancer,5,b90a40b83d17a5747ab75f7c4ead041c1766c711885bd3a9cfdeb9307d9c4bc2,25,valid,"\frac{-1+\sqrt{17}}{2}, \frac{-1-\sqrt{17}}{2}",true,true,graded,484.89545460091904,25600,0.0699975,Mancer 2
+hmmt/2025/10,hmmt,mancer,4,549143de9c409325fbefae0201ea4df343133b2ef09a080c1f4b4c3cf5e04348,25,valid,"\boxed{\frac{-1+\sqrt{17}}{2},\ \frac{-1-\sqrt{17}}{2}}",true,true,graded,487.885714371223,25600,0.07029,Mancer 2
+hmmt/2025/10,hmmt,mancer,3,a4b7e8fb699599dfa2cc4e13e0fa635c618b3a6895c6003440e8838293a9883d,25,valid,"\frac{-1+\sqrt{17}}{2},\ \frac{-1-\sqrt{17}}{2}",true,true,graded,489.03748228866607,25600,0.0702325,Mancer 2
+hmmt/2026/24,hmmt,mancer,1,c6ff7297770fe37b138966f0ca69d62fdaf53aa858aab16ada1a7c01775746ac,25,valid,\boxed{\frac{7\sqrt{3}}{3}},true,true,graded,457.4852306507528,25600,0.0699075,Mancer 2
+hmmt/2025/23,hmmt,mancer,5,02b27e8b756b8e5e0684d5e4b5dd370dd12d1b04a88a005b75ac91f1beda5335,25,valid,\boxed{8\sqrt{10}},true,true,graded,470.64767954545096,25600,0.0700925,Mancer 2
+hmmt/2025/10,hmmt,mancer,1,167618a9e263542ffda3942e9bccb476248160ded73bedbe03bc3306673dfeae,25,valid,"\frac{-1+\sqrt{17}}{2}, \frac{-1-\sqrt{17}}{2}",true,true,graded,499.012275934685,25600,0.07024,Mancer 2
+hmmt/2026/12,hmmt,parasail,6,d2af3d45a555a822248bfd8d03e595b56595680dfddd2c336dccb49deda0efad,25,valid,\boxed{\frac{875}{128}},true,true,graded,318.4982545361854,25600,0.05806508,Parasail
+hmmt/2026/12,hmmt,parasail,5,104473b40f7eae98d5df9cac2754b468f667682ebbcc24e174f424f33fc3b274,25,valid,\(\boxed{\frac{875}{128}}\),true,true,graded,318.715081110131,25600,0.05807144,Parasail
+hmmt/2026/12,hmmt,parasail,4,ea34f9725e16f28f77404b50b12b5e624ae33cd252004d9f7663c9ad4ed777b7,25,valid,\boxed{\frac{875}{128}},true,true,graded,320.271992709022,25600,0.06302696,Parasail
+hmmt/2026/24,hmmt,mancer,4,f4aa178f06e893f2c0af0a27d7f30d444d16af8767cd192116ba10fd845dc266,25,valid,\(\boxed{\frac{7\sqrt3}{3}}\),true,true,graded,452.0715323491022,25600,0.0699125,Mancer 2
+hmmt/2026/24,hmmt,mancer,5,b8543f48508c75792823bad62d8642f8bb1a0b579b5f14c9c766253209e92941,25,valid,\boxed{\frac{7\sqrt{3}}{3}},true,true,graded,453.5401499462314,25600,0.0701475,Mancer 2
+hmmt/2026/24,hmmt,mancer,7,431ad80f45288506a40dadc1edcd65ae9df41f4f464f4e71c1585a6f415a7c52,25,valid,\boxed{\frac{7\sqrt{3}}{3}},true,true,graded,450.03138421755284,25600,0.07015,Mancer 2
+hmmt/2025/10,hmmt,mancer,8,37d84cd62afe0f84fecdaf99b76542b84c10aeda7d7441f0cf77361240f8d087,25,valid,"\frac{-1+\sqrt{83}}{2},\ \frac{-1-\sqrt{83}}{2}",false,true,graded,493.08745000185445,25600,0.07021,Mancer 2
+hmmt/2026/12,hmmt,parasail,7,e4d15b42714683826d0ad7fe4b29d837750f6dd75ec663473f152b6c041c60ab,25,valid,\(\boxed{\frac{875}{128}}\),true,true,graded,320.60005894489586,25600,0.06296096,Parasail
+hmmt/2026/24,hmmt,mancer,6,683fc0f337ad1074e658b4f1ba2977790e147ccd291ec3d7692a6f66021bec9c,25,valid,\boxed{\frac{7\sqrt3}{3}},true,true,graded,457.1032318864018,25600,0.069995,Mancer 2
+hmmt/2026/12,hmmt,parasail,8,12cb39c8829bae52f2841013ff6020c29fcd3528980fbf3d791902d201e8111e,25,valid,\(\boxed{\frac{875}{128}}\),true,true,graded,317.7995713064447,25600,0.05821688,Parasail
+hmmt/2025/10,hmmt,mancer,6,a9e228befebaed17a175ae5ebb800b946ac666a92ea62a081512fe73625d8843,25,valid,"\frac{-1-\sqrt{17}}{2}, \frac{-1+\sqrt{17}}{2}",true,true,graded,499.3544119182043,25600,0.070135,Mancer 2
+hmmt/2025/10,hmmt,mancer,2,506526da81aabc05f5f073c028beabc7692893f079cceb5989cb55af65b6f2ed,25,valid,"\frac{-1+\sqrt{17}}{2}, \frac{-1-\sqrt{17}}{2}",true,true,graded,510.61624782765284,25600,0.07021,Mancer 2
+omni_math_hard/185,omni_math_hard,parasail,3,6209c3956218f75646cae90f7fb1b93648ecb06a0716a9caff4230724060213b,25,valid,\boxed{134215680},true,true,graded,319.26812676666304,25600,0.06330632,Parasail
+omni_math_hard/185,omni_math_hard,parasail,4,8bc7c4fed173fa13625be06d99e17073898481ed12589b5206210a9a4607ca83,25,valid,\boxed{134215680},true,true,graded,319.16087298607454,25600,0.06330852,Parasail
+omni_math_hard/185,omni_math_hard,parasail,6,0ec1f55fcf69b9a6fa63fe3bd0cf2ef367f53c6399aa8484f55629bff4adf828,25,valid,\boxed{134215680},true,true,graded,319.5567744052969,25600,0.06340312,Parasail
+hmmt/2026/28,hmmt,mancer,3,2ef552206d3977cce457c7f11a1ab0254f65e80ac06a4030b297af4d76dd23f9,25,valid,\boxed{\sqrt{69}},true,true,graded,425.42158051300794,25600,0.0703,Mancer 2
+omni_math_hard/2429,omni_math_hard,mancer,2,d18b423bdefab6ae71638e8e134fca9d95e8973d3cbc98ff195532f0c7aa38d0,25,valid,"\boxed{\left(\frac{3}{2},\frac{\sqrt{2}}{3}\right)}",true,true,graded,419.25832446850836,25600,0.0700825,Mancer 2
+hmmt/2026/12,hmmt,parasail,3,5466a0c2bd400dd7ae2487ad5473f20f7795c37febd6feded2624c2a77c5a28b,25,valid,\boxed{\frac{875}{128}},true,true,graded,341.0724421441555,25600,0.05805824,Parasail
+hmmt/2026/24,hmmt,mancer,3,39c731ee44970af47807fa706b27a2672247f0125e4430c258a40ab4dab843b5,25,valid,\boxed{\frac{7\sqrt3}{3}},true,true,graded,477.7090939763002,25600,0.070035,Mancer 2
+omni_math_hard/2429,omni_math_hard,mancer,3,444b353d20546f0bf1417989399ca5a78da8ee2b26ba8221f995d593745dd73a,25,valid,"\boxed{(\alpha,\beta)=\left(\frac32,\frac{\sqrt2}{3}\right)}",true,true,graded,431.22552304295823,25600,0.06995,Mancer 2
+omni_math_hard/2429,omni_math_hard,mancer,4,1a0009f50a87a935e1c97e0b316f6d9877b11db56c54d0e46327437ae7ffb33c,25,valid,"\boxed{(\alpha,\beta)=\left(\frac32,\frac{\sqrt2}{3}\right)}",true,true,graded,432.7050657197833,25600,0.069905,Mancer 2
+omni_math_hard/185,omni_math_hard,parasail,7,2c348a4f2df25accab9f9e0616fe5a471d672317cae35aeff75cfef51233952f,25,valid,\boxed{134215680},true,true,graded,320.7634619320743,25600,0.06339432,Parasail
+omni_math_hard/185,omni_math_hard,parasail,1,8e8347a144b7f9696b4ad017c9312e05ecfef9f4e3ffd6befa2ab7739db6eeaf,25,valid,\boxed{134215680},true,true,graded,344.2791876113042,25600,0.06329972,Parasail
+omni_math_hard/2429,omni_math_hard,mancer,6,d69c6800ce4f964ee63893196e24d3f83d83e7f1525a1b58db0823063e77779e,25,valid,"\boxed{(\alpha,\beta)=\left(\frac{3}{2},\frac{\sqrt{2}}{3}\right)}",true,true,graded,436.2268626675941,25600,0.0699425,Mancer 2
+omni_math_hard/185,omni_math_hard,parasail,2,a4b0376817e159ed9c9f3ef4f33e9c2d7a3c89e76ea695e11e19ca10aba0000a,25,valid,\boxed{134215680},true,true,graded,345.3512501590885,25600,0.06349748,Parasail
+hmmt/2026/28,hmmt,mancer,1,7311da4fee3a70d99b1057d33eede681d9233d7c040b630c1ced8bcad0b5d18a,25,valid,\boxed{\sqrt{69}},true,true,graded,449.5633936501108,25600,0.0702325,Mancer 2
+hmmt/2026/28,hmmt,mancer,4,913028c2a92f338a87e68cc4672fb39aaccac27f3677599eab6c3ca671fd7dad,25,valid,\boxed{\sqrt{69}},true,true,graded,446.53604615014046,25600,0.070075,Mancer 2
+hmmt/2026/28,hmmt,mancer,2,2c75654ac773be7cf64b47f3d7edc6b927b69fe1b3a17541231d02e17cb2ec99,25,valid,\(\boxed{\sqrt{69}}\),true,true,graded,449.52324360702187,25600,0.070125,Mancer 2
+omni_math_hard/185,omni_math_hard,parasail,5,42ad973f3d330ed07e29a818c17a16a94906e4a1f05bfe8a8a7c93d1a5311362,25,valid,\boxed{134215680},true,true,graded,344.8910281509161,25600,0.05840604,Parasail
+omni_math_hard/2429,omni_math_hard,mancer,1,830541609abe6a8c92c45baed0289cf20d0774ea61d65eef0655f61b88b2eaf9,25,valid,"\boxed{\left(\dfrac{3}{2},\dfrac{\sqrt{2}}{3}\right)}",true,true,graded,442.95303418533877,25600,0.0701225,Mancer 2
+omni_math_hard/2429,omni_math_hard,mancer,7,f85eb50384be7c0e3c15e53639ec85c4e69de443f701214585076b68c8f8d440,25,valid,"\(\boxed{\left(\frac{3}{2},\frac{\sqrt{2}}{3}\right)}\)",true,true,graded,438.6336315404624,25600,0.070105,Mancer 2
+omni_math_hard/2561,omni_math_hard,parasail,2,124e5f61a66665702259d340a1c6c942cc2bf2a5cd450939f6f517198c8edbda,25,valid,\boxed{p!},true,true,graded,316.39560397481546,25600,0.06329008,Parasail
+omni_math_hard/2561,omni_math_hard,parasail,1,b8aeb4fb9bc6057f4a5682b37c697c7a9188a43c1e00ce7d8975b29daa18fed0,25,valid,\boxed{p!},true,true,graded,328.31692731706426,25600,0.06333188,Parasail
+hmmt/2025/11,hmmt,mancer,2,b74c8ee6adc31ec78a51cf13c71b31d5bfbe465521a51d1f7fe0a56999e84a07,25,valid,\boxed{56},true,true,graded,484.2178436079994,25600,0.069815,Mancer 2
+omni_math_hard/2561,omni_math_hard,parasail,3,36045c094f71e89695b1646c4c78962055654720493fe99a1abee724814ce139,25,valid,\boxed{p!},true,true,graded,319.9493220602162,25600,0.06341084,Parasail
+omni_math_hard/2561,omni_math_hard,parasail,6,ec31b6966867de9eb0ada800a33da7dc4a41d4efaffc0111c25ef395627967fb,25,valid,\boxed{p!},true,true,graded,318.5397047069855,25600,0.06325708,Parasail
+omni_math_hard/2561,omni_math_hard,parasail,5,738e116c9cbf830ecc124667a146711fab8fb14a9719cb6533d0d0c1a81bc69b,25,valid,\boxed{p!},true,true,graded,318.79294218542054,25600,0.06330548,Parasail
+hmmt/2025/11,hmmt,mancer,7,33481be8578e5156c39531241143dab8e4f19c9a8ea4f1dcce913ecc7ca32213,25,valid,\boxed{56},true,true,graded,478.4213781822473,25600,0.069885,Mancer 2
+omni_math_hard/2561,omni_math_hard,parasail,4,26616d782527f4433c194c9d197e6b427bcb0341dcc946cc0d335a84838a9226,25,valid,\boxed{p!},true,true,graded,324.6738238730468,25600,0.06336488,Parasail
+omni_math_hard/2429,omni_math_hard,mancer,5,161e76c1a86566330f5dc1db1cba8c8c0763e83eab6bbe25f3f26735f181cb65,25,valid,"\boxed{\left\{\left(\frac{3}{2},\frac{\sqrt{2}}{3}\right)\right\}}",false,true,graded,454.50298800785094,25600,0.0699,Mancer 2
+omni_math_hard/2561,omni_math_hard,parasail,8,6f477b9107cd76c0a580e3a68e844b13b55ca4eddd89209eedd7bc767444c0db,25,valid,\boxed{p!},true,true,graded,318.09253387292847,25600,0.06329888,Parasail
+hmmt/2026/28,hmmt,mancer,5,090bcd856f94be4a63d582f5765bf4e6006a259d2d67f2e8562af8ad6241dc07,25,valid,\(\boxed{\sqrt{69}}\),true,true,graded,462.68764338549227,25600,0.0700675,Mancer 2
+omni_math_hard/2429,omni_math_hard,mancer,8,0eb0e47297b9b4f79a568ad701f2349cbef39b14263259b17361303dcc92c6ef,25,valid,"\boxed{\left(\frac{3}{2},\frac{\sqrt{2}}{3}\right)}",true,true,graded,452.38113246206194,25600,0.070225,Mancer 2
+omni_math_hard/2561,omni_math_hard,parasail,7,b8b95297f69b9461e72e09fc0107e690577834a964651e5a366cf1127cf27bbd,25,valid,\boxed{{2p-2\choose p-1}+p-1},false,true,graded,329.6143178255297,25600,0.06382468,Parasail
+omni_math_hard/40,omni_math_hard,parasail,1,4064369930abd1ef5ada763718cccd8d64c492198ad08fe7f2b89d5aa13ba170,25,valid,\boxed{\dfrac{425}{8}},false,true,graded,321.6647892119363,25600,0.06392496,Parasail
+hmmt/2025/11,hmmt,mancer,3,d41ccab63a70a2d390963b4b1df0a9e90cc59249bb1c1634bb9aafefa761191b,25,valid,\boxed{56},true,true,graded,509.45961887342855,25600,0.0697675,Mancer 2
+omni_math_hard/40,omni_math_hard,parasail,4,b27fb036f4fd3e5fc3252778f0d75b3f5cf5145f8861e2f34e3496909ebf8f37,25,valid,"\boxed{(1)\;10,\qquad (2)\;\frac{25}{2}}",false,true,graded,325.31270716013387,25600,0.06351552,Parasail
+omni_math_hard/40,omni_math_hard,parasail,5,b7b9471bd8b115c1310bce787d45d816ef0a802fe0cb5f4d056e3bb247cd1339,25,valid,(1)\ \boxed{10}; \qquad (2)\ \boxed{\frac{3961}{200}},false,true,graded,326.8853397509083,25600,0.06356856,Parasail
+hmmt/2025/11,hmmt,mancer,1,df307d850bcf79484bc844d57c2f39382fb598bac9286ed9d6d3639a598a43aa,25,valid,\boxed{56},true,true,graded,515.0123860295862,25600,0.0698425,Mancer 2
+omni_math_hard/40,omni_math_hard,parasail,6,95a8a598eb56cedc1e468d7e74233529863c816a08790fb50d37c093bb482c91,25,valid,"\boxed{(1)\ 10,\qquad (2)\ 50}",false,true,graded,327.16497981501743,25600,0.06388756,Parasail
+omni_math_hard/40,omni_math_hard,parasail,7,7582d9c1148d847ddb8d516951b2e424ac1a06aa44a8f9c6cfdfa9e4979dabec,25,valid,(1) \(\;8\;\qquad (2) \;\dfrac{425}{8}\),false,true,graded,328.22375482181087,25600,0.05887948,Parasail
+omni_math_hard/185,omni_math_hard,parasail,8,e4402e39066ff04be6f186abd83aac5386b42fd64794fc75a9ef80d9fcedf907,25,valid,\boxed{134215680},true,true,graded,373.6244036797434,25600,0.06333052,Parasail
+omni_math_hard/40,omni_math_hard,parasail,2,5f7874ae256e05f4543a09c630328441adacaca5846aaa8fed55de37d11c81ff,25,valid,"\boxed{(1)\ 10,\qquad (2)\ \dfrac{425}{8}}",false,true,graded,344.1349913002923,25600,0.06334416,Parasail
+hmmt/2025/19,hmmt,mancer,4,646c5f2a1da2150a477e8e8220c721deb9697582abdff8cac89a3baca8546d86,25,valid,\boxed{\frac{4}{9}},true,true,graded,506.7164447992109,25600,0.0701575,Mancer 2
+omni_math_hard/40,omni_math_hard,parasail,8,d1dff7b5e373a460e7edaad6728b4ca42f0e24b70c5b8c2adc4382fc8b1922ff,25,valid,"\boxed{(1)\ 5,\qquad (2)\ \frac{425}{32}}",false,true,graded,328.88479066314176,25600,0.06365656,Parasail
+omni_math_hard/187,omni_math_hard,parasail,1,65e355be97fc6e8a04ff6f4a319b5ce90bfcc9eaf16fd0929297b8a5a75a1e5f,25,valid,\boxed{n-k},true,true,graded,324.1514938431792,25600,0.06057868,Parasail
+omni_math_hard/1257,omni_math_hard,mancer,4,549e4cb676ffcf61cf0bde29a50beeb28b6d93032c6ca5d5f34a414afd8e4a8e,25,valid,\boxed{\frac{22}{27}},true,true,graded,471.14308569720015,25600,0.070135,Mancer 2
+omni_math_hard/40,omni_math_hard,parasail,3,06e0db7c672503f933dcf10315097e01db44ac1d197c2c953d36ec75d47ce7a4,25,valid,"\boxed{(1)\ 10,\quad (2)\ \dfrac{425}{8}}",false,true,graded,373.1290508862585,25600,0.06377096,Parasail
+omni_math_hard/187,omni_math_hard,parasail,4,d6c14b97cef61b88ff2e4c68eed3780e10366ffe3bc22c22b2c2422732d18cfb,25,valid,\boxed{n-k},true,true,graded,314.24813047470525,25600,0.06352552,Parasail
+omni_math_hard/187,omni_math_hard,parasail,3,31d6975d55260a56ac778b8b4c2ec1be447b2d703fa7a4203fdc3d5e9ddb63a6,25,valid,\boxed{n-k},true,true,graded,325.3670502859168,25600,0.06350352,Parasail
+omni_math_hard/1257,omni_math_hard,mancer,1,2f3985692c6f62162c2275494ed3fca13dc8e9563584778f6d78d0e634fed46e,25,valid,\boxed{\frac{22}{27}},true,true,graded,509.34906108723953,25600,0.069945,Mancer 2
+omni_math_hard/1257,omni_math_hard,mancer,2,515fc327593c3334ab42952554e179e666bc3a17a7fea65b41b0c721c78624e6,25,valid,\boxed{\frac{22}{27}},true,true,graded,509.84678926924244,25600,0.070095,Mancer 2
+hmmt/2026/28,hmmt,mancer,7,bd29e13e51265e8f1dcb66fc12a3ef864ff10b2b99f4db7a6998e0e1cf12cf28,25,valid,\boxed{\sqrt{69}},true,true,graded,543.720188701991,25600,0.07032,Mancer 2
+hmmt/2026/28,hmmt,mancer,8,745e8f3bf00828790c5f2b6e70b7cf3cd0f0e958db860ca2dea88bc20a26c439,25,valid,\boxed{\sqrt{69}},true,true,graded,559.7833780422807,25600,0.0702925,Mancer 2
+hmmt/2025/19,hmmt,mancer,8,362763fa78e51498dabb7dce4c7a767cf873c4bfc51ff5ae5711325be222a7e5,25,valid,\boxed{\frac{4}{9}},true,true,graded,571.8360172593966,25600,0.069965,Mancer 2
+hmmt/2026/28,hmmt,mancer,6,6b984288579ef682c4b19ca8709e7fd4987e7d3f1ecfd83059aec8979e1c7991,25,valid,\boxed{\sqrt{69}},true,true,graded,565.787126254756,25600,0.070135,Mancer 2
+hmmt/2025/19,hmmt,mancer,1,a06a1db8b235b551ad188acb3c1f92cd5d54e3cc52c4807d87ffdb65161342b3,25,valid,\boxed{\frac{4}{9}},true,true,graded,585.303884269204,25600,0.0699825,Mancer 2
+omni_math_hard/187,omni_math_hard,parasail,2,58a20aa2a7b2de02cdfd7e7e30c0d4705d7195fd8ebb55ed403cee4c6bbd45eb,25,valid,"\boxed{\lambda(n,k)=\dfrac{n}{\sqrt{k+1}}}",false,true,graded,362.9428349053487,25600,0.05853944,Parasail
+hmmt/2025/19,hmmt,mancer,3,42318164a06d90206bfd3afa17eadfaa71474f677e038cb3767f582ba303113b,25,valid,\boxed{\dfrac{9\ln 3-36+18\sqrt{3}}{12\ln 3+18\sqrt{3}-36}},false,true,graded,579.0023201247677,25600,0.0701475,Mancer 2
+omni_math_hard/1257,omni_math_hard,mancer,7,2f1e9e733bf90fe0869eb06ef0ff6edbdd5fa026d8c495144f2d82a0eaf061ff,25,valid,\boxed{\frac{22}{27}},true,true,graded,517.0034584640525,25600,0.0699875,Mancer 2
+hmmt/2025/19,hmmt,mancer,2,5e63810a750326d6ae7802495f2eca3e15a6405754a69ed323beaf8d56835cf3,25,valid,\boxed{\frac{4}{9}},true,true,graded,583.5249643009156,25600,0.06996,Mancer 2
+hmmt/2025/19,hmmt,mancer,5,a3140eb554cb6cec9f5ff9a0c666694ed62fda0f8ec55b8d35e60d16f0fc02b1,25,valid,\boxed{\frac{4}{9}},true,true,graded,587.1750650373287,25600,0.070075,Mancer 2
+omni_math_hard/1257,omni_math_hard,mancer,3,6edfe221dcaeacfb89a8e998c267742f3a807b0bc98397c38acb358559de7dee,25,valid,\boxed{\frac{22}{27}},true,true,graded,545.3650935715996,25600,0.07036,Mancer 2
+omni_math_hard/1257,omni_math_hard,mancer,5,ee9af71f62e02e2291920116732c107460e814f3dee466ce10fcc728c3eb9785,25,valid,\boxed{\frac{22}{27}},true,true,graded,534.688734238036,25600,0.0699975,Mancer 2
+omni_math_hard/1257,omni_math_hard,mancer,6,277f5803aa1743878c99706fd267f6d773f68944e5a54f255b123a6465b702dc,25,valid,\boxed{\frac{22}{27}},true,true,graded,536.9599309349433,25600,0.06998,Mancer 2
+hmmt/2025/19,hmmt,mancer,6,fe27713e0837a813be6fbf4872512506840b7f5881cc7c1d870b1a2fa5cf5d51,25,valid,\boxed{\frac12},false,true,graded,600.429509663023,25600,0.07003,Mancer 2
+omni_math_hard/1257,omni_math_hard,mancer,8,11d8299b8c52e950a6c336f534988c8aed95ae684637599dec1dfb76d7c660a4,25,valid,\boxed{\frac{22}{27}},true,true,graded,557.8952958839945,25600,0.070175,Mancer 2
+hmmt/2026/24,hmmt,mancer,8,76c5958890f36b390f69b1c186f96cdc92e71a5d6089b0d583aa7aab33ac092d,25,valid,\(\boxed{\frac{7\sqrt3}{3}}\),true,true,graded,458.2168583860621,25600,0.0702525,Mancer 2
+omni_math_hard/187,omni_math_hard,parasail,5,51d8f71b3a07b36809c4ca54ee55a0fe2c0ce27ec2ba47b770414c2454b43d5c,25,valid,\boxed{n-k},true,true,graded,306.00437537254766,25600,0.05838984,Parasail
+omni_math_hard/187,omni_math_hard,parasail,6,fde29917e5d9978e2f9a8aa9b24435d13476aab833a2a9754ad36933e19f6d67,25,valid,\boxed{n-k},true,true,graded,307.3510418171063,25600,0.06364212,Parasail
+omni_math_hard/187,omni_math_hard,parasail,8,e2f4ae3e7809553a0103c4fd8a3584e2383a08f0f58c70b23c3553f953dac2c1,25,valid,\boxed{n-k},true,true,graded,283.1308563319035,25600,0.06340012,Parasail
+gpqa_diamond/rec0wZvZgiz320KRs,gpqa_diamond,parasail,3,7dbdffba83399911def2d1e8c95030781ad6455a266c0142473ceb6b7b546936,25,valid,C,true,true,graded,279.74730439670384,25600,0.0631136,Parasail
+gpqa_diamond/rec0wZvZgiz320KRs,gpqa_diamond,parasail,2,cb12fc4e788b79169752ed774133bbe17187fadcf77f660c72572dab991da602,25,valid,C,true,true,graded,282.9205654580146,25600,0.0631598,Parasail
+gpqa_diamond/rec0wZvZgiz320KRs,gpqa_diamond,parasail,4,e4039190cc800af6381d6138f8fff89838e72c006e3459ed066bb51c9f73fe3e,25,valid,C,true,true,graded,278.41056448966265,25600,0.0630586,Parasail
+gpqa_diamond/rec0wZvZgiz320KRs,gpqa_diamond,parasail,5,c2dbb3a413144d9f0d2a05b2f6be0921a3d22517d964ee60f687247621c6e63c,25,valid,C,true,true,graded,284.6438112431206,25600,0.063118,Parasail
+omni_math_hard/187,omni_math_hard,parasail,7,5ced795430ce799c1b3097a21b290bfd228ca579342b579ad3fa0bfad3687026,25,valid,\boxed{n-k},true,true,graded,303.0670635532588,25600,0.06305692,Parasail
+gpqa_diamond/rec0wZvZgiz320KRs,gpqa_diamond,parasail,6,dc233b5106538162cb4bc875a5542d80e5a226461559f08b09bad82dfacad6c0,25,valid,C,true,true,graded,300.1340962462127,25600,0.0631004,Parasail
+gpqa_diamond/rec0wZvZgiz320KRs,gpqa_diamond,parasail,7,00e085a293e871e8378e044daacf2c1d0dcb4af42e276801f323225d0a200c14,25,valid,C,true,true,graded,298.49068868439645,25600,0.0631466,Parasail
+gpqa_diamond/rec0wZvZgiz320KRs,gpqa_diamond,parasail,8,7f37a831e88f0b25bf4da6a77b4b6e01730dc53d03706e3468a5b7d3294d41a2,25,valid,C,true,true,graded,287.139527190011,25600,0.06293516,Parasail
+hmmt/2025/19,hmmt,mancer,7,16b6f9601fc094bff155039b62d70b6de523210b60e681df08cbf605eb356471,25,valid,\boxed{\frac{4}{9}},true,true,graded,565.7896701195277,25600,0.070175,Mancer 2
+gpqa_diamond/recwlwlcPvXVNPmvl,gpqa_diamond,parasail,1,37b380a67f6cd1bda503d1196cc45495828a79ab082f54a171fc7dc3e97bfb00,25,valid,D,true,true,graded,296.7223967965692,25600,0.06298072,Parasail
+gpqa_diamond/recwlwlcPvXVNPmvl,gpqa_diamond,parasail,3,11ccb2b0cfe3cd4217faa3f0ddde6ee4fdbcb61845dcd74caf6784d49b56aa0c,25,valid,D,true,true,graded,294.8953901734203,25600,0.06294308,Parasail
+gpqa_diamond/rec5rjeLsEq5Fg7Oj,gpqa_diamond,parasail,2,d75d70ea51e85a00b04791be0a905b0d17792027ceedb2e83e32933f0dfd858a,25,valid,D,true,true,graded,279.95556031679735,25600,0.06345252,Parasail
+gpqa_diamond/recwlwlcPvXVNPmvl,gpqa_diamond,parasail,7,fa1de51aef7f2de6a090c90a2dfe39aae480d4d66e4957c31dc2f0b5dda2bd70,25,valid,D,true,true,graded,286.05334792099893,25600,0.05812224,Parasail
+gpqa_diamond/recwlwlcPvXVNPmvl,gpqa_diamond,parasail,8,7c3535ba94376c457bb3c325dc6267e38516200c9a4df67841ee898c16270d71,25,valid,D,true,true,graded,286.0379720078781,25600,0.06293892,Parasail
+gpqa_diamond/rec0wZvZgiz320KRs,gpqa_diamond,parasail,1,3c8a75597444b2df30f6b491468e0768bc4858c912396b71c04a94b25c077350,25,valid,C,true,true,graded,348.715319189243,25600,0.0629992,Parasail
+gpqa_diamond/rec5rjeLsEq5Fg7Oj,gpqa_diamond,parasail,1,6ff0d70761fe12567db73233bb7ddab8d0ea69874e21cd27dbbdc5db2d1ea4fa,25,valid,D,true,true,graded,301.3318427321501,25600,0.06334716,Parasail
+omni_math_hard/3907,omni_math_hard,mancer,7,6f31d8ffb3cb5e043bea7ed4c0c30a3584bf036fd85cf9bd3ca69a4066946ba4,25,valid,\boxed{\frac14},true,true,graded,395.95263122208416,25600,0.0698925,Mancer 2
+gpqa_diamond/rec5rjeLsEq5Fg7Oj,gpqa_diamond,parasail,8,87358f0fc892bf2b2cbcfd80123ba830db0bb69ef4c11c8d766a242dcf6aae1f,25,valid,C,false,true,graded,277.75694036949426,25600,0.05833468,Parasail
+gpqa_diamond/rec5rjeLsEq5Fg7Oj,gpqa_diamond,parasail,3,8512b8bf0dc76d6ca9b91d26804e6fc8329ce75f643905a2203c1a7c322705d7,25,valid,D,true,true,graded,300.61394538357854,25600,0.06333372,Parasail
+gpqa_diamond/rec5rjeLsEq5Fg7Oj,gpqa_diamond,parasail,4,acbe18670c33a90867a4995e4791b39312f8050d734de3c42339da0ece15768d,25,valid,C,false,true,graded,302.0140749020502,25600,0.05843368,Parasail
+omni_math_hard/3907,omni_math_hard,mancer,6,0b72340ea99a4c1d2d25baa1a928f7babdb0d04399c3a2994ad4a57f771e0f3e,25,valid,\(\boxed{\frac{1}{4}}\),true,true,graded,415.02326735295355,25600,0.0698675,Mancer 2
+gpqa_diamond/recwlwlcPvXVNPmvl,gpqa_diamond,parasail,2,32c728e72a2a7a1ed0966e42a3bc78dfbc239866053f1b77cff523af381a545d,25,valid,D,true,true,graded,336.4294876670465,25600,0.06302032,Parasail
+gpqa_diamond/rec5rjeLsEq5Fg7Oj,gpqa_diamond,parasail,5,35e1543cd14a8eb12018482102026e5d4ded1a3e9f01e7264eba22d2b4d397b4,25,valid,D,true,true,graded,300.5543381390162,25600,0.05839628,Parasail
+gpqa_diamond/rec5rjeLsEq5Fg7Oj,gpqa_diamond,parasail,6,6d03df70ce7a83ddd0fc66566e4e134d874e4717f6208e2aa16960b600f0c2f5,25,valid,D,true,true,graded,303.58626213809475,25600,0.05838308,Parasail
+gpqa_diamond/recwlwlcPvXVNPmvl,gpqa_diamond,parasail,4,1aa727f2dcd351535034344662b57514747cb6d90877fadc2b583575f4c251f5,25,valid,D,true,true,graded,338.2072968860157,25600,0.06294968,Parasail
+gpqa_diamond/recwlwlcPvXVNPmvl,gpqa_diamond,parasail,6,e6a4e11bdbd97134da0a9cfc6aece6a11afd617af62a22395e2ee62e0eb1ec77,25,valid,D,true,true,graded,334.73886171588674,25600,0.06297632,Parasail
+gpqa_diamond/recgM7o1tcc7tP778,gpqa_diamond,parasail,2,cbe3f9973b9d601f081a9c01a21be828f288ff7f5eeb0f28d2cf7480d361e1b0,25,valid,C,true,true,graded,308.95384596753865,25600,0.06325984,Parasail
+omni_math_hard/3907,omni_math_hard,mancer,5,5a1486d63da0c95bc7de0017d849c544763b76fdc475c6eb7e0fb722a9515b68,25,valid,\boxed{\frac14},true,true,graded,454.26092143915594,25600,0.0699125,Mancer 2
+omni_math_hard/3996,omni_math_hard,mancer,1,4bdd5e973552c5ff85ec947a400ec4af6656d0980690187c15b9e64b358cf965,25,valid,\boxed{121},true,true,graded,430.05898165376857,25600,0.0703225,Mancer 2
+omni_math_hard/3907,omni_math_hard,mancer,3,bf06767d00a61a2ed29d8c39b70a9d60ac34bc5d8a2288f114f08a7bfadd9520,25,valid,\boxed{\frac14},true,true,graded,466.47370097693056,25600,0.069925,Mancer 2
+omni_math_hard/3996,omni_math_hard,mancer,6,edd4b8f087ccccafa2aa2a54483e3ea165bad3b2ab1a557dacfd7250692ac737,25,valid,\boxed{121},true,true,graded,416.62335163448006,25600,0.070315,Mancer 2
+gpqa_diamond/recgM7o1tcc7tP778,gpqa_diamond,parasail,7,dd395a1786bb52adfd38204e4fb5096637d490e6d543d981627e236bb4b60d25,25,valid,C,true,true,graded,281.7479804693721,25600,0.0630748,Parasail
+gpqa_diamond/recgM7o1tcc7tP778,gpqa_diamond,parasail,5,b4049d42ad1cc64c3da9d93f1dc22defe83825b96a2e97ce4c186cfda4a0024e,25,valid,C,true,true,graded,287.1842343946919,25600,0.06318944,Parasail
+gpqa_diamond/rec5rjeLsEq5Fg7Oj,gpqa_diamond,parasail,7,177052beeddeeb0caa876a6f6e7fe7c6c5b84c6d7bf4bb4bf4e5dcba3ceceb33,25,valid,D,true,true,graded,331.65098136803135,25600,0.06321956,Parasail
+omni_math_hard/3907,omni_math_hard,mancer,2,63229853cc818724423c8c17a2bd090886b7faa8d1448a5ce436ba171235ea87,25,valid,\boxed{\frac{1}{4}},true,true,graded,473.2496538986452,25600,0.0697725,Mancer 2
+omni_math_hard/3907,omni_math_hard,mancer,1,e35bd9aab55f47718ef3296436a7bb22800b0133b22657e5b0437691f1ef7326,25,valid,\boxed{\frac14},true,true,graded,478.12773836031556,25600,0.0699825,Mancer 2
+gpqa_diamond/recgM7o1tcc7tP778,gpqa_diamond,parasail,1,d6f4226e9dc8bf88306c20a4f7d1d6f4a3c4867260b7246f1bf9aa23db948d95,25,valid,C,true,true,graded,331.4484333987348,25600,0.0632574,Parasail
+omni_math_hard/3907,omni_math_hard,mancer,4,5d13c8a7c48d4ee8f5f5828e9f43963fd45127eb0eb6443d7760e8daeb26e90b,25,valid,\(\boxed{\frac14}\),true,true,graded,474.10892888717353,25600,0.06976,Mancer 2
+omni_math_hard/3996,omni_math_hard,mancer,5,8bb6523a0e9bf3f05a28afd36dbe3f4856b626a7e04fcc39d7059add5daf22ef,25,valid,\boxed{121},true,true,graded,438.77345563145354,25600,0.0699725,Mancer 2
+omni_math_hard/3996,omni_math_hard,mancer,8,b30bbd32457f6b927ac4ded04d3e967ce64c3159ecb4be203d915ffad2b4564e,25,valid,\boxed{121},true,true,graded,435.48159671900794,25600,0.0701575,Mancer 2
+gpqa_diamond/recgM7o1tcc7tP778,gpqa_diamond,parasail,3,6bbf72967a8e240d0c5970b6ddb2d41cbe0078781dd2eb3495d5663b62469d00,25,valid,C,true,true,graded,332.83205778570846,25600,0.06319604,Parasail
+gpqa_diamond/recgM7o1tcc7tP778,gpqa_diamond,parasail,8,42008d8053cca64101667b8a246e84265e26b05ee4ccffeab27ea1f83e5f4559,25,valid,C,true,true,graded,269.04992891382426,25600,0.06297824,Parasail
+omni_math_hard/4043,omni_math_hard,mancer,7,235689a5dc9d2424c9fa106dc5332ef7ce1973efa12ee76adbc42b29a19bbb78,25,valid,"\boxed{(a,b)=(n,n+1)\ \text{for all positive integers }n}",false,false,invalid_output,394.1768317250535,25600,0.0699625,Mancer 2
+omni_math_hard/3996,omni_math_hard,mancer,2,546aa293e41178b02f151eaeca1c6c9e518eab3136c3214ae31a58e3565953bc,25,valid,\boxed{121},true,true,graded,473.35194180719554,25600,0.070125,Mancer 2
+omni_math_hard/3996,omni_math_hard,mancer,7,676ddb0461b94fc80889b5ffb18b59d8c86ab959d591037527f64e8138347349,25,valid,\boxed{121},true,true,graded,453.3629696290009,25600,0.0703925,Mancer 2
+gpqa_diamond/recwlwlcPvXVNPmvl,gpqa_diamond,parasail,5,8c5018aaeec45483240c297f0baea087edc1469cf19da42060481426c55a3063,25,valid,D,true,true,graded,405.3678690982051,25600,0.06287048,Parasail
+gpqa_diamond/recgM7o1tcc7tP778,gpqa_diamond,parasail,6,929be7e210f301277a9c42706a544bcf9ee9807c59383cbafcd0a5be34a5eb79,25,valid,C,true,true,graded,324.1925979112275,25600,0.05812612,Parasail
+omni_math_hard/4043,omni_math_hard,mancer,8,10d8ea97f81acecef5a56feea19a2919ec330f482df8f85ee0f3b37a43a6c08c,25,valid,"\(\boxed{\{(t,t+1)\mid t\in\mathbb{Z}_{>0}\}}\)",false,false,invalid_output,397.33864789735526,25600,0.0700375,Mancer 2
+omni_math_hard/3907,omni_math_hard,mancer,8,331bede6086e3eb74496869fb27f1bfc0b4910e79f9a3ed37d2ec90a34c63432,25,valid,\boxed{\frac14},true,true,graded,492.1686429507099,25600,0.069865,Mancer 2
+omni_math_hard/3996,omni_math_hard,mancer,3,8345c653b9027ca580a7842ebb621105db854c557316de41e54df56eeda5f95e,25,valid,\boxed{121},true,true,graded,488.6182243162766,25600,0.0701,Mancer 2
+omni_math_hard/62,omni_math_hard,mancer,4,adebf6d6744d322cb6f1f3402868da50b150df830b556738444cc2b952d37ec5,25,valid,\boxed{48},true,true,graded,459.5892696422525,25600,0.069865,Mancer 2
+omni_math_hard/3996,omni_math_hard,mancer,4,50f5acbbf126d0b193f58099816ef620b3699324186c451b4fdd35d81e497bf0,25,valid,\boxed{121},true,true,graded,498.005899398122,25600,0.07029,Mancer 2
+omni_math_hard/4043,omni_math_hard,mancer,5,daff243517aa77c4acc5772117ff041504578f124b13e5bb41785ef91411640a,25,valid,"\[
+\boxed{(a,b)=(n,n+1)\text{ for }n\in\mathbb Z_{>0}}
+\]",false,true,graded,444.9317857301794,25600,0.069965,Mancer 2
+omni_math_hard/4043,omni_math_hard,mancer,4,1f61123011462a3bf701fe48ff85b3c275b93897e0e353abd7fcf0acee8cb581,25,valid,"\boxed{\{(a,\,a+1)\mid a\in\mathbb{Z}_{>0}\}}",false,false,invalid_output,446.9012824841775,25600,0.0701775,Mancer 2
+omni_math_hard/4043,omni_math_hard,mancer,1,18b81989eedf9fd752a5c22da7e1ebc9d2b6f61e9f1994647d2ffd643550a3f9,25,valid,"\boxed{\{(a,\,a+1)\mid a\in\mathbb{Z}_{>0}\}}",false,false,invalid_output,456.695807391312,25600,0.070175,Mancer 2
+omni_math_hard/4043,omni_math_hard,mancer,2,c866a4bccfe0c7de2cbe6fc120149c87607bfaadc043796e934b55e1327ac1bf,25,valid,"\boxed{\{(a,b)\in\mathbb{Z}_{>0}^2:\ b=a+1\}}",false,false,invalid_output,461.78070254297927,25600,0.07004,Mancer 2
+omni_math_hard/4043,omni_math_hard,mancer,6,f704deb2573ea6a19187986487d87c942cbcce0288d55ef652dfdb0af3b96789,25,valid,"\boxed{\{(n,n+1): n\in\mathbb{Z}_{>0}\}}",false,false,invalid_output,461.6673278887756,25600,0.07007,Mancer 2
+gpqa_diamond/recgM7o1tcc7tP778,gpqa_diamond,parasail,4,c81aad1e4cbefba137a75bb131b76909b10dbe8c5c37986429e89b18cf2c3728,25,valid,C,true,true,graded,405.5916496058926,25600,0.06318944,Parasail
+omni_math_hard/62,omni_math_hard,mancer,3,fba1ca6ab672f9960a249e48b31e621482f55c4717636a623058a7d48701001f,25,valid,\boxed{48},true,true,graded,498.4686529696919,25600,0.0696725,Mancer 2
+omni_math_hard/336,omni_math_hard,mancer,1,9190cf87fa084db5bd3d654849bf42c2f906e01011c4eb8984ca145e7f2d895f,25,valid,\boxed{2^{n^2}(2n)!},true,true,graded,521.2268882622011,25600,0.0700975,Mancer 2
+omni_math_hard/4043,omni_math_hard,mancer,3,92d12df921a4db1d89699f701e6c335e2cca0d88da5d254c829c9bbbe8a1011d,25,valid,"\boxed{(a,b)=(n,n+1)\text{ for }n\in\mathbb{Z}_{>0}}",false,true,graded,482.20280023897067,25600,0.07013,Mancer 2
+omni_math_hard/336,omni_math_hard,mancer,5,b65321f2e1702b010913782cd37db498720c5b070f2d2cd025b8c3978d2bce49,25,valid,\boxed{((2n)!)^2},false,true,graded,526.4665498691611,25600,0.069855,Mancer 2
+omni_math_hard/336,omni_math_hard,mancer,7,7cac5f04728f19b64451b4ec33d8e7c25b94d9883a2060efcbcc6079ba24ec56,25,valid,"\boxed{(2n)!\,2^{n^2}}",true,true,graded,527.6905582980253,25600,0.07012,Mancer 2
+omni_math_hard/336,omni_math_hard,mancer,3,46ca1c1434e84906c2b4fdd41fa1a6a2d3dbaa330158fa82c03ee49cc0ee2d03,25,valid,"\boxed{(2n)!\,2^{n^2}}",true,true,graded,538.0428445138969,25600,0.07018,Mancer 2
+omni_math_hard/336,omni_math_hard,mancer,4,d0ce09be54c5eb1bb4163d4b2dabb6075bae038bee9b42d5182aef31a4f93e78,25,malformed_final,,false,false,invalid_output,538.2492083362304,25600,0.0700975,Mancer 2
+omni_math_hard/336,omni_math_hard,mancer,2,3368950e9611d1ce0b8fb4abd122763858d47f791e409b2933a2e37638996ed4,25,valid,"\boxed{(2n)!\,2^{n^2}}",true,true,graded,543.3674554680474,25600,0.0700525,Mancer 2
+omni_math_hard/62,omni_math_hard,mancer,1,e1586e803742981e67c1496c84f2a542a48f7d2d0a7075a173d99955a6cbc25a,25,valid,\boxed{48},true,true,graded,533.5418485146947,25600,0.06981,Mancer 2
+omni_math_hard/62,omni_math_hard,mancer,2,fd8a83e670a393d337de13134b3bcbab56fd3947d7f621e6611e961bdbaf7d3f,25,valid,\boxed{48},true,true,graded,532.8477222034708,25600,0.0697925,Mancer 2
+omni_math_hard/336,omni_math_hard,mancer,6,8801132904736e1a79f990f503addb3a89ac0a09357c1365f4733c4a3a36da80,25,valid,\boxed{\dfrac{\bigl(2n(n+1)\bigr)!}{\displaystyle\prod_{i=1}^{2n}\prod_{j=1}^{n+1}(i+j-1)}},false,true,graded,539.4115397715941,25600,0.0699825,Mancer 2
+omni_math_hard/62,omni_math_hard,mancer,5,5e2d9055ec15653ef7e69ca01628fbcb99439367bb4aa6246413bb721005a465,25,valid,\boxed{48},true,true,graded,527.4718526541255,25600,0.069895,Mancer 2
+gpqa_diamond/recnjViFrqlZNL3fY,gpqa_diamond,mancer,4,dcb7b648156cd34373f7325c39cf4c354edfcda4d7067da6c4f7ebaa230372d7,25,valid,D,false,true,graded,395.85905428929254,25600,0.069605,Mancer 2
+omni_math_hard/121,omni_math_hard,mancer,1,ef685c287838ce3753740643cb68857c40c2b000b0e9d3810da8ca79c25bebd9,25,valid,"\boxed{f(n)=cn\ \text{for all }n\in\mathbb N^+,\ \text{where }c\in\mathbb R\text{ is arbitrary.}}",true,true,graded,506.20171927521005,25600,0.07002,Mancer 2
+gpqa_diamond/recnjViFrqlZNL3fY,gpqa_diamond,mancer,3,8290c2f77bd0558f471bc8b0a5756c9a0332e8fb9c3a2a7cb4c925615a4ce924,25,valid,D,false,true,graded,402.4793512946926,25600,0.0695725,Mancer 2
+omni_math_hard/121,omni_math_hard,mancer,2,62b5510591e53d96244b28b3370dc09786164162356b349f6cf3db8efaa8c1f8,25,valid,"\[
+\boxed{\,f(n)=cn\ \text{for all }n\in\mathbb N^+,\ \text{where }c\in\mathbb R\text{ is arbitrary.}\,}
+\]",false,false,invalid_output,501.1533577335067,25600,0.0701625,Mancer 2
+gpqa_diamond/recnjViFrqlZNL3fY,gpqa_diamond,mancer,1,701e9a6b2a53638d38d7fa0982d2b6c4d849bb45dd3e488785569560f1a27404,25,valid,D,false,true,graded,429.0660337372683,25600,0.0695675,Mancer 2
+gpqa_diamond/recnjViFrqlZNL3fY,gpqa_diamond,mancer,8,31da2d4d49178558707650bfa627e78c76b79dab926eea41b246cd04d94250f6,25,valid,D,false,true,graded,410.5924572898075,25600,0.069535,Mancer 2
+omni_math_hard/121,omni_math_hard,mancer,3,254fc3fb01863d7f98df3e2a588d1fec93df50679437ac616bb3870b8f07d3b1,25,valid,"\boxed{f(n)=cn\ \text{for all }n\in\mathbb N^+,\text{ where }c\in\mathbb R\text{ is arbitrary}.}",false,false,invalid_output,504.2594285868108,25600,0.07003,Mancer 2
+gpqa_diamond/recnjViFrqlZNL3fY,gpqa_diamond,mancer,5,635bb12175810f7d9e514fb7c964f421c92bb54030b2a716c301b33e0096e333,25,valid,D,false,true,graded,418.75645456649363,25600,0.069565,Mancer 2
+omni_math_hard/62,omni_math_hard,mancer,6,c3f070628f29f7f90d9353e74b90d2611ba6f64db3a086d01bb0135195426c09,25,valid,\boxed{48},true,true,graded,549.8501977347769,25600,0.070075,Mancer 2
+gpqa_diamond/recnjViFrqlZNL3fY,gpqa_diamond,mancer,2,c3e0aba0b0f1f0ed7ed78a9aeb13f1c7bdd141edbc1df31c550e622892ed3250,25,valid,D,false,true,graded,424.79990887409076,25600,0.0696075,Mancer 2
+omni_math_hard/62,omni_math_hard,mancer,7,b310a705fd70904bc27eef27b9e11dc418f53500c40f29af54176e5155adb27c,25,valid,\boxed{48},true,true,graded,562.0777953462675,25600,0.0699,Mancer 2
+gpqa_diamond/recD8oX1KevFbl7bL,gpqa_diamond,mancer,1,6a842553a0983f6776187c9176337e8388e55669d1f9218d67edffa7c6e37450,25,valid,D,true,true,graded,430.3290909938514,25600,0.0697525,Mancer 2
+omni_math_hard/121,omni_math_hard,mancer,4,cb5485b36f92da0f5ebb99d5a711622d79b24592d2ff08341fb64754cf31a74f,25,valid,"\boxed{\,f(n)=cn\text{ for all }n\in\mathbb N^+,\text{ where }c\in\mathbb R\text{ is arbitrary.}\,}",false,false,invalid_output,533.0645833583549,25600,0.0701075,Mancer 2
+gpqa_diamond/recnjViFrqlZNL3fY,gpqa_diamond,mancer,7,e34bedde1e6721588b3735877318c3e8fb1f249d08198ffc292f4aae2f57c7fe,25,valid,D,false,true,graded,451.3619601498358,25600,0.069605,Mancer 2
+gpqa_diamond/recnjViFrqlZNL3fY,gpqa_diamond,mancer,6,0851635ffd4c629b1a133fc25292b66938f8c4fbcb822c3abdb2b0d214fd4bf2,25,valid,C,true,true,graded,458.8567257663235,25600,0.0695025,Mancer 2
+omni_math_hard/121,omni_math_hard,mancer,6,b8fbc681ced659b2a32bcb03b28ade4757b8de0f7fbea0ca7ec52d9123d93117,25,valid,"\boxed{f(n)=cn\quad\text{for all }n\in\mathbb N^+,\text{ where }c\in\mathbb R}",false,false,invalid_output,509.0521720130928,25600,0.070185,Mancer 2
+gpqa_diamond/recD8oX1KevFbl7bL,gpqa_diamond,mancer,3,1d7b6f62b3baa60e293821b40136c86110d14e730800d54959af38be462038bd,25,valid,D,true,true,graded,452.53743227617815,25600,0.069705,Mancer 2
+omni_math_hard/62,omni_math_hard,mancer,8,0d4518fcbd83ef42a97adf7c2db0237c112da6f39229e5b3540ed0ded35f5683,25,valid,\boxed{48},true,true,graded,601.2408884838223,25600,0.070195,Mancer 2
+gpqa_diamond/recD8oX1KevFbl7bL,gpqa_diamond,mancer,4,cec1f0c81e8952094b78b595ec4a4d3750825e540fb23815ec4d63b4967193e6,25,valid,D,true,true,graded,460.7410504100844,25600,0.06968,Mancer 2
+omni_math_hard/336,omni_math_hard,mancer,8,612049bec1233d2111eceb62159a21cf1df92b756d66a72078a63997a4b0856a,25,valid,"\boxed{\displaystyle \sum_{\substack{r_1+\cdots+r_{n+1}=n(n+1)\\ r_t\ge 0}}
+\prod_{t=1}^{n+1}\binom{2n}{r_t}\binom{r_t}{t-1}}",false,true,graded,504.6796823600307,25600,0.069975,Mancer 2
+gpqa_diamond/recD8oX1KevFbl7bL,gpqa_diamond,mancer,2,0edf447b98dfb293f8b66e8585c0b2141b755f9b119fafa3c5a644cda55f65e1,25,valid,D,true,true,graded,486.2906841542572,25600,0.06972,Mancer 2
+gpqa_diamond/recD8oX1KevFbl7bL,gpqa_diamond,mancer,6,b45ffde026852909959209cec2c5249e9424613aec51e2296c66a686291aef5a,25,valid,D,true,true,graded,452.50427894853055,25600,0.0696925,Mancer 2
+gpqa_diamond/recD8oX1KevFbl7bL,gpqa_diamond,mancer,5,4398b2eaecd675183044280b95c776e2320e1ac0988f57c9f672454d232d25b0,25,valid,D,true,true,graded,480.3614880507812,25600,0.069715,Mancer 2
+omni_math_hard/121,omni_math_hard,mancer,7,7184643c5978f5df95c514c58b3aecba676ce92505e229a44a2da1f77fc8f5e0,25,valid,"\boxed{f(n)=cn\text{ for all }n\in\mathbb{N}^+, \text{ where }c\in\mathbb{R}\text{ is arbitrary.}}",true,true,graded,532.2999890027568,25600,0.0700775,Mancer 2
+omni_math_hard/121,omni_math_hard,mancer,8,22dbc7661a5ed8e1ef1de7dfcf0511a120a52ed3effa981192f5fbb68b4adb88,25,valid,"\boxed{f(n)=cn\ \text{for all }n\in\mathbb N^{+},\ \text{where }c\in\mathbb R.}",false,false,invalid_output,532.3094901568256,25600,0.06992,Mancer 2
+omni_math_hard/121,omni_math_hard,mancer,5,a8f92fbaf7de6d221df4d6a467a29a3ae642b6bd59c2c6118a58db5a8c83b405,25,valid,"\boxed{f(n)=cn\ \text{for all }n\in\mathbb N^+\text{, where }c\in\mathbb R\text{ is arbitrary}.}",false,false,invalid_output,598.7563488343731,25600,0.07,Mancer 2
+gpqa_diamond/recD8oX1KevFbl7bL,gpqa_diamond,mancer,7,f2e791fa2a3ed9b28d0cde3ce9149564ef480e6ff47f6198f5db5300c3dfbaf3,25,valid,D,true,true,graded,449.74507696554065,25600,0.0697725,Mancer 2
+gpqa_diamond/recD8oX1KevFbl7bL,gpqa_diamond,mancer,8,2eb5662960004af597badbd800b6e332c6df91fcd3b0d8867ecdd01d8f35a7ed,25,valid,D,true,true,graded,427.8088501240127,25600,0.06968,Mancer 2
+gpqa_diamond/recXvQ6gWAmyakrpD,gpqa_diamond,mancer,2,9c9d6b7cf817987b083624cfa6ab6edd81732feb71972f144047d11c88fe7684,25,valid,D,true,true,graded,375.0434617009014,25600,0.07001,Mancer 2
+gpqa_diamond/reck4G4xxv3YnpbtQ,gpqa_diamond,mancer,1,b11fd127705b80e4d547d6fdf526ddb81e09d2794289e8d15e5de704580e437a,25,valid,D,false,true,graded,508.5884182807058,25600,0.06973,Mancer 2
+gpqa_diamond/recXvQ6gWAmyakrpD,gpqa_diamond,mancer,1,5c34fe4ad461168542fd414de4768b065ef586de166b363b804025b4556b5c2f,25,valid,D,true,true,graded,400.1216059466824,25600,0.0697225,Mancer 2
+gpqa_diamond/reck4G4xxv3YnpbtQ,gpqa_diamond,mancer,6,71a7b99fb736a6e7b0f66939f7ea4b80b2d5eff0c95fc9998021a975336d1877,25,valid,B,false,true,graded,474.8960930830799,25600,0.0698225,Mancer 2
+gpqa_diamond/recaXdGn3FAIkxLGM,gpqa_diamond,mancer,1,cda2f38d065d47942efc72c23d91409a3cde39a377ae2ece34b5ba34486938bf,25,valid,A,true,true,graded,370.0937367361039,25600,0.06993,Mancer 2
+gpqa_diamond/reck4G4xxv3YnpbtQ,gpqa_diamond,mancer,5,cdd90fe9acec6a4850988ecf222ca20d3e95e31350b5e42786a97a4b2f6cdee2,25,valid,D,false,true,graded,475.7548326998949,25600,0.0697225,Mancer 2
+gpqa_diamond/reck4G4xxv3YnpbtQ,gpqa_diamond,mancer,2,0693e4c8460dc02077570ec2205067967f19a67bad134c560eb92c754121b97c,25,valid,D,false,true,graded,510.8734271530993,25600,0.0697475,Mancer 2
+gpqa_diamond/recXvQ6gWAmyakrpD,gpqa_diamond,mancer,3,5a3935a1ccffdbc99f92468f07d970b060de3d45a8345dca909d3b0fde4b6399,25,valid,D,true,true,graded,408.3975023110397,25600,0.0698625,Mancer 2
+gpqa_diamond/recXvQ6gWAmyakrpD,gpqa_diamond,mancer,7,4bf3da9556d19c46fcc00f58cc6379dfb5cf3775aabf73cf27f22913fa278ca9,25,valid,D,true,true,graded,392.18119091168046,25600,0.0698175,Mancer 2
+gpqa_diamond/recaXdGn3FAIkxLGM,gpqa_diamond,mancer,3,30a651a23a3a2d9b9d027d9243911d1c57f403631ddd8a5f77936c818c2af3a7,25,valid,A,true,true,graded,377.15497364196926,25600,0.06965,Mancer 2
+gpqa_diamond/reck4G4xxv3YnpbtQ,gpqa_diamond,mancer,7,b94f226f31ed4878c346513629b0325f7274cae3e25697a42cc1718c6daddf63,25,valid,B,false,true,graded,487.6884988308884,25600,0.069865,Mancer 2
+gpqa_diamond/reck4G4xxv3YnpbtQ,gpqa_diamond,mancer,3,59c97992a11e822665541338032a26c3d61ff12a683d44bb2db469838615aff0,25,valid,D,false,true,graded,503.15756454039365,25600,0.0697625,Mancer 2
+gpqa_diamond/recXvQ6gWAmyakrpD,gpqa_diamond,mancer,4,5cd15cf0f68246cb732254017c216f301954e5ffd9457f4d1713bce710a30918,25,valid,D,true,true,graded,419.5789564163424,25600,0.0698,Mancer 2
+gpqa_diamond/recK9F5aqdaybl8bb,gpqa_diamond,mancer,1,5a2b0a082f393d214a9eda13495b30170341d11e73f314cbc9ad723b50f222b1,25,valid,A,true,true,graded,488.5778491906822,25600,0.0697725,Mancer 2
+gpqa_diamond/reck4G4xxv3YnpbtQ,gpqa_diamond,mancer,8,24b53e32a1ae9dce86bf2d3b6bbc79c8d40481fcf875357597c8cf4141aecec0,25,valid,C,true,true,graded,494.0252410680987,25600,0.0697775,Mancer 2
+gpqa_diamond/recaXdGn3FAIkxLGM,gpqa_diamond,mancer,8,5707cd6598711c2d60da451a1b9777984db1d8c48aeb15d7b646a45c04d01f31,25,valid,A,true,true,graded,371.91425331076607,25600,0.06974,Mancer 2
+gpqa_diamond/recXvQ6gWAmyakrpD,gpqa_diamond,mancer,5,12d8d9ad98160c57e19225a10ba17c30651fb3e32d252fcfd41a66f9558d16cd,25,valid,D,true,true,graded,423.8151796865277,25600,0.069845,Mancer 2
+gpqa_diamond/recaXdGn3FAIkxLGM,gpqa_diamond,mancer,5,38ced13579ae0fc24ce7bb4498e63b54d268fbae0fee390dfbee46527ce2fcd2,25,valid,A,true,true,graded,378.09367550816387,25600,0.0697775,Mancer 2
+gpqa_diamond/recaXdGn3FAIkxLGM,gpqa_diamond,mancer,7,d996d9ee12481a9861f5b0158fb9902b7016f9c0ec5f077af8954f105cad2554,25,valid,A,true,true,graded,376.2199196633883,25600,0.0696675,Mancer 2
+gpqa_diamond/recXvQ6gWAmyakrpD,gpqa_diamond,mancer,6,13164fc219bbc77f212d19bde923169ddbe6570eb6c945a823ae1dcf053ace5e,25,valid,D,true,true,graded,419.9128944519907,25600,0.0697875,Mancer 2
+gpqa_diamond/recK9F5aqdaybl8bb,gpqa_diamond,mancer,2,7791de9628c388f0ccb4a86924281d766e142342e27daeb8800d09e9769c1cba,25,valid,A,true,true,graded,490.9479947942309,25600,0.0698175,Mancer 2
+gpqa_diamond/reck4G4xxv3YnpbtQ,gpqa_diamond,mancer,4,42df2650140e24831631bc9b3ea1731f4db5b730229d786565c2329a01c71dcc,25,valid,B,false,true,graded,514.613326029852,25600,0.069785,Mancer 2
+gpqa_diamond/recaXdGn3FAIkxLGM,gpqa_diamond,mancer,4,50c00339c95e4ffd08bc78d99ffe2e3dbfb395d718922b1ed7472cea45ef471b,25,valid,A,true,true,graded,389.930231615901,25600,0.06981,Mancer 2
+gpqa_diamond/recK9F5aqdaybl8bb,gpqa_diamond,mancer,3,e97956fb407c31d88790e2881204aaa165faf31fc69710afa0b8e58b41619118,25,valid,A,true,true,graded,490.31202584598213,25600,0.0699175,Mancer 2
+gpqa_diamond/recypVp2NmPlBKVTp,gpqa_diamond,mancer,3,b6b3429c51d1d6814304d018726788cf7251ad605eaa8e5420680dc4dc34922d,25,valid,B,true,true,graded,381.50641326839104,25600,0.0695575,Mancer 2
+gpqa_diamond/recypVp2NmPlBKVTp,gpqa_diamond,mancer,4,6c0bfb39171341561c747e8ccc0a227c368a79d8b223b648dfb77e6cde4073c9,25,valid,B,true,true,graded,387.62723080068827,25600,0.069595,Mancer 2
+gpqa_diamond/recypVp2NmPlBKVTp,gpqa_diamond,mancer,8,983de5daa8366c624889b79e999e60e291e722f234db79361b202c7f1b20d39d,25,valid,B,true,true,graded,373.31151132751256,25600,0.0695525,Mancer 2
+gpqa_diamond/recRZjaElf8ft7xTq,gpqa_diamond,mancer,7,80df7f98830703216a59664d68334800b3dd10d1d3bb1c31d0bc10ca5327cd9e,25,valid,A,true,true,graded,342.50210804725066,25600,0.0697625,Mancer 2
+gpqa_diamond/recK9F5aqdaybl8bb,gpqa_diamond,mancer,7,8b36962cb7d7945827433cdf9c1abf58b1ee138beaebf6937c297c7d75049d64,25,valid,A,true,true,graded,484.37229326786473,25600,0.06979,Mancer 2
+gpqa_diamond/recRZjaElf8ft7xTq,gpqa_diamond,mancer,5,f19ca4576f7a38a69fccdeba9e29537b409527cf7d2dd8ab2aed2a46fcbb6ef7,25,valid,A,true,true,graded,357.42634457023814,25600,0.06973,Mancer 2
+gpqa_diamond/recRZjaElf8ft7xTq,gpqa_diamond,mancer,1,727c958e998f12499d3567ff9c1f28b768a845ddb090bef8cc79af5568e4474f,25,valid,A,true,true,graded,369.14968934468925,25600,0.0699175,Mancer 2
+gpqa_diamond/recaXdGn3FAIkxLGM,gpqa_diamond,mancer,6,bf8bfd5246d48876c98b50f7ead4fa6a30023ce23306fa0eab8112f701796267,25,valid,A,true,true,graded,404.25058154109865,25600,0.0699725,Mancer 2
+gpqa_diamond/recypVp2NmPlBKVTp,gpqa_diamond,mancer,5,9fce070b3315538fb129876f0cc7974804ef9d91725c409cb9b249cea8f2311f,25,valid,B,true,true,graded,387.27216328307986,25600,0.06959,Mancer 2
+gpqa_diamond/recypVp2NmPlBKVTp,gpqa_diamond,mancer,2,30d2386215fc869dc47b0e14433746ed91739a48d674b371308b00172a32fdc7,25,valid,B,true,true,graded,400.39932614704594,25600,0.069555,Mancer 2
+gpqa_diamond/recypVp2NmPlBKVTp,gpqa_diamond,mancer,1,5754fbcf5e139c09c6739489b6599e4487250682c0a5eddd5b5ad7cf2b9b4f64,25,valid,B,true,true,graded,400.786543414928,25600,0.0695725,Mancer 2
+gpqa_diamond/recypVp2NmPlBKVTp,gpqa_diamond,mancer,6,7ef6bf813643b98925c1bc45bb02e3cdae69888f3a9a4e9538753cbee1d30143,25,valid,B,true,true,graded,381.5911767599173,25600,0.0695875,Mancer 2
+gpqa_diamond/recK9F5aqdaybl8bb,gpqa_diamond,mancer,5,2ddf55737e8e41cf25f4374b0801826b7dc47950c5767c9d4e95f15086da7043,25,valid,A,true,true,graded,497.72516886051744,25600,0.0698325,Mancer 2
+gpqa_diamond/recK9F5aqdaybl8bb,gpqa_diamond,mancer,4,cd9279868d0180e299f310a1eb0475ca84e12fd2c9909b41849ff299d559cede,25,valid,C,false,true,graded,501.2347614681348,25600,0.06984,Mancer 2
+gpqa_diamond/recK9F5aqdaybl8bb,gpqa_diamond,mancer,6,d189b0544f282ef2bf37ad6526eab2055bffe840931c00aed9cc03bca69fa91c,25,valid,C,false,true,graded,501.249251099769,25600,0.06977,Mancer 2
+gpqa_diamond/recypVp2NmPlBKVTp,gpqa_diamond,mancer,7,dbb87342f6fca1cf15989cb0a15292872d2b63f1c0220578119e961da9211f59,25,valid,B,true,true,graded,387.25773094035685,25600,0.0695625,Mancer 2
+gpqa_diamond/recK9F5aqdaybl8bb,gpqa_diamond,mancer,8,af5b834a36d1b9476e336e50ece34e892c360f94fbad36bc4457990c21de009d,25,valid,A,true,true,graded,501.72681414242834,25600,0.0699325,Mancer 2
+gpqa_diamond/recXvQ6gWAmyakrpD,gpqa_diamond,mancer,8,46e2030eb5601a881f942d3d616f346869e5118c225d849f298f766ad883eb71,25,valid,D,true,true,graded,450.23442799272016,25600,0.06976,Mancer 2
+gpqa_diamond/recRZjaElf8ft7xTq,gpqa_diamond,mancer,3,f1b265041b3e70fb8ed40a9feb572df7900a4781328ae2c79aa0a8cd827274a7,25,valid,A,true,true,graded,382.66593871684745,25600,0.069915,Mancer 2
+gpqa_diamond/recRZjaElf8ft7xTq,gpqa_diamond,mancer,8,9f201a2f809c45bfbf6ec8536adcadb0d685fecf0274640da3c9e455bb90b66e,25,valid,A,true,true,graded,357.3842848655768,25600,0.06988,Mancer 2
+gpqa_diamond/recaXdGn3FAIkxLGM,gpqa_diamond,mancer,2,0350eb8bedc810dd0b74c9849b1626825d9e0c871b871d753dc72ddbb639c6ce,25,valid,A,true,true,graded,458.59580505872145,25600,0.0701175,Mancer 2
+gpqa_diamond/recRZjaElf8ft7xTq,gpqa_diamond,mancer,6,eee37fe96fd2fcddb557851f1e886a94205c16678bf27bdfa64edf77e8b51eac,25,valid,A,true,true,graded,401.99014720041305,25600,0.069935,Mancer 2
+gpqa_diamond/recRZjaElf8ft7xTq,gpqa_diamond,mancer,2,b403353204e1435c5c5f916914c7d76d98c7e03e430c308b7b402d6b005b54c4,25,valid,A,true,true,graded,421.66133474977687,25600,0.06973,Mancer 2
+gpqa_diamond/recRZjaElf8ft7xTq,gpqa_diamond,mancer,4,2e265387f13e196ee26907add8aafa4f000e6741ef7cb525bd357a2b43611449,25,valid,A,true,true,graded,424.39567750133574,25600,0.069755,Mancer 2

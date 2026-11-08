@@ -1,0 +1,15 @@
+item_id,reason,partner_item_id
+omni_math_hard/162,partner_of_used,omni_math_hard/3962
+omni_math_hard/308,conflicting_gold,
+omni_math_hard/3563,duplicate_of,omni_math_hard/1617
+omni_math_hard/3566,conflicting_gold,
+omni_math_hard/3575,duplicate_of,omni_math_hard/244
+omni_math_hard/3597,duplicate_of,omni_math_hard/391
+omni_math_hard/3611,partner_of_used,omni_math_hard/336
+omni_math_hard/3612,duplicate_of,omni_math_hard/258
+omni_math_hard/3617,duplicate_of,omni_math_hard/1464
+omni_math_hard/3670,duplicate_of,omni_math_hard/316
+omni_math_hard/3724,duplicate_of,omni_math_hard/328
+omni_math_hard/3806,duplicate_of,omni_math_hard/1476
+omni_math_hard/4070,duplicate_of,omni_math_hard/2408
+omni_math_hard/4379,duplicate_of,omni_math_hard/3295

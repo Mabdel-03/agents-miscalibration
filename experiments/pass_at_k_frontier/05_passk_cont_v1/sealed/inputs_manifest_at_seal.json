@@ -1,0 +1,64 @@
+{
+  "manifest": {
+    "allow_list": {
+      "fenced_banks": [
+        "v48_bank",
+        "t200_bank"
+      ],
+      "label_fenced": [
+        "v48_bank",
+        "t200_bank",
+        "t200_diag"
+      ],
+      "pre_seal": [
+        "smoke",
+        "e1_fill",
+        "c48_extra",
+        "t200_diag"
+      ]
+    },
+    "classes_pending_pools": 0,
+    "code_commit": "c8b9b7b3a7ccf3f8754ef1f9ddf6766eb93577fc",
+    "created_at": "2026-09-25T22:38:30+00:00",
+    "labelled_partitions": [
+      "smoke",
+      "e1_fill",
+      "c48_extra"
+    ],
+    "legacy_root": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts",
+    "n_rows": 5860,
+    "n_rows_by_partition": {
+      "c48_extra": 816,
+      "e1_fill": 1056,
+      "legacy_main": 2880,
+      "legacy_pilot": 96,
+      "smoke": 12,
+      "t200_diag": 1000
+    },
+    "partitions_read": [
+      "legacy_main",
+      "legacy_pilot",
+      "smoke",
+      "e1_fill",
+      "c48_extra",
+      "t200_diag"
+    ],
+    "releases": [],
+    "sha256": {
+      "classes.parquet": "e116c95c6df7f4a822fed46f828187fc320f5f47a61c2f6f2730d7b286a2df5a",
+      "dev_training_readouts.parquet": "33da5e4b0c19997ed1f4a41fcc974390b056d008b672040c3c31dbf2a7ae96cf",
+      "draws.parquet": "298cd36e6daf1b70cca93976b10d4242235f3f689f89367caebe3e8fd1da999f",
+      "pools.parquet": "8cd47d04d7e51ed94435a95eea0e1fa40222775954fe4b9e253b26106a808258",
+      "readouts.parquet": "a1e23b865ae004d973e0a407c9db268782d9ca8c65950d3f83aa862e95bbfc11"
+    },
+    "version": "passk-extract-v1"
+  },
+  "sha256": {
+    "analysis_inputs/classes.parquet": "e116c95c6df7f4a822fed46f828187fc320f5f47a61c2f6f2730d7b286a2df5a",
+    "analysis_inputs/dev_training_readouts.parquet": "33da5e4b0c19997ed1f4a41fcc974390b056d008b672040c3c31dbf2a7ae96cf",
+    "analysis_inputs/draws.parquet": "298cd36e6daf1b70cca93976b10d4242235f3f689f89367caebe3e8fd1da999f",
+    "analysis_inputs/manifest.json": "4acf14627483023356560a10a58e52a02991a486756385215e8a0028c9fce471",
+    "analysis_inputs/pools.parquet": "8cd47d04d7e51ed94435a95eea0e1fa40222775954fe4b9e253b26106a808258",
+    "analysis_inputs/readouts.parquet": "a1e23b865ae004d973e0a407c9db268782d9ca8c65950d3f83aa862e95bbfc11"
+  }
+}

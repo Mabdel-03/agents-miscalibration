@@ -1,0 +1,37 @@
+{
+ "complete": true,
+ "criteria": {
+  "all_terminal": {
+   "parsed": 7,
+   "passed": true,
+   "planned": 7,
+   "succeeded": 7
+  },
+  "exact_budgets": {
+   "exact": 7,
+   "of": 7,
+   "passed": true
+  },
+  "permaslug": {
+   "passed": true,
+   "records": 7,
+   "violations": 0
+  },
+  "pin": {
+   "passed": true,
+   "pin": "Mancer 2",
+   "tag": "mancer/fp8"
+  },
+  "smoke_graded": {
+   "examples": [],
+   "passed": true,
+   "ungraded": 0
+  },
+  "zero_cache_hits": {
+   "passed": true
+  }
+ },
+ "evaluated_at": "2026-09-25T21:18:44Z",
+ "gate": "gate1_smoke",
+ "passed": true
+}

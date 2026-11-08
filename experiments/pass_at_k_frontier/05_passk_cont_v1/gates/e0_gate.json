@@ -1,0 +1,102 @@
+{
+ "checks": {
+  "forced_budget_check": {
+   "generations": 13999,
+   "passed": true,
+   "rows": 21,
+   "violations": []
+  },
+  "generation_ids_unique": {
+   "duplicates": [],
+   "ids": 28030,
+   "parsed_without_think_id": 0,
+   "passed": true,
+   "unique": 28030
+  },
+  "generation_metadata": {
+   "expected_records": 1054,
+   "passed": true,
+   "records": 1054,
+   "violation_count": 0,
+   "violations": []
+  },
+  "observed_model_provider": {
+   "model_violations": [],
+   "parsed": 14031,
+   "passed": true,
+   "provider_violations": []
+  },
+  "request_body_collisions": {
+   "by_design_bank_groups": 128,
+   "known_benign_items": [
+    "hmmt/2026/24",
+    "omni_math_hard/3907"
+   ],
+   "passed": true,
+   "raw_think_bodies": 14115,
+   "unexpected_groups": [
+    {
+     "items": [
+      "hmmt/2026/24"
+     ],
+     "kinds": [
+      "private"
+     ],
+     "nodes": [
+      "14fb8a894f059628b47d1697413676381a727497b19c5e0e66c2b67648715713",
+      "17914da182b6e508dc6bdc19373fb558fbf75ae24c7e568c08bf870cd5bd0b0e"
+     ],
+     "rounds": [
+      [
+       0,
+       18,
+       0
+      ],
+      [
+       0,
+       19,
+       0
+      ]
+     ],
+     "sha256": "f4f2d0b9f24745b8b0feec40bce0c2cc7127806c17f48157f2cb5d13d53b7c87"
+    },
+    {
+     "items": [
+      "omni_math_hard/3907"
+     ],
+     "kinds": [
+      "private"
+     ],
+     "nodes": [
+      "2fc8226173edce20946b8cf8975ba523d4f6182d92609c7ee984e3f9d0528a06",
+      "db961a34dc0c24459c0df0f8e37398846ebce922c3ce016a3fa438157c4cf254"
+     ],
+     "rounds": [
+      [
+       0,
+       18,
+       0
+      ],
+      [
+       0,
+       19,
+       0
+      ]
+     ],
+     "sha256": "efe0311df655e2bb888ce869c9f96257c2974ccba3d97d25b3650ca97df2bf65"
+    }
+   ]
+  },
+  "split_overlap": {
+   "c48_eq_v48": true,
+   "c48_in_l96": true,
+   "l96_d32_overlap": [],
+   "passed": true,
+   "t200_overlap": []
+  }
+ },
+ "evaluated_at": "2026-09-25T21:06:10Z",
+ "gate": "e0_gate",
+ "legacy_root": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts",
+ "passed": true
+}

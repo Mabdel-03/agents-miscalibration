@@ -1,0 +1,22 @@
+{
+ "gate1": {
+  "ceiling_probe_spawns": {
+   "recorded_at": "2026-09-24T07:03:52Z",
+   "text": "owner 2026-09-24 ~03:00 EDT, answering the pre-registered no-delegation stop-and-ask after Gate 1: 'Run the core as planned' - non-delegation is the finding; waive the pilot's delegation threshold and the live Codex tool-loop check (verified offline at Gate 0); the capped variant stays first in line after the core"
+  },
+  "codex_responses_tool_loop": {
+   "recorded_at": "2026-09-24T07:03:52Z",
+   "text": "owner 2026-09-24 ~03:00 EDT, answering the pre-registered no-delegation stop-and-ask after Gate 1: 'Run the core as planned' - non-delegation is the finding; waive the pilot's delegation threshold and the live Codex tool-loop check (verified offline at Gate 0); the capped variant stays first in line after the core"
+  }
+ },
+ "gate2": {
+  "H1_spawn_share_k16": {
+   "recorded_at": "2026-09-24T07:03:53Z",
+   "text": "owner 2026-09-24 ~03:00 EDT, answering the pre-registered no-delegation stop-and-ask after Gate 1: 'Run the core as planned' - non-delegation is the finding; waive the pilot's delegation threshold and the live Codex tool-loop check (verified offline at Gate 0); the capped variant stays first in line after the core"
+  },
+  "H3_spawn_share_k16": {
+   "recorded_at": "2026-09-24T07:03:53Z",
+   "text": "owner 2026-09-24 ~03:00 EDT, answering the pre-registered no-delegation stop-and-ask after Gate 1: 'Run the core as planned' - non-delegation is the finding; waive the pilot's delegation threshold and the live Codex tool-loop check (verified offline at Gate 0); the capped variant stays first in line after the core"
+  }
+ }
+}

@@ -1,0 +1,1136 @@
+{
+ "cases": {
+  "canary_rehearsal/H1": {
+   "checks": {
+    "budget_sentence_delivered": true,
+    "delivered_answer_valid_and_cross_checked": true,
+    "four_runs_done": true,
+    "harness_exit_0": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material_in_run_tree": true,
+    "nothing_written_under_home": true,
+    "one_root_call_per_run_no_other": true,
+    "reconciliation_clean": true,
+    "system_text_as_verified": true,
+    "wire_and_tools": true
+   },
+   "detail": {},
+   "recorded_at": "2026-09-24T11:24:03Z"
+  },
+  "canary_rehearsal/H3": {
+   "checks": {
+    "budget_sentence_delivered": true,
+    "delivered_answer_valid_and_cross_checked": true,
+    "four_runs_done": true,
+    "harness_exit_0": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material_in_run_tree": true,
+    "nothing_written_under_home": true,
+    "one_root_call_per_run_no_other": true,
+    "reconciliation_clean": true,
+    "system_text_as_verified": true,
+    "wire_and_tools": true
+   },
+   "detail": {},
+   "recorded_at": "2026-09-24T11:24:36Z"
+  },
+  "codex/delayed_330s": {
+   "checks": {
+    "exactly_one_upstream_call": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "nothing_written_under_home": true,
+    "run_done_valid": true,
+    "turn_completed_no_reconnect": true,
+    "waited_through_the_delay": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "delay": 330.0,
+    "harness_version": "codex-cli 0.156.1",
+    "home": {
+     "attributed": {
+      ".codex/logs_2.sqlite-shm": "3654657 /home/mabdel03/.cursor-server/extensions/openai.chatgpt-26.908.40401-linux-x64/bin/linux-x86_64/codex -c features.code_m",
+      ".codex/logs_2.sqlite-wal": "3654657 /home/mabdel03/.cursor-server/extensions/openai.chatgpt-26.908.40401-linux-x64/bin/linux-x86_64/codex -c features.code_m",
+      ".codex/models_cache.json": "3654657 /home/mabdel03/.cursor-server/extensions/openai.chatgpt-26.908.40401-linux-x64/bin/linux-x86_64/codex -c features.code_m"
+     },
+     "churn": [
+      ".cursor/skills-cursor/.sync-manifest.json"
+     ],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "wall_seconds": 330.474
+   },
+   "recorded_at": "2026-09-24T06:12:37Z"
+  },
+  "codex/delayed_35s": {
+   "checks": {
+    "exactly_one_upstream_call": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "nothing_written_under_home": true,
+    "run_done_valid": true,
+    "turn_completed_no_reconnect": true,
+    "waited_through_the_delay": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "delay": 35.0,
+    "harness_version": "codex-cli 0.156.1",
+    "home": {
+     "attributed": {
+      ".codex/logs_2.sqlite": "3654657 /home/mabdel03/.cursor-server/extensions/openai.chatgpt-26.908.40401-linux-x64/bin/linux-x86_64/codex -c features.code_m",
+      ".codex/models_cache.json": "3654657 /home/mabdel03/.cursor-server/extensions/openai.chatgpt-26.908.40401-linux-x64/bin/linux-x86_64/codex -c features.code_m"
+     },
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "wall_seconds": 35.497
+   },
+   "recorded_at": "2026-09-24T11:23:24Z"
+  },
+  "codex/delayed_660s": {
+   "checks": {
+    "exactly_one_upstream_call": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "nothing_written_under_home": true,
+    "run_done_valid": true,
+    "turn_completed_no_reconnect": true,
+    "waited_through_the_delay": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "delay": 660.0,
+    "harness_version": "codex-cli 0.156.1",
+    "home": {
+     "attributed": {
+      ".codex/models_cache.json": "3654657 /home/mabdel03/.cursor-server/extensions/openai.chatgpt-26.908.40401-linux-x64/bin/linux-x86_64/codex -c features.code_m"
+     },
+     "churn": [
+      ".humming/tmp/lock/launcher.lock"
+     ],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "wall_seconds": 660.508
+   },
+   "recorded_at": "2026-09-24T06:24:12Z"
+  },
+  "codex/delegation_rung4": {
+   "checks": {
+    "budget_sentence_delivered": true,
+    "child_has_no_spawn_tool": true,
+    "child_prompt_is_the_spawn_message": true,
+    "child_request_marked_subagent_same_run": true,
+    "delivered_from_proxy_and_cross_checked": true,
+    "events_show_spawn_and_wait": true,
+    "finish_reasons_in_set": true,
+    "first_request_tools_exactly_update_plan_plus_namespace": true,
+    "function_call_items_echoed_with_namespace": true,
+    "harness_version_stamped": true,
+    "instructions_are_the_system_text": true,
+    "no_budget_usd_text": true,
+    "no_execution_or_web_tools": true,
+    "no_key_material": true,
+    "nothing_written_under_home": true,
+    "other_calls_zero": true,
+    "reasoning_reinjected_explicitly": true,
+    "root_loop_spawn_wait_final": true,
+    "run_done_exit_0": true,
+    "turn_completed_no_failures": true,
+    "wait_agent_returned_child_text": true,
+    "wire_is_responses": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "calls": 4,
+    "child_tools": [
+     "update_plan"
+    ],
+    "classes": [
+     "root",
+     "root",
+     "solver",
+     "root"
+    ],
+    "events": [
+     "thread.started",
+     "item.completed",
+     "turn.started",
+     "item.started",
+     "item.completed",
+     "item.started",
+     "item.completed",
+     "item.completed",
+     "turn.completed"
+    ],
+    "first_tools": [
+     "update_plan",
+     "close_agent",
+     "resume_agent",
+     "send_input",
+     "spawn_agent",
+     "wait_agent"
+    ],
+    "harness_version": "codex-cli 0.156.1",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": []
+   },
+   "recorded_at": "2026-09-24T11:21:42Z"
+  },
+  "codex/exec_command": {
+   "checks": {
+    "codex_answered_unsupported_call": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_execution_item": true,
+    "no_key_material": true,
+    "no_process_ran": true,
+    "nothing_written_under_home": true,
+    "proxy_emitted_the_unknown_call": true,
+    "run_done_exit_0": true,
+    "turn_completed": true,
+    "two_root_calls_no_spawn": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "harness_version": "codex-cli 0.156.1",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "items": [
+     "error",
+     "agent_message"
+    ],
+    "key_material_hits": [],
+    "outputs": [
+     "unsupported call: exec_command"
+    ]
+   },
+   "recorded_at": "2026-09-24T11:21:44Z"
+  },
+  "codex/forced_close_text": {
+   "checks": {
+    "continuation_carries_no_tools": true,
+    "delivered_answer_is_the_grace_text": true,
+    "finish_reasons_in_set": true,
+    "further_call_refused_402_no_upstream": true,
+    "grace_returned_as_text_finish_stop": true,
+    "grace_used_and_bounded": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "no_rerun": true,
+    "no_upstream_call_after_the_grace": true,
+    "not_killed_by_watchdog": true,
+    "nothing_spawned": true,
+    "nothing_written_under_home": true,
+    "one_served_call_forced_close_mid_call": true,
+    "turn_completed_on_that_text": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "harness_events": [
+     "thread.started",
+     "item.completed",
+     "turn.started",
+     "item.completed",
+     "turn.completed"
+    ],
+    "harness_version": "codex-cli 0.156.1",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "messages": [
+     "I must delegate now.\n\n<tool_call>\n<function=spawn_agent>\n<parameter=message>\nsolve it all\n</parameter>\n</function>\n</tool_call>"
+    ],
+    "parse_status": "missing_final",
+    "probe": {
+     "at": 3194755.629339136,
+     "code": "budget_exhausted",
+     "sent_at": 3194755.62120917,
+     "status": 402,
+     "upstream_calls_after": 2,
+     "upstream_calls_before": 2
+    },
+    "upstream": [
+     {
+      "call_no": 1,
+      "class": "root",
+      "max_tokens": 1024,
+      "phase": "think",
+      "prompt_has_tools": true
+     },
+     {
+      "call_no": 1,
+      "class": "root",
+      "max_tokens": 1024,
+      "phase": "answer",
+      "prompt_has_tools": false
+     }
+    ]
+   },
+   "recorded_at": "2026-09-24T11:22:30Z"
+  },
+  "codex/install": {
+   "checks": {
+    "codex_version_0_156_1": true,
+    "no_event_stream_on_refusal": true,
+    "wire_api_chat_refused_before_any_request": true
+   },
+   "detail": {
+    "returncode": 1,
+    "stderr": "Error loading config.toml:\n/orcd/data/tpoggio/001/mabdel03/dynorch_scratch/tmp/pytest-of-mabdel03/pytest-202/test_codex_install_and_wire_ap0/work/state/codex/config.toml:16:12: `wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782\n   |\n16 | wire_api = \"chat\"\n   |            ^^^^^^\n",
+    "version": "codex-cli 0.156.1"
+   },
+   "recorded_at": "2026-09-24T11:21:40Z"
+  },
+  "codex/interruption_retry_latched": {
+   "checks": {
+    "attempt1_transport_failed_latched": true,
+    "call1_interrupted_full_grant_settled": true,
+    "cli_retried_the_502": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "no_model_rerun_consumed": true,
+    "no_terminal_no_grace": true,
+    "nothing_written_under_home": true,
+    "rerun_full_budget_scored": true,
+    "retry_refused_no_upstream_call": true,
+    "turn_failed": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "event_types": [
+     "thread.started",
+     "item.completed",
+     "turn.started",
+     "error",
+     "error",
+     "error",
+     "turn.failed"
+    ],
+    "events": [
+     {
+      "at": 3194765.79716871,
+      "code": "upstream_failed",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 502
+     },
+     {
+      "at": 3194765.988291141,
+      "code": "upstream_failed",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 502
+     },
+     {
+      "at": 3194766.208997361,
+      "code": "upstream_failed",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 502
+     },
+     {
+      "at": 3194766.619193864,
+      "code": "upstream_failed",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 502
+     },
+     {
+      "at": 3194767.051708255,
+      "code": "upstream_failed",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 502
+     },
+     {
+      "at": 3194767.245750148,
+      "code": "upstream_failed",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 502
+     },
+     {
+      "at": 3194767.674692623,
+      "code": "upstream_failed",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 502
+     }
+    ],
+    "harness_version": "codex-cli 0.156.1",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "refused_calls": 6,
+    "upstream": [
+     {
+      "call_no": 1,
+      "class": "root",
+      "max_tokens": 4096,
+      "phase": "think",
+      "prompt_has_tools": true
+     }
+    ]
+   },
+   "recorded_at": "2026-09-24T11:22:46Z"
+  },
+  "codex/missing_completed": {
+   "checks": {
+    "every_error_is_a_stream_disconnect": true,
+    "harness_exit_1_no_final_file": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "no_rerun": true,
+    "nothing_written_under_home": true,
+    "retries_served_from_cache_one_upstream_call": true,
+    "three_requests_two_reconnects_then_turn_failed": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "errors": [
+     "Reconnecting... 1/2 (stream disconnected before completion: Transport error: network error: error decoding response body)",
+     "Reconnecting... 2/2 (stream disconnected before completion: Transport error: network error: error decoding response body)",
+     "stream disconnected before completion: Transport error: network error: error decoding response body"
+    ],
+    "events": [
+     "thread.started",
+     "item.completed",
+     "turn.started",
+     "error",
+     "error",
+     "error",
+     "turn.failed"
+    ],
+    "harness_version": "codex-cli 0.156.1",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": []
+   },
+   "recorded_at": "2026-09-24T11:21:46Z"
+  },
+  "codex/rung25": {
+   "checks": {
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "nothing_written_under_home": true,
+    "one_call_no_grace": true,
+    "run_done_graded": true,
+    "rung25_cap": true,
+    "turn_completed": true,
+    "wall_timeout_is_3600s_and_the_wrapper_sits_behind_it": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "harness_version": "codex-cli 0.156.1",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "wall_seconds": 0.546
+   },
+   "recorded_at": "2026-09-24T11:22:47Z"
+  },
+  "codex/subagent_402_then_terminal": {
+   "checks": {
+    "after_first_402_only_402s_or_the_root_terminal": true,
+    "at_most_stream_max_retries_per_conversation": true,
+    "child_request_refused_402": true,
+    "delivered_from_proxy_and_cross_checked": true,
+    "finish_reasons_in_set": true,
+    "further_call_refused_402_no_upstream": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "no_rerun_after_402": true,
+    "no_think_call_after_the_spawn": true,
+    "not_killed_by_watchdog": true,
+    "nothing_written_under_home": true,
+    "root_think_stopped_naturally_with_a_spawn": true,
+    "run_ended_within_10s_of_402": true,
+    "terminal_served_once_no_tools": true,
+    "turn_completed_on_the_terminal_answer": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "classes": [
+     "root",
+     "root"
+    ],
+    "events": [
+     {
+      "at": 3194757.178111704,
+      "code": null,
+      "conversation_class": "root",
+      "kind": "reply",
+      "status": 200
+     },
+     {
+      "at": 3194760.264075639,
+      "code": "budget_exhausted",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 402
+     },
+     {
+      "at": 3194760.264134639,
+      "code": null,
+      "conversation_class": "root",
+      "kind": "reply",
+      "status": 200
+     },
+     {
+      "at": 3194760.551738773,
+      "code": "budget_exhausted",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 402
+     }
+    ],
+    "harness_events": [
+     "thread.started",
+     "item.completed",
+     "turn.started",
+     "item.started",
+     "item.completed",
+     "item.completed",
+     "turn.completed"
+    ],
+    "harness_version": "codex-cli 0.156.1",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "probe": {
+     "at": 3194760.552469487,
+     "code": "budget_exhausted",
+     "sent_at": 3194760.544716813,
+     "status": 402,
+     "upstream_calls_after": 2,
+     "upstream_calls_before": 2
+    },
+    "seconds_from_402_to_end": 0.29,
+    "upstream": [
+     {
+      "call_no": 1,
+      "class": "root",
+      "max_tokens": 1024,
+      "phase": "think",
+      "prompt_has_tools": true
+     },
+     {
+      "call_no": 2,
+      "class": "root",
+      "max_tokens": 1024,
+      "phase": "terminal",
+      "prompt_has_tools": false
+     }
+    ]
+   },
+   "recorded_at": "2026-09-24T11:22:35Z"
+  },
+  "codex/timeout": {
+   "checks": {
+    "argv_is_timeout_wrapped": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "nothing_written_under_home": true,
+    "runner_wall_was_the_longer_one": true,
+    "timeout_ended_the_run": true,
+    "upstream_call_finished_and_settled": true,
+    "wall_kill_recorded_as_timeout": true,
+    "whole_process_group_gone": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "exit_code": 124,
+    "harness_seconds": 17.0,
+    "harness_version": "codex-cli 0.156.1",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "pgid": 3984265,
+    "seconds": 40.5
+   },
+   "recorded_at": "2026-09-24T11:22:28Z"
+  },
+  "openclaude/delayed_330s": {
+   "checks": {
+    "exactly_one_upstream_call": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_duplicate_served": true,
+    "no_key_material": true,
+    "nothing_written_under_home": true,
+    "run_done_valid": true,
+    "subtype_success": true,
+    "waited_through_the_delay": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "delay": 330.0,
+    "harness_version": "0.13.0 (OpenClaude)",
+    "home": {
+     "attributed": {
+      ".codex/logs_2.sqlite-shm": "3654657 /home/mabdel03/.cursor-server/extensions/openai.chatgpt-26.908.40401-linux-x64/bin/linux-x86_64/codex -c features.code_m",
+      ".codex/logs_2.sqlite-wal": "3654657 /home/mabdel03/.cursor-server/extensions/openai.chatgpt-26.908.40401-linux-x64/bin/linux-x86_64/codex -c features.code_m",
+      ".codex/models_cache.json": "3654657 /home/mabdel03/.cursor-server/extensions/openai.chatgpt-26.908.40401-linux-x64/bin/linux-x86_64/codex -c features.code_m"
+     },
+     "churn": [
+      ".cursor/skills-cursor/.sync-manifest.json"
+     ],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "wall_seconds": 331.646
+   },
+   "recorded_at": "2026-09-24T06:12:37Z"
+  },
+  "openclaude/delayed_35s": {
+   "checks": {
+    "exactly_one_upstream_call": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_duplicate_served": true,
+    "no_key_material": true,
+    "nothing_written_under_home": true,
+    "run_done_valid": true,
+    "subtype_success": true,
+    "waited_through_the_delay": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "delay": 35.0,
+    "harness_version": "0.13.0 (OpenClaude)",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "wall_seconds": 36.18
+   },
+   "recorded_at": "2026-09-24T11:21:40Z"
+  },
+  "openclaude/delayed_660s": {
+   "checks": {
+    "exactly_one_upstream_call": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_duplicate_served": true,
+    "no_key_material": true,
+    "nothing_written_under_home": true,
+    "run_done_valid": true,
+    "subtype_success": true,
+    "waited_through_the_delay": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "delay": 660.0,
+    "harness_version": "0.13.0 (OpenClaude)",
+    "home": {
+     "attributed": {
+      ".codex/models_cache.json": "3654657 /home/mabdel03/.cursor-server/extensions/openai.chatgpt-26.908.40401-linux-x64/bin/linux-x86_64/codex -c features.code_m"
+     },
+     "churn": [
+      ".humming/tmp/lock/launcher.lock"
+     ],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "wall_seconds": 661.243
+   },
+   "recorded_at": "2026-09-24T06:23:42Z"
+  },
+  "openclaude/delegation_rung4": {
+   "checks": {
+    "budget_sentence_delivered": true,
+    "call_classes_root_solver_alternate": true,
+    "cli_result_success": true,
+    "delivered_from_proxy_and_cross_checked": true,
+    "finish_reasons_in_set": true,
+    "first_request_tools_exactly_agent": true,
+    "grants_are_cap_minus_spent": true,
+    "harness_version_stamped": true,
+    "messages0_is_prefix_plus_system": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "nothing_written_under_home": true,
+    "other_calls_zero": true,
+    "reinjection_hit_rate_ge_0_95": true,
+    "run_done_exit_0": true,
+    "solver_conversations_have_no_tools": true,
+    "spawns_all_solver_type": true,
+    "three_spawns_three_solver_conversations": true,
+    "tool_call_ids_echoed_exactly": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "calls": 7,
+    "classes": [
+     "root",
+     "solver",
+     "root",
+     "solver",
+     "root",
+     "solver",
+     "root"
+    ],
+    "harness_version": "0.13.0 (OpenClaude)",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "reinjection_hits": 6,
+    "reinjection_misses": 0,
+    "spawns": 3
+   },
+   "recorded_at": "2026-09-24T11:20:43Z"
+  },
+  "openclaude/forced_close_text": {
+   "checks": {
+    "cli_ended_on_that_text": true,
+    "continuation_carries_no_tools": true,
+    "delivered_answer_is_the_grace_text": true,
+    "finish_reasons_in_set": true,
+    "further_call_refused_402_no_upstream": true,
+    "grace_returned_as_text_finish_stop": true,
+    "grace_used_and_bounded": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "no_rerun": true,
+    "no_upstream_call_after_the_grace": true,
+    "not_killed_by_watchdog": true,
+    "nothing_spawned": true,
+    "nothing_written_under_home": true,
+    "one_served_call_forced_close_mid_call": true,
+    "single_request_journaled": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "events": [
+     {
+      "at": 3194651.012641004,
+      "code": null,
+      "conversation_class": "root",
+      "kind": "reply",
+      "status": 200
+     },
+     {
+      "at": 3194651.113359653,
+      "code": "budget_exhausted",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 402
+     }
+    ],
+    "harness_version": "0.13.0 (OpenClaude)",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "parse_status": "missing_final",
+    "probe": {
+     "at": 3194651.114101856,
+     "code": "budget_exhausted",
+     "sent_at": 3194651.094837712,
+     "status": 402,
+     "upstream_calls_after": 2,
+     "upstream_calls_before": 2
+    },
+    "result": "I must delegate now.\n\n<tool_call>\n<function=Agent>\n<parameter=description>\ndelegate\n</parameter>\n<parameter=prompt>\nsolve it all\n</parameter>\n<parameter=subagent_type>\nsolver\n</parameter>\n</function>\n</tool_call>",
+    "upstream": [
+     {
+      "call_no": 1,
+      "class": "root",
+      "max_tokens": 1024,
+      "phase": "think",
+      "prompt_has_tools": true
+     },
+     {
+      "call_no": 1,
+      "class": "root",
+      "max_tokens": 1024,
+      "phase": "answer",
+      "prompt_has_tools": false
+     }
+    ]
+   },
+   "recorded_at": "2026-09-24T11:20:46Z"
+  },
+  "openclaude/interruption_retry_latched": {
+   "checks": {
+    "attempt1_transport_failed_latched": true,
+    "call1_interrupted_full_grant_settled": true,
+    "cli_ended_in_error": true,
+    "cli_retried_the_502": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "no_model_rerun_consumed": true,
+    "no_terminal_no_grace": true,
+    "nothing_written_under_home": true,
+    "rerun_full_budget_scored": true,
+    "retry_refused_no_upstream_call": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "events": [
+     {
+      "at": 3194660.281029626,
+      "code": "upstream_failed",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 502
+     },
+     {
+      "at": 3194660.309888432,
+      "code": "upstream_failed",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 502
+     },
+     {
+      "at": 3194660.866499288,
+      "code": "upstream_failed",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 502
+     }
+    ],
+    "harness_version": "0.13.0 (OpenClaude)",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "refused_calls": 2,
+    "result": "API Error: 502 {\"error\":{\"message\":\"run 59e593ebcc27b606f623e8f2 is latched: upstream call 1 (root) failed (error_envelope); no further call of this run is served -- it is an infrastructure failure and the cell is re-executed (contract \u00a710.38)\",\"type\":\"upstream_failed\",\"code\":\"upstream_failed\",\"para",
+    "upstream": [
+     {
+      "call_no": 1,
+      "class": "root",
+      "max_tokens": 4096,
+      "phase": "think",
+      "prompt_has_tools": true
+     }
+    ]
+   },
+   "recorded_at": "2026-09-24T11:20:57Z"
+  },
+  "openclaude/rung25": {
+   "checks": {
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "nothing_written_under_home": true,
+    "one_call_no_grace": true,
+    "run_done_graded": true,
+    "rung25_cap": true,
+    "subtype_success": true,
+    "wall_timeout_is_3600s": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "harness_version": "0.13.0 (OpenClaude)",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "wall_seconds": 1.265
+   },
+   "recorded_at": "2026-09-24T11:20:59Z"
+  },
+  "openclaude/subagent_402_then_terminal": {
+   "checks": {
+    "at_most_one_request_after_first_402": true,
+    "cli_success_on_the_terminal_answer": true,
+    "delivered_from_proxy_and_cross_checked": true,
+    "finish_reasons_in_set": true,
+    "further_call_refused_402_no_upstream": true,
+    "harness_version_stamped": true,
+    "no_budget_usd_text": true,
+    "no_key_material": true,
+    "no_rerun_after_402": true,
+    "no_think_call_after_the_spawn": true,
+    "not_killed_by_watchdog": true,
+    "nothing_written_under_home": true,
+    "root_think_stopped_naturally_with_a_spawn": true,
+    "run_ended_within_10s_of_402": true,
+    "solver_call_refused_402": true,
+    "terminal_served_once_no_tools": true,
+    "the_further_request_is_the_root_terminal": true
+   },
+   "detail": {
+    "budget_usd_hits": [],
+    "classes": [
+     "root",
+     "root"
+    ],
+    "events": [
+     {
+      "at": 3194654.006901713,
+      "code": null,
+      "conversation_class": "root",
+      "kind": "reply",
+      "status": 200
+     },
+     {
+      "at": 3194654.059753003,
+      "code": "budget_exhausted",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 402
+     },
+     {
+      "at": 3194654.087684375,
+      "code": null,
+      "conversation_class": "root",
+      "kind": "reply",
+      "status": 200
+     },
+     {
+      "at": 3194654.155962702,
+      "code": "budget_exhausted",
+      "conversation_class": null,
+      "kind": "error",
+      "status": 402
+     }
+    ],
+    "harness_version": "0.13.0 (OpenClaude)",
+    "home": {
+     "attributed": {},
+     "churn": [],
+     "excluded": [
+      ".claude",
+      ".cursor-server",
+      ".vscode-server",
+      ".cache/uv"
+     ],
+     "harness_dir_touches": [],
+     "new_files": [],
+     "scanned": true
+    },
+    "key_material_hits": [],
+    "probe": {
+     "at": 3194654.156690186,
+     "code": "budget_exhausted",
+     "sent_at": 3194654.149105553,
+     "status": 402,
+     "upstream_calls_after": 2,
+     "upstream_calls_before": 2
+    },
+    "seconds_from_402_to_end": 0.1,
+    "upstream": [
+     {
+      "call_no": 1,
+      "class": "root",
+      "max_tokens": 1024,
+      "phase": "think",
+      "prompt_has_tools": true
+     },
+     {
+      "call_no": 2,
+      "class": "root",
+      "max_tokens": 1024,
+      "phase": "terminal",
+      "prompt_has_tools": false
+     }
+    ]
+   },
+   "recorded_at": "2026-09-24T11:20:49Z"
+  }
+ },
+ "failures": [],
+ "passed": true,
+ "recorded_at": "2026-09-24T11:24:36Z"
+}

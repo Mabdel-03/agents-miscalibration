@@ -1,0 +1,143 @@
+{
+ "__record__": "GateResult",
+ "criteria": [
+  {
+   "evidence": "locks/openrouter_endpoints.json",
+   "name": "endpoint_rule_locked",
+   "observed": "{\"action\": \"keep\", \"shard_to_tag\": {\"mancer\": \"mancer/fp8\", \"parasail\": \"parasail/fp8\"}}",
+   "passed": true,
+   "threshold": "locks/openrouter_endpoints.json frozen with keep or switch"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + state/reconciliation_canary.json",
+   "name": "canary_runs_present",
+   "observed": "{\"calls\": 10, \"runs\": 10}",
+   "passed": true,
+   "threshold": ">= 1 run with >= 1 call"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + state/reconciliation_canary.json",
+   "name": "completion_within_grant",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "every call completion_tokens <= granted"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + state/reconciliation_canary.json",
+   "name": "grant_equals_remaining",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "every non-terminal call granted == C \u2212 spent"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + state/reconciliation_canary.json",
+   "name": "usage_present",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "prompt and completion tokens on every call"
+  },
+  {
+   "evidence": "state/reconciliation_canary.json",
+   "name": "key_delta_within_tolerance",
+   "observed": "{\"diff\": \"0E-8\", \"key_delta\": \"0.24548250\", \"ledger_delta\": \"0.2454825\"}",
+   "passed": true,
+   "threshold": "|key \u2212 ledger| <= 0.02"
+  },
+  {
+   "evidence": "state/reconciliation_canary.json",
+   "name": "generation_sample_matches",
+   "observed": "{\"bad\": [], \"sampled\": 1}",
+   "passed": true,
+   "threshold": "every sampled call: /generation fetched, tokens counted once, cost within $0.01 or 5 %"
+  },
+  {
+   "evidence": "state/reconciliation_canary.json",
+   "name": "observed_provider_pinned",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "every sampled generation served by the pinned provider"
+  },
+  {
+   "evidence": "state/reconciliation_canary.json",
+   "name": "no_upstream_402",
+   "observed": "false",
+   "passed": true,
+   "threshold": "no PAYMENT_REQUIRED from upstream"
+  },
+  {
+   "evidence": "state/reconciliation_canary.json",
+   "name": "open_reservations_zero",
+   "observed": "\"0\"",
+   "passed": true,
+   "threshold": "0"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + state/reconciliation_canary.json",
+   "name": "grace_truncated_share",
+   "observed": "{\"forced_closes\": 8, \"share\": 0.0, \"truncated\": 0}",
+   "passed": true,
+   "threshold": "<= 0.02"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + state/reconciliation_canary.json",
+   "name": "H1_forced_close_nonempty",
+   "observed": "2",
+   "passed": true,
+   "threshold": ">= 1 forced close returning non-empty text"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + state/reconciliation_canary.json",
+   "name": "H3_forced_close_nonempty",
+   "observed": "4",
+   "passed": true,
+   "threshold": ">= 1 forced close returning non-empty text"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + state/reconciliation_canary.json",
+   "name": "codex_responses_tool_loop",
+   "observed": "[]",
+   "passed": false,
+   "threshold": "WAIVED by owner (2026-09-24T07:03:52Z): >= 1 H3 run: Responses wire, a tool call, >= 2 calls"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + state/reconciliation_canary.json",
+   "name": "ceiling_probe_recorded",
+   "observed": "[{\"arm\": \"H1\", \"first_call_completion\": 14786, \"first_call_forced_close\": \"none\", \"forced_close_kind\": \"none\", \"item_id\": \"aime/2025/30\", \"spawns\": 0}, {\"arm\": \"H1\", \"first_call_completion\": 15832, \"first_call_forced_close\": \"none\", \"forced_close_kind\": \"none\", \"item_id\": \"gpqa_diamond/rec1oj2DveQWl9Rpw\", \"spawns\": 0}, {\"arm\": \"H3\", \"first_call_completion\": 16384, \"first_call_forced_close\": \"mid_call\", \"forced_close_kind\": \"mid_call\", \"item_id\": \"aime/2025/30\", \"spawns\": 0}, {\"arm\": \"H3\", \"first_call_completion\": 16384, \"first_call_forced_close\": \"mid_call\", \"forced_close_kind\": \"mid_call\", \"item_id\": \"gpqa_diamond/rec1oj2DveQWl9Rpw\", \"spawns\": 0}]",
+   "passed": true,
+   "threshold": "4 rung-16 runs (H1, H3) with a first call"
+  },
+  {
+   "evidence": "tables/dynorch_runs.parquet + tables/dynorch_calls.parquet + state/reconciliation_canary.json",
+   "name": "ceiling_probe_spawns",
+   "observed": "{\"of\": 4, \"spawning_runs\": 0}",
+   "passed": false,
+   "threshold": "WAIVED by owner (2026-09-24T07:03:52Z): >= 1 spawn across the k=16 probe (0 of 4 -> stop and ask the owner)"
+  },
+  {
+   "evidence": "locks/harness_prompts.json",
+   "name": "harness_prompts_measured",
+   "observed": "{\"H1\": {\"mean\": 2121.5, \"n\": 2, \"sd\": 0.5}, \"H3\": {\"mean\": 4520.0, \"n\": 2, \"sd\": 25.0}}",
+   "passed": true,
+   "threshold": "S_H1 and S_H3 computable (H0 anchor at the same item and rung)"
+  },
+  {
+   "evidence": "run root scan",
+   "name": "no_key_string_in_run_tree",
+   "observed": "[]",
+   "passed": true,
+   "threshold": "no key-shaped string under the run root"
+  },
+  {
+   "evidence": "home scan",
+   "name": "nothing_written_under_home",
+   "observed": "{\"detail\": {\"after\": 860000, \"after_source\": \"quota\", \"before\": 860000, \"delta\": 0, \"source\": \"quota\"}, \"new\": []}",
+   "passed": true,
+   "threshold": "no file created under $HOME during the stage (quota inode delta, else a $HOME walk)"
+  }
+ ],
+ "decision": "advance",
+ "evaluated_at": "2026-09-24T07:03:52Z",
+ "gate": "gate1",
+ "passed": false,
+ "stage": "canary"
+}

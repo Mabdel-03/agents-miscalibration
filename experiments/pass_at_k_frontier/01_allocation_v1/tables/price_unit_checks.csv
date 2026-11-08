@@ -1,0 +1,3 @@
+check,passed,detail
+planning_prices_per_million,True,google/gemini-2.5-flash-lite: in 0.10/M out 0.40/M; google/gemini-2.5-flash: in 0.30/M out 2.50/M
+realized_cost_over_standardized_ratio,True,median actual/standardized = 1.0000 over 67513 generations (a unit error shows as ~1e6 or ~1e-6; cache discounts and price drift move it moderately)
